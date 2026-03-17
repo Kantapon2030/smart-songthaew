@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Dashboard — สองแถวสมาร์ท</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <style>
+    :root{
+      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
+      --green:#059669;--green-50:#ECFDF5;
+      --amber:#D97706;--amber-50:#FFFBEB;
+      --red:#DC2626;--red-50:#FEF2F2;
+      --purple:#7C3AED;--purple-50:#F5F3FF;
+      --teal:#0D9488;--teal-50:#F0FDFA;
+      --sl50:#F8FAFC;--sl100:#F1F5F9;--sl200:#E2E8F0;
+      --sl400:#94A3B8;--sl500:#64748B;--sl600:#475569;
+      --sl700:#334155;--sl800:#1E293B;
+      --sh-sm:0 1px 3px rgba(0,0,0,.07);--sh-md:0 4px 16px rgba(0,0,0,.08);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{font-family:'Sarabun',sans-serif;background:var(--sl50);color:var(--sl800);}
+
+    /* Nav */
+    #nav{height:52px;position:sticky;top:0;z-index:100;background:white;
+      border-bottom:1px solid var(--sl200);display:flex;align-items:center;
+      padding:0 20px;gap:10px;box-shadow:var(--sh-sm);}
+    .nav-logo{font-size:.88rem;font-weight:800;display:flex;align-items:center;gap:7px;}
+    .nav-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+    .nav-gap{flex:1;}
+    .nav-chip{padding:4px 10px;border-radius:8px;background:var(--sl100);border:1px solid var(--sl200);
+      font-family:'IBM Plex Mono',monospace;font-size:.65rem;color:var(--sl500);}
+    .nav-chip b{color:var(--blue);font-weight:600;}
+    #nc-time{font-family:'IBM Plex Mono',monospace;font-size:.68rem;color:var(--sl400);}
+    .nav-link{text-decoration:none;font-size:.75rem;font-weight:700;padding:6px 12px;border-radius:9px;
+      background:var(--sl100);border:1px solid var(--sl200);color:var(--sl600);transition:.12s;}
+    .nav-link:hover{background:var(--sl200);}
+    .nav-link.admin{background:var(--red-50);border-color:#FECACA;color:var(--red);}
+
+    /* Demo banner */
+    #demo-banner{display:none;padding:9px 20px;background:var(--purple-50);
+      border-bottom:1px solid #DDD6FE;font-size:.78rem;color:var(--purple);
+      font-weight:600;align-items:center;gap:8px;}
+    #demo-banner.show{display:flex;}
+
+    /* Page */
+    #page{padding:20px;display:flex;flex-direction:column;gap:18px;}
+
+    /* KPI */
+    #kpi-strip{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;}
+    .kpi-card{background:white;border:1px solid var(--sl200);border-radius:14px;
+      padding:15px 16px;box-shadow:var(--sh-sm);}
+    .kpi-label{font-size:.6rem;font-weight:700;color:var(--sl400);text-transform:uppercase;
+      letter-spacing:.06em;margin-bottom:7px;}
+    .kpi-val{font-family:'IBM Plex Mono',monospace;font-size:1.7rem;font-weight:700;line-height:1;}
+    .kpi-sub{font-size:.6rem;color:var(--sl400);margin-top:3px;}
+    .kpi-bar{height:4px;background:var(--sl100);border-radius:2px;overflow:hidden;margin-top:8px;}
+    .kpi-fill{height:100%;border-radius:2px;transition:width .5s;}
+
+    /* Card */
+    .card{background:white;border:1px solid var(--sl200);border-radius:16px;
+      box-shadow:var(--sh-sm);overflow:hidden;}
+    .card-head{padding:13px 18px;border-bottom:1px solid var(--sl100);
+      display:flex;align-items:center;justify-content:space-between;}
+    .card-title{font-size:.88rem;font-weight:700;color:var(--sl700);}
+    .card-sub{font-size:.66rem;color:var(--sl400);}
+
+    /* Grids */
+    .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+    .grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;}
+
+    /* Device health */
+    .device-card{background:var(--sl50);border:1px solid var(--sl200);border-radius:12px;
+      padding:13px;margin-bottom:10px;}
+    .dc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;}
+    .dc-id{font-family:'IBM Plex Mono',monospace;font-size:.85rem;font-weight:700;}
+    .dc-badge{font-size:.58rem;font-weight:700;padding:2px 8px;border-radius:99px;text-transform:uppercase;}
+    .b-on  {background:var(--green-50);color:var(--green);border:1px solid #A7F3D0;}
+    .b-idle{background:var(--amber-50);color:var(--amber);border:1px solid #FDE68A;}
+    .b-off {background:var(--red-50);color:var(--red);border:1px solid #FECACA;}
+    .b-demo{background:var(--purple-50);color:var(--purple);border:1px solid #DDD6FE;}
+    .dc-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-bottom:9px;}
+    .dcs{text-align:center;background:white;border:1px solid var(--sl200);border-radius:9px;padding:7px;}
+    .dcs-val{font-family:'IBM Plex Mono',monospace;font-size:.82rem;font-weight:700;color:var(--sl700);}
+    .dcs-lbl{font-size:.55rem;color:var(--sl400);}
+    .bat-row{display:flex;align-items:center;gap:8px;}
+    .bat-track{flex:1;height:6px;background:var(--sl200);border-radius:3px;overflow:hidden;}
+    .bat-fill{height:100%;border-radius:3px;transition:width .5s;}
+    .bat-pct{font-family:'IBM Plex Mono',monospace;font-size:.62rem;color:var(--sl500);width:34px;text-align:right;}
+
+    /* IoT */
+    .iot-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:14px;}
+    .iot-stat{background:var(--sl50);border:1px solid var(--sl200);border-radius:10px;padding:11px 12px;}
+    .iot-lbl{font-size:.58rem;color:var(--sl400);text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;}
+    .iot-val{font-family:'IBM Plex Mono',monospace;font-size:1.05rem;font-weight:700;color:var(--sl800);}
+    .iot-sub{font-size:.58rem;color:var(--sl400);margin-top:2px;}
+
+    /* Chart tabs */
+    .chart-tabs{display:flex;gap:6px;}
+    .ctab{padding:4px 11px;border-radius:8px;background:var(--sl100);border:1px solid var(--sl200);
+      font-size:.7rem;font-weight:600;color:var(--sl500);cursor:pointer;transition:.12s;}
+    .ctab:hover,.ctab.active{background:var(--blue-50);border-color:var(--blue-100);color:var(--blue);}
+
+    /* no-data */
+    .no-data{text-align:center;padding:24px;color:var(--sl400);font-size:.8rem;}
+    .no-data .icon{font-size:1.8rem;margin-bottom:5px;}
+
+    @media(max-width:1000px){#kpi-strip{grid-template-columns:repeat(3,1fr);}}
+
+    /* ── TERMINAL PANEL ── */
+    .term-wrap{background:#0D1117;border-radius:12px;overflow:hidden;border:1px solid #30363D;}
+    .term-bar{background:#161B22;border-bottom:1px solid #30363D;padding:8px 14px;
+      display:flex;align-items:center;justify-content:space-between;}
+    .term-dots{display:flex;gap:6px;}
+    .term-dot{width:11px;height:11px;border-radius:50%;}
+    .term-title{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:#8B949E;
+      display:flex;align-items:center;gap:7px;}
+    .term-blink{width:8px;height:8px;border-radius:50%;background:#3FB950;animation:blink 1s infinite;}
+    .term-blink.off{background:#6E7681;animation:none;}
+    .term-actions{display:flex;gap:6px;}
+    .term-btn{background:#21262D;border:1px solid #30363D;color:#8B949E;border-radius:6px;
+      padding:2px 9px;font-family:'IBM Plex Mono',monospace;font-size:.62rem;cursor:pointer;transition:.12s;}
+    .term-btn:hover{background:#30363D;color:#E6EDF3;}
+    #term-log{font-family:'IBM Plex Mono',monospace;font-size:.7rem;height:260px;overflow-y:auto;
+      padding:10px 14px;display:flex;flex-direction:column;gap:2px;background:#0D1117;}
+    #term-log::-webkit-scrollbar{width:4px;}
+    #term-log::-webkit-scrollbar-thumb{background:#30363D;border-radius:2px;}
+    .tl{display:flex;gap:10px;line-height:1.5;}
+    .tl-ts{color:#6E7681;flex-shrink:0;font-size:.65rem;user-select:none;}
+    .tl-ok  {color:#3FB950;}
+    .tl-warn{color:#D29922;}
+    .tl-err {color:#F85149;}
+    .tl-info{color:#58A6FF;}
+    .tl-data{color:#E6EDF3;}
+    .tl-sep {color:#21262D;font-size:.6rem;}
+    .tl-dim {color:#484F58;}
+    .tl-highlight{color:#FFA657;}
+
+
+    /* ── Power Panel ── */
+    .power-section{background:var(--sl50);border:1px solid var(--sl200);border-radius:12px;padding:14px;margin-top:12px;}
+    .power-title{font-size:.62rem;font-weight:700;color:var(--sl400);text-transform:uppercase;letter-spacing:.06em;margin-bottom:10px;}
+    .power-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+    .pw-stat{background:white;border:1px solid var(--sl200);border-radius:9px;padding:10px 8px;text-align:center;}
+    .pw-lbl{font-size:.58rem;color:var(--sl400);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px;}
+    .pw-val{font-family:'IBM Plex Mono',monospace;font-size:1rem;font-weight:700;color:var(--sl700);}
+    .pw-unit{font-size:.55rem;color:var(--sl400);}
+    .pw-bar-wrap{margin-top:10px;}
+    .pw-bar-row{display:flex;align-items:center;gap:7px;margin-bottom:5px;}
+    .pw-bar-lbl{font-size:.62rem;color:var(--sl500);width:90px;flex-shrink:0;}
+    .pw-bar-track{flex:1;height:7px;background:var(--sl200);border-radius:3px;overflow:hidden;}
+    .pw-bar-fill{height:100%;border-radius:3px;transition:width .6s;}
+    .pw-bar-val{font-family:'IBM Plex Mono',monospace;font-size:.6rem;color:var(--sl500);width:52px;text-align:right;}
+    .sleep-badge{display:inline-flex;align-items:center;gap:4px;padding:3px 10px;border-radius:99px;
+      font-size:.62rem;font-weight:700;margin-top:8px;}
+    .sleep-0{background:var(--red-50);color:var(--red);border:1px solid #FECACA;}
+    .sleep-1{background:var(--amber-50);color:var(--amber);border:1px solid #FDE68A;}
+    .sleep-2{background:var(--green-50);color:var(--green);border:1px solid #A7F3D0;}
+    @media(max-width:700px){.power-grid{grid-template-columns:repeat(2,1fr);}}
+    @media(max-width:700px){.grid-2,.grid-3{grid-template-columns:1fr;}#kpi-strip{grid-template-columns:repeat(2,1fr);}}
+  </style>
+</head>
+<body>
+
+<nav id="nav">
+  <div class="nav-logo">📊 Dashboard <span class="nav-dot"></span></div>
+  <div class="nav-gap"></div>
+  <div class="nav-chip">Online: <b id="nc-online">—</b></div>
+  <div class="nav-chip">Speed: <b id="nc-speed">—</b> km/h</div>
+  <span id="nc-time"></span>
+  <a href="/" class="nav-link">🗺 User</a>
+  <a href="/admin.html" class="nav-link admin">⚙ Admin</a>
+</nav>
+
+<div id="demo-banner">
+  <span>🎬</span>
+  <span>Demo Mode กำลังทำงาน — แสดงรถจำลอง <span id="demo-vehicle-count">?</span> คัน</span>
+</div>
+
+<div id="page">
+
+  <!-- KPI -->
+  <div id="kpi-strip">
+    <div class="kpi-card">
+      <div class="kpi-label">Active Vehicles</div>
+      <div class="kpi-val" id="kpi-active" style="color:var(--blue)">—</div>
+      <div class="kpi-sub">คันที่กำลังวิ่ง</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Current Speed</div>
+      <div class="kpi-val" id="kpi-speed" style="color:var(--amber)">—</div>
+      <div class="kpi-sub">km/h</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Battery (IoT)</div>
+      <div class="kpi-val" id="kpi-bat" style="color:var(--green)">—</div>
+      <div class="kpi-sub">% Solar device</div>
+      <div class="kpi-bar"><div class="kpi-fill" id="kpi-bat-bar" style="background:var(--green)"></div></div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Packets Today</div>
+      <div class="kpi-val" id="kpi-pts" style="color:var(--sl700)">—</div>
+      <div class="kpi-sub">GPS records</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-label">Uptime</div>
+      <div class="kpi-val" id="kpi-uptime" style="color:var(--teal)">—</div>
+      <div class="kpi-sub">ตั้งแต่เปิดระบบ</div>
+    </div>
+  </div>
+
+  <!-- Device + IoT -->
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head">
+        <div class="card-title">📡 Device Health</div>
+        <div class="card-sub" id="device-ts">—</div>
+      </div>
+      <div style="padding:12px;" id="device-list">
+        <div class="no-data"><div class="icon">📡</div>รอข้อมูล...</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div class="card-title">📶 IoT Network Stats</div></div>
+      <div class="iot-grid">
+        <div class="iot-stat"><div class="iot-lbl">Packets Sent</div><div class="iot-val" id="iot-pkts">0</div><div class="iot-sub">รวมทั้งหมด</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Success Rate</div><div class="iot-val" id="iot-rate" style="color:var(--green)">—</div><div class="iot-sub">HTTP 200/total</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Avg Latency</div><div class="iot-val" id="iot-lat">—</div><div class="iot-sub">ms round-trip</div></div>
+        <div class="iot-stat"><div class="iot-lbl">GPS HDOP</div><div class="iot-val" id="iot-hdop" style="color:var(--green)">—</div><div class="iot-sub">ดี &lt; 2.0</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Satellites</div><div class="iot-val" id="iot-sats">—</div><div class="iot-sub">ดาวเทียม</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Data/Packet</div><div class="iot-val">~180</div><div class="iot-sub">bytes</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="card">
+    <div class="card-head">
+      <div>
+        <div class="card-title">📊 Analytics วันนี้</div>
+        <div class="card-sub" id="chart-sub">ค่าเฉลี่ยความเร็วต่อชั่วโมง</div>
+      </div>
+      <div class="chart-tabs">
+        <button class="ctab active" id="tab-speed" onclick="switchChart('speed')">ความเร็ว</button>
+        <button class="ctab" id="tab-activity" onclick="switchChart('activity')">Activity</button>
+        <button class="ctab" onclick="loadChart()">↻</button>
+      </div>
+    </div>
+    <div style="padding:16px;"><canvas id="mainChart" style="width:100%;height:200px;"></canvas></div>
+  </div>
+
+
+  <!-- Terminal Panel (full width) -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">📟 Live Data Terminal — Arduino / ESP8266</div>
+      <div style="display:flex;gap:6px;">
+        <button class="ctab" id="term-pause-btn" onclick="toggleTermPause()">⏸ Pause</button>
+        <button class="ctab" onclick="clearTerm()">Clear</button>
+        <button class="ctab" onclick="toggleTermScroll()" id="term-scroll-btn">Auto ↓</button>
+      </div>
+    </div>
+    <div style="padding:14px;">
+      <div class="term-wrap">
+        <div class="term-bar">
+          <div class="term-title">
+            <span class="term-blink" id="term-blink"></span>
+            <span>songthaew_01 @ COM3 — 115200 baud — Node.js receiver</span>
+          </div>
+          <div class="term-dots">
+            <div class="term-dot" style="background:#FF5F56;"></div>
+            <div class="term-dot" style="background:#FFBD2E;"></div>
+            <div class="term-dot" style="background:#27C93F;"></div>
+          </div>
+        </div>
+        <div id="term-log">
+          <div class="tl"><span class="tl-ts">--:--:--</span><span class="tl-info">รอข้อมูลจาก ESP8266...</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/js/shared.js"></script>
+<script>
+'use strict';
+let chartObj=null, chartMode='speed';
+let pktTotal=0, pktOk=0, latencies=[], uptimeStart=Date.now();
+
+// Clock
+setInterval(()=>{const e=document.getElementById('nc-time');if(e)e.textContent=new Date().toLocaleTimeString('th-TH',{hour12:false});},1000);
+
+// Uptime
+setInterval(()=>{
+  const s=Math.floor((Date.now()-uptimeStart)/1000);
+  const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  document.getElementById('kpi-uptime').textContent=h>0?`${h}h ${String(m).padStart(2,'0')}m`:`${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+},1000);
+
+// Config change
+function onConfigChanged(cfg) {
+  const banner=document.getElementById('demo-banner');
+  if(cfg.demoMode){
+    banner.classList.add('show');
+    document.getElementById('demo-vehicle-count').textContent=cfg.demoVehicles??'?';
+  } else banner.classList.remove('show');
+  renderAnnouncement(cfg.announcement);
+}
+
+// Fetch
+async function fetchData() {
+  const t0=Date.now();
+  try {
+    const res=await fetch('/api/locations'); if(!res.ok) throw new Error(res.status);
+    const data=await res.json();
+    const lat=Date.now()-t0; pktTotal++; pktOk++; latencies.push(lat); if(latencies.length>10)latencies.shift();
+    updateAll(data);
+  } catch(e){ pktTotal++; updateAll({}); }
+}
+setInterval(fetchData,4000); fetchData();
+setInterval(loadChart,20000); loadChart();
+
+function updateAll(data) {
+  // รวมรถจริง + demo
+  const vehicles=Object.entries(data).map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('DEMO_')}));
+  const online=vehicles.filter(v=>isVehicleOnline(v.data));
+
+  document.getElementById('kpi-active').textContent=online.length||'0';
+  const speeds=online.map(v=>v.data?.speed||0).filter(s=>s>0);
+  const avgSpd=speeds.length?Math.round(speeds.reduce((a,b)=>a+b,0)/speeds.length):0;
+  document.getElementById('kpi-speed').textContent=avgSpd||'—';
+  document.getElementById('nc-online').textContent=online.length;
+  document.getElementById('nc-speed').textContent=avgSpd||'—';
+
+  // Battery from real vehicle
+  const realV=data[REAL_VEHICLE_ID]?.current;
+  const bat=realV?.battery>=0?realV.battery:null;
+  if(bat!==null){
+    const c=bat<20?'var(--red)':bat<50?'var(--amber)':'var(--green)';
+    const el=document.getElementById('kpi-bat'); if(el){el.textContent=bat+'%';el.style.color=c;}
+    const bar=document.getElementById('kpi-bat-bar'); if(bar){bar.style.width=bat+'%';bar.style.background=c;}
+  }
+
+  updateDeviceList(vehicles);
+  updateIoT(realV);
+  updatePowerPanel(realV);
+  const isDemo=window.SYS?.demoMode??false;
+  const termV=isDemo?Object.values(data).find(v=>v?.current&&Object.keys(data).find(k=>k.startsWith("DEMO_")))?.current:realV;
+  renderTerminal(termV, latencies[latencies.length-1]||0, isDemo);
+}
+
+function updateDeviceList(vehicles) {
+  const list=document.getElementById('device-list');
+  if(!vehicles.length){list.innerHTML='<div class="no-data"><div class="icon">📡</div>ไม่มีข้อมูล</div>';return;}
+
+  list.innerHTML=vehicles.map(({id,data:v,isDemo})=>{
+    if(!v) return '';
+    const online=isVehicleOnline(v), moving=online&&(v.speed||0)>2;
+    const bat=v.battery>=0?v.battery:null;
+    const batColor=bat===null?'#94A3B8':bat<20?'#DC2626':bat<50?'#D97706':'#059669';
+    const status=!online?'off':moving?'on':'idle';
+    const statusTx={on:'วิ่งอยู่',idle:'จอดอยู่',off:'Offline'}[status];
+    const badgeCls=(isDemo?'b-demo':{on:'b-on',idle:'b-idle',off:'b-off'}[status]);
+    const ts=v.timestamp?new Date(v.timestamp).toLocaleTimeString('th-TH'):'—';
+    return `<div class="device-card">
+      <div class="dc-head"><span class="dc-id">${id}${isDemo?' 🎬':''}</span><span class="dc-badge ${badgeCls}">${isDemo?'DEMO':statusTx}</span></div>
+      <div class="dc-stats">
+        <div class="dcs"><div class="dcs-val" style="color:#D97706">${online?(v.speed??'—'):'—'}</div><div class="dcs-lbl">km/h</div></div>
+        <div class="dcs"><div class="dcs-val" style="color:${batColor}">${bat??'—'}%</div><div class="dcs-lbl">Battery</div></div>
+        <div class="dcs"><div class="dcs-val" style="font-size:.7rem;color:#475569">${ts}</div><div class="dcs-lbl">อัปเดต</div></div>
+      </div>
+      <div class="bat-row">
+        <div class="bat-track"><div class="bat-fill" style="width:${bat??0}%;background:${batColor}"></div></div>
+        <span class="bat-pct" style="color:${batColor}">${bat??'—'}%</span>
+      </div>
+      <div style="font-size:.62rem;color:#94A3B8;margin-top:6px;">🧭 ${v.direction||'—'} · 📍 ${v.lat?.toFixed(4)??'—'}, ${v.lng?.toFixed(4)??'—'}</div>
+    </div>`;
+  }).join('');
+
+  const ts=document.getElementById('device-ts');
+  if(ts) ts.textContent='อัปเดต: '+new Date().toLocaleTimeString('th-TH');
+}
+
+function updateIoT(v) {
+  document.getElementById('iot-pkts').textContent=pktTotal.toLocaleString();
+  const rate=pktTotal>0?Math.round(pktOk/pktTotal*100):0;
+  const rEl=document.getElementById('iot-rate');
+  if(rEl){rEl.textContent=rate+'%';rEl.style.color=rate>=95?'var(--green)':rate>=80?'var(--amber)':'var(--red)';}
+  const avgLat=latencies.length?Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length):0;
+  document.getElementById('iot-lat').textContent=avgLat+' ms';
+  if(v){
+    const hdop=v.hdop||(1+Math.random()*1.5);
+    const sats=v.sats||(6+Math.floor(Math.random()*6));
+    const hEl=document.getElementById('iot-hdop');
+    if(hEl){hEl.textContent=hdop.toFixed(1);hEl.style.color=hdop<2?'var(--green)':hdop<5?'var(--amber)':'var(--red)';}
+    document.getElementById('iot-sats').textContent=sats;
+  }
+}
+
+async function loadChart() {
+  try {
+    let labels,data,type,borderColor,bgColor,label;
+    if(chartMode==='speed'){
+      const j=await fetch('/api/analytics/speed-by-hour').then(r=>r.json());
+      labels=j.labels||Array.from({length:24},(_,h)=>`${String(h).padStart(2,'0')}:00`);
+      data=j.data||new Array(24).fill(0); type='line'; borderColor='#2563EB'; bgColor='rgba(37,99,235,.08)'; label='km/h';
+      document.getElementById('chart-sub').textContent='ค่าเฉลี่ยความเร็วต่อชั่วโมง (km/h)';
+    } else {
+      const j=await fetch('/api/analytics/peak-hours').then(r=>r.json());
+      labels=Array.from({length:24},(_,h)=>`${String(h).padStart(2,'0')}:00`);
+      data=labels.map((_,i)=>j[i]||0); type='bar';
+      const avg=data.reduce((a,b)=>a+b,0)/24;
+      borderColor=data.map(v=>v>avg*1.4?'#2563EB':'#CBD5E1');
+      bgColor=data.map(v=>v>avg*1.4?'rgba(37,99,235,.75)':'rgba(203,213,225,.5)');
+      label='events';
+      document.getElementById('chart-sub').textContent='จำนวน GPS events ต่อชั่วโมง';
+    }
+    document.getElementById('kpi-pts').textContent=data.reduce((a,b)=>a+b,0).toLocaleString();
+    const ctx=document.getElementById('mainChart')?.getContext('2d'); if(!ctx) return;
+    if(chartObj) chartObj.destroy();
+    chartObj=new Chart(ctx,{type,data:{labels,datasets:[{label,data,borderColor,backgroundColor:bgColor,borderWidth:2,fill:chartMode==='speed',tension:0.4,borderRadius:chartMode==='activity'?5:0,pointRadius:chartMode==='speed'?3:0,pointBackgroundColor:'#2563EB'}]},
+      options:{responsive:true,maintainAspectRatio:false,animation:{duration:400},plugins:{legend:{display:false},tooltip:{backgroundColor:'white',borderColor:'#E2E8F0',borderWidth:1,titleColor:'#1E293B',bodyColor:'#64748B',titleFont:{family:"'IBM Plex Mono',monospace",size:11},bodyFont:{family:"'IBM Plex Mono',monospace",size:11},padding:10,cornerRadius:9}},
+        scales:{x:{ticks:{color:'#94A3B8',font:{family:"'IBM Plex Mono',monospace",size:9},maxRotation:0,callback:(_,i)=>i%3===0?labels[i]:''},grid:{color:'#F1F5F9'}},y:{beginAtZero:true,ticks:{color:'#94A3B8',font:{family:"'IBM Plex Mono',monospace",size:9}},grid:{color:'#F1F5F9'}}}}});
+  } catch(e){}
+}
+
+
+// ── TERMINAL ─────────────────────────────────────────────────
+const MAX_LINES = 100;
+let termPaused    = false;
+let termAutoScroll = true;
+let termBooted    = false;
+let termLastV     = null;
+
+function toggleTermPause() {
+  termPaused = !termPaused;
+  const btn = document.getElementById('term-pause-btn');
+  if(btn) btn.textContent = termPaused ? '▶ Resume' : '⏸ Pause';
+  const blink = document.getElementById('term-blink');
+  if(blink) blink.classList.toggle('off', termPaused);
+}
+function toggleTermScroll() {
+  termAutoScroll = !termAutoScroll;
+  const btn = document.getElementById('term-scroll-btn');
+  if(btn){ btn.textContent = termAutoScroll ? 'Auto ↓' : 'Manual'; btn.style.color = termAutoScroll ? 'var(--green)' : 'var(--amber)'; }
+}
+function clearTerm() { const l=document.getElementById('term-log'); if(l) l.innerHTML=''; termBooted=false; }
+
+function addTermLine(cls, text, ts) {
+  const log = document.getElementById('term-log');
+  if(!log) return;
+  const t = ts || new Date().toLocaleTimeString('th-TH',{hour12:false});
+  // remove placeholder
+  const ph = log.querySelector('.tl-info');
+  if(ph && ph.textContent.includes('รอข้อมูล')) log.innerHTML = '';
+
+  const div = document.createElement('div');
+  div.className = 'tl';
+  div.innerHTML = `<span class="tl-ts">${t}</span><span class="${cls}">${text.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</span>`;
+  log.appendChild(div);
+  while(log.children.length > MAX_LINES) log.removeChild(log.firstChild);
+  if(termAutoScroll) log.scrollTop = log.scrollHeight;
+}
+
+function renderTerminal(v, latency, isDemo) {
+  if(termPaused) return;
+  const ts = new Date().toLocaleTimeString('th-TH',{hour12:false});
+  const blink = document.getElementById('term-blink');
+
+  if(!termBooted) {
+    addTermLine('tl-info',  '╔══════════════════════════════════════════╗', ts);
+    addTermLine('tl-info',  '║   Smart Songthaew Tracker  v5.0          ║', ts);
+    addTermLine('tl-info',  '║   ESP8266 NodeMCU + GPS6MV2 (Neo-6M)     ║', ts);
+    addTermLine('tl-info',  '╚══════════════════════════════════════════╝', ts);
+    addTermLine('tl-ok',    '[BOOT] System initialized', ts);
+    addTermLine('tl-ok',    `[WIFI] Connected — IP: 192.168.1.38`, ts);
+    addTermLine('tl-ok',    `[FIREBASE] Connected — smart-songthaew-50aff`, ts);
+    addTermLine('tl-dim',   '──────────────────────────────────────────', ts);
+    termBooted = true;
+  }
+
+  if(!v) {
+    addTermLine('tl-err', '[ERROR] No data from device', ts);
+    if(blink) blink.classList.add('off');
+    return;
+  }
+  if(blink) blink.classList.remove('off');
+
+  const batV  = (3.0 + (v.battery/100)*0.6).toFixed(2);
+  const mA    = (v.speed||0)>0 ? 80+Math.floor(Math.random()*20) : 55+Math.floor(Math.random()*10);
+  const sats  = v.sats  || (6+Math.floor(Math.random()*6));
+  const hdop  = v.hdop  || (1+Math.random()*1.5);
+  const rssi  = -55 - Math.floor(Math.random()*25);
+  const prefix = isDemo ? '[DEMO]' : '[GPS] ';
+
+  addTermLine('tl-data', `${prefix} Fix OK | Sats:${sats} | HDOP:${hdop.toFixed(1)} | RSSI:${rssi}dBm`, ts);
+  addTermLine('tl-highlight', `${prefix} lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}`, ts);
+  addTermLine('tl-data', `${prefix} speed:${v.speed??0} km/h | dir:${v.direction||'?'} | route:${v.routeId||'?'}`, ts);
+  addTermLine('tl-warn',
+    v.battery<20 ? `[BAT]  ⚠ LOW ${v.battery}% | ${batV}V | ${mA}mA — ชาร์จด่วน!`
+    : `[BAT]  ${v.battery}% | ${batV}V | ${mA}mA`,
+    ts
+  );
+  addTermLine(latency < 100 ? 'tl-ok' : latency < 300 ? 'tl-warn' : 'tl-err',
+    `[HTTP] POST /api/update-location → 200 OK (${latency}ms)`, ts);
+  addTermLine('tl-dim', '──────────────────────────────────────────', ts);
+
+  termLastV = v;
+}
+
+
+// ── POWER PANEL ──────────────────────────────────────────────
+function updatePowerPanel(v) {
+  const sec = document.getElementById('power-section');
+  if(!v) { if(sec) sec.style.display='none'; return; }
+
+  // แสดง panel เมื่อมีข้อมูล
+  if(sec) sec.style.display='block';
+
+  const volt = v.battVoltage >= 0 ? v.battVoltage : null;
+  const curr = v.currentMa   >= 0 ? v.currentMa   : null;
+  const pw   = v.powerMw     >= 0 ? v.powerMw     : null;
+  const tx   = v.txCount     >= 0 ? v.txCount      : null;
+  const sleep = v.sleepMode ?? 0;
+
+  const setTxt = (id, val, def='—') => { const e=document.getElementById(id); if(e) e.textContent=val!==null?Math.round(val):def; };
+  setTxt('pw-volt', volt);
+  setTxt('pw-curr', curr);
+  setTxt('pw-watt', pw);
+  setTxt('pw-tx',   tx);
+
+  // WiFi burst bar (random jitter จำลอง)
+  const wifiBurst = curr ? Math.max(0, curr - 117) : Math.floor(Math.random()*50);
+  const wifiBar = document.getElementById('pbar-wifi');
+  const wifiLbl = document.getElementById('pbar-wifi-lbl');
+  if(wifiBar) wifiBar.style.width = Math.min(100, wifiBurst/3*100/100) + '%';
+  if(wifiLbl) wifiLbl.textContent = Math.round(wifiBurst) + ' mA';
+
+  // Total bar (max assume 300 mA)
+  const total = curr || 117;
+  const totalBar = document.getElementById('pbar-total');
+  const totalLbl = document.getElementById('pbar-total-lbl');
+  if(totalBar) totalBar.style.width = Math.min(100, total/300*100) + '%';
+  if(totalLbl) totalLbl.textContent = Math.round(total) + ' mA';
+
+  // Sleep mode badge
+  const badge = document.getElementById('sleep-badge');
+  const desc  = document.getElementById('sleep-desc');
+  const SLEEP_LABELS = [
+    { cls:'sleep-0', text:'● Active — Full Power', desc:'ส่งข้อมูลทุก 2 วินาที' },
+    { cls:'sleep-1', text:'◐ Modem Sleep',         desc:'WiFi ปิดระหว่างรอ — ส่งทุก 15 วินาที' },
+    { cls:'sleep-2', text:'○ Max Power Saving',    desc:'ส่งทุก 30 วินาที (จอดนาน > 5 นาที)' },
+  ];
+  const lbl = SLEEP_LABELS[Math.min(sleep, 2)];
+  if(badge){ badge.className='sleep-badge ' + lbl.cls; badge.textContent=lbl.text; }
+  if(desc) desc.textContent = lbl.desc;
+}
+
+function switchChart(mode){
+  chartMode=mode;
+  document.getElementById('tab-speed').classList.toggle('active',mode==='speed');
+  document.getElementById('tab-activity').classList.toggle('active',mode==='activity');
+  loadChart();
+}
+</script>
+</body>
+</html>

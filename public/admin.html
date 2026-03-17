@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Admin Control — สองแถวสมาร์ท</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <style>
+    :root{
+      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
+      --green:#059669;--green-50:#ECFDF5;
+      --amber:#D97706;--amber-50:#FFFBEB;
+      --red:#DC2626;--red-50:#FEF2F2;
+      --purple:#7C3AED;--purple-50:#F5F3FF;
+      --slate-50:#F8FAFC;--slate-100:#F1F5F9;--slate-200:#E2E8F0;
+      --slate-400:#94A3B8;--slate-500:#64748B;--slate-600:#475569;
+      --slate-700:#334155;--slate-800:#1E293B;
+      --sh-sm:0 1px 3px rgba(0,0,0,.07);--sh-md:0 4px 16px rgba(0,0,0,.08);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{font-family:'Sarabun',sans-serif;background:var(--slate-50);color:var(--slate-800);}
+
+    /* Nav */
+    #nav{height:52px;position:sticky;top:0;z-index:100;background:white;
+      border-bottom:1px solid var(--slate-200);display:flex;align-items:center;
+      padding:0 20px;gap:10px;box-shadow:var(--sh-sm);}
+    .nav-logo{font-size:.9rem;font-weight:800;display:flex;align-items:center;gap:7px;}
+    .nav-badge{font-size:.6rem;font-weight:700;padding:2px 8px;border-radius:99px;
+      background:#FEF2F2;color:var(--red);border:1px solid #FECACA;}
+    .nav-badge.safe{background:var(--green-50);color:var(--green);border-color:#A7F3D0;}
+    .nav-gap{flex:1;}
+    .nav-link{text-decoration:none;font-size:.75rem;font-weight:700;padding:6px 12px;border-radius:9px;
+      background:var(--slate-100);border:1px solid var(--slate-200);color:var(--slate-600);transition:.12s;}
+    .nav-link:hover{background:var(--slate-200);}
+    #nc-time{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--slate-400);}
+
+    /* Page */
+    #page{padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+    @media(max-width:800px){#page{grid-template-columns:1fr;}}
+
+    /* Card */
+    .card{background:white;border:1px solid var(--slate-200);border-radius:16px;
+      box-shadow:var(--sh-sm);overflow:hidden;}
+    .card-full{grid-column:1/-1;}
+    .card-head{padding:14px 18px;border-bottom:1px solid var(--slate-100);
+      display:flex;align-items:center;justify-content:space-between;}
+    .card-title{font-size:.9rem;font-weight:700;color:var(--slate-700);display:flex;align-items:center;gap:7px;}
+    .card-sub{font-size:.66rem;color:var(--slate-400);}
+    .card-body{padding:18px;}
+
+    /* Demo control */
+    .demo-state{
+      display:flex;align-items:center;gap:14px;padding:14px 18px;
+      background:var(--purple-50);border-bottom:1px solid #DDD6FE;
+    }
+    .demo-light{width:12px;height:12px;border-radius:50%;background:var(--slate-300);}
+    .demo-light.on{background:var(--purple);animation:blink .8s infinite;}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+    .demo-info{flex:1;}
+    .demo-info-title{font-size:.85rem;font-weight:700;}
+    .demo-info-sub{font-size:.68rem;color:var(--slate-500);}
+
+    .demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 18px;}
+    .vehicle-count-ctrl{display:flex;align-items:center;gap:10px;padding:14px 18px;
+      border-top:1px solid var(--slate-100);}
+    .vcc-label{font-size:.78rem;font-weight:600;color:var(--slate-600);flex:1;}
+    .vcc-num{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;font-weight:700;
+      color:var(--purple);min-width:32px;text-align:center;}
+    .vcc-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--slate-200);
+      background:var(--slate-100);color:var(--slate-700);font-size:1.1rem;font-weight:700;
+      cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.12s;}
+    .vcc-btn:hover{background:var(--slate-200);}
+
+    /* Buttons */
+    .btn{padding:10px 20px;border-radius:10px;border:none;font-family:'Sarabun',sans-serif;
+      font-size:.82rem;font-weight:700;cursor:pointer;transition:.12s;display:flex;
+      align-items:center;gap:6px;justify-content:center;}
+    .btn-primary{background:var(--blue);color:white;}
+    .btn-primary:hover{background:#1D4ED8;}
+    .btn-danger {background:var(--red);color:white;}
+    .btn-danger:hover{background:#B91C1C;}
+    .btn-purple {background:var(--purple);color:white;}
+    .btn-purple:hover{background:#6D28D9;}
+    .btn-outline{background:white;color:var(--slate-600);border:1px solid var(--slate-200);}
+    .btn-outline:hover{background:var(--slate-50);border-color:var(--slate-300);}
+    .btn-green {background:var(--green);color:white;}
+    .btn-green:hover{background:#047857;}
+    .btn-full{width:100%;}
+
+    /* Form */
+    .form-row{margin-bottom:14px;}
+    .form-label{display:block;font-size:.72rem;font-weight:700;color:var(--slate-600);
+      text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;}
+    .form-input{width:100%;padding:9px 12px;border:1px solid var(--slate-200);border-radius:9px;
+      font-family:'Sarabun',sans-serif;font-size:.85rem;color:var(--slate-800);
+      background:white;transition:.12s;}
+    .form-input:focus{outline:none;border-color:var(--blue);}
+    .form-input[type=range]{padding:0;border:none;background:transparent;}
+    .form-textarea{resize:vertical;min-height:80px;font-family:'Sarabun',sans-serif;}
+
+    /* Status row */
+    .status-row{display:flex;gap:10px;flex-wrap:wrap;padding:14px 18px;}
+    .status-pill{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:99px;
+      font-size:.72rem;font-weight:600;}
+    .pill-online{background:var(--green-50);color:var(--green);border:1px solid #A7F3D0;}
+    .pill-demo  {background:var(--purple-50);color:var(--purple);border:1px solid #DDD6FE;}
+    .pill-offline{background:var(--red-50);color:var(--red);border:1px solid #FECACA;}
+    .pill-dot{width:7px;height:7px;border-radius:50%;background:currentColor;}
+
+    /* Config save indicator */
+    #save-toast{
+      position:fixed;bottom:20px;right:20px;z-index:999;
+      background:#1E293B;color:white;padding:10px 18px;border-radius:10px;
+      font-size:.78rem;font-weight:600;opacity:0;transition:opacity .3s;
+      pointer-events:none;
+    }
+    #save-toast.show{opacity:1;}
+
+    /* Action log */
+    #action-log{
+      font-family:'IBM Plex Mono',monospace;font-size:.7rem;
+      max-height:180px;overflow-y:auto;padding:12px 14px;
+      display:flex;flex-direction:column;gap:3px;background:#FAFAFA;
+    }
+    #action-log::-webkit-scrollbar{width:3px;}
+    #action-log::-webkit-scrollbar-thumb{background:var(--slate-300);border-radius:2px;}
+    .log-line{display:flex;gap:8px;}
+    .log-ts{color:var(--slate-400);flex-shrink:0;}
+    .log-ok{color:var(--green);}
+    .log-warn{color:var(--amber);}
+    .log-err{color:var(--red);}
+  </style>
+</head>
+<body>
+
+<div id="save-toast">✓ บันทึกแล้ว</div>
+
+<nav id="nav">
+  <div class="nav-logo">⚙️ Admin Control <span class="nav-badge" id="nav-mode-badge">REAL</span></div>
+  <div class="nav-gap"></div>
+  <span id="nc-time"></span>
+  <a href="/dashboard.html" class="nav-link">📊 Dashboard</a>
+  <a href="/" class="nav-link">🗺 User View</a>
+</nav>
+
+<div id="page">
+
+  <!-- ── DEMO MODE CONTROL ── -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">🎬 Demo Mode Control</div>
+      <div class="card-sub" id="demo-status-sub">ปิดอยู่</div>
+    </div>
+
+    <div class="demo-state">
+      <div class="demo-light" id="demo-light"></div>
+      <div class="demo-info">
+        <div class="demo-info-title" id="demo-state-title">Demo Mode ปิดอยู่</div>
+        <div class="demo-info-sub" id="demo-state-sub">ระบบใช้ข้อมูลจาก ESP8266 จริง</div>
+      </div>
+    </div>
+
+    <!-- Vehicle count -->
+    <div class="vehicle-count-ctrl">
+      <span class="vcc-label">จำนวนรถจำลอง</span>
+      <button class="vcc-btn" onclick="changeVehicleCount(-1)">−</button>
+      <span class="vcc-num" id="vcc-num">2</span>
+      <button class="vcc-btn" onclick="changeVehicleCount(1)">+</button>
+    </div>
+
+    <div class="demo-grid">
+      <button class="btn btn-purple" onclick="startDemo()">
+        <span>▶</span> เริ่ม Demo
+      </button>
+      <button class="btn btn-danger" onclick="stopDemo()">
+        <span>■</span> หยุด Demo
+      </button>
+    </div>
+
+    <div style="padding:0 18px 16px;">
+      <div style="font-size:.68rem;color:var(--slate-400);padding:10px 12px;
+        background:var(--amber-50);border:1px solid #FDE68A;border-radius:9px;">
+        ⚠️ เมื่อเปิด Demo Mode: รถ Arduino จะถูกซ่อน ระบบจะสร้างรถจำลองแทน<br/>
+        ทุกหน้า (User + Dashboard) จะอัปเดตอัตโนมัติภายใน 5 วินาที
+      </div>
+    </div>
+  </div>
+
+  <!-- ── SYSTEM CONFIG ── -->
+  <div class="card">
+    <div class="card-head">
+      <div class="card-title">⚙️ ตั้งค่าระบบ</div>
+      <button class="btn btn-primary" style="padding:5px 14px;font-size:.72rem;" onclick="saveConfig()">บันทึก</button>
+    </div>
+    <div class="card-body">
+      <div class="form-row">
+        <label class="form-label">ชื่อเส้นทาง</label>
+        <input class="form-input" id="cfg-route" value="นครศรีธรรมราช ↔ พรหมคีรี" placeholder="ชื่อเส้นทาง"/>
+      </div>
+      <div class="form-row">
+        <label class="form-label">Offline Timeout (วินาที) — <span id="cfg-timeout-val">15</span>s</label>
+        <input class="form-input" type="range" id="cfg-timeout" min="5" max="60" value="15"
+          oninput="document.getElementById('cfg-timeout-val').textContent=this.value"/>
+      </div>
+      <div class="form-row">
+        <label class="form-label">ประกาศถึงผู้ใช้ทุกหน้า (ว่างเปล่า = ไม่แสดง)</label>
+        <textarea class="form-input form-textarea" id="cfg-announcement"
+          placeholder="เช่น: รถกำลังวิ่งช้าเนื่องจากสภาพถนน"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── LIVE STATUS ── -->
+  <div class="card card-full">
+    <div class="card-head">
+      <div class="card-title">📡 สถานะระบบปัจจุบัน</div>
+      <button class="btn btn-outline" style="padding:4px 12px;font-size:.7rem;" onclick="refreshStatus()">↻ รีเฟรช</button>
+    </div>
+    <div class="status-row" id="status-row">
+      <span class="status-pill pill-offline"><span class="pill-dot"></span>กำลังโหลด...</span>
+    </div>
+    <div style="padding:0 18px 4px;font-size:.68rem;color:var(--slate-400);">
+      Action Log
+    </div>
+    <div id="action-log">
+      <div class="log-line"><span class="log-ts">--:--:--</span><span>รอการเชื่อมต่อ...</span></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="/js/shared.js"></script>
+<script>
+'use strict';
+
+let _demoVehicleCount = 2;
+let _demoRunning      = false;
+
+// ── Clock ────────────────────────────────────────────────────
+setInterval(() => {
+  const el = document.getElementById('nc-time');
+  if (el) el.textContent = new Date().toLocaleTimeString('th-TH', { hour12:false });
+}, 1000);
+
+// ── On config change ─────────────────────────────────────────
+function onConfigChanged(cfg) {
+  applyConfigToUI(cfg);
+}
+
+function applyConfigToUI(cfg) {
+  _demoRunning        = cfg.demoMode;
+  _demoVehicleCount   = cfg.demoVehicles ?? 2;
+
+  document.getElementById('vcc-num').textContent    = _demoVehicleCount;
+  document.getElementById('cfg-route').value        = cfg.routeName       ?? '';
+  document.getElementById('cfg-timeout').value      = cfg.offlineTimeout  ?? 15;
+  document.getElementById('cfg-timeout-val').textContent = cfg.offlineTimeout ?? 15;
+  document.getElementById('cfg-announcement').value = cfg.announcement    ?? '';
+
+  const light  = document.getElementById('demo-light');
+  const title  = document.getElementById('demo-state-title');
+  const sub    = document.getElementById('demo-state-sub');
+  const badge  = document.getElementById('nav-mode-badge');
+  const statusSub = document.getElementById('demo-status-sub');
+
+  if (_demoRunning) {
+    light.classList.add('on');
+    title.textContent   = `Demo Mode เปิดอยู่ — ${_demoVehicleCount} คัน`;
+    sub.textContent     = 'รถจำลองกำลังวิ่งอยู่ ข้อมูล ESP8266 จริงถูกซ่อน';
+    badge.textContent   = 'DEMO';
+    badge.className     = 'nav-badge';
+    statusSub.textContent = `${_demoVehicleCount} คันกำลังวิ่ง`;
+  } else {
+    light.classList.remove('on');
+    title.textContent   = 'Demo Mode ปิดอยู่';
+    sub.textContent     = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
+    badge.textContent   = 'REAL';
+    badge.className     = 'nav-badge safe';
+    statusSub.textContent = 'ปิดอยู่';
+  }
+
+  renderAnnouncement(cfg.announcement);
+  refreshStatus();
+}
+
+// ── Demo Controls ─────────────────────────────────────────────
+function changeVehicleCount(d) {
+  _demoVehicleCount = Math.max(1, Math.min(8, _demoVehicleCount + d));
+  document.getElementById('vcc-num').textContent = _demoVehicleCount;
+}
+
+async function startDemo() {
+  addLog('info', `เริ่ม Demo Mode (${_demoVehicleCount} คัน)...`);
+  try {
+    const r = await fetch('/api/demo/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vehicles: _demoVehicleCount }),
+    }).then(r => r.json());
+    addLog('ok', `Demo started: ${r.ids?.join(', ')}`);
+    syncConfig();
+  } catch (e) { addLog('err', e.message); }
+}
+
+async function stopDemo() {
+  addLog('warn', 'หยุด Demo Mode...');
+  try {
+    await fetch('/api/demo/stop', { method: 'POST' });
+    addLog('ok', 'Demo stopped — กลับเป็นโหมด Real');
+    syncConfig();
+  } catch (e) { addLog('err', e.message); }
+}
+
+// ── Save Config ───────────────────────────────────────────────
+async function saveConfig() {
+  const cfg = {
+    routeName:      document.getElementById('cfg-route').value.trim(),
+    offlineTimeout: parseInt(document.getElementById('cfg-timeout').value),
+    announcement:   document.getElementById('cfg-announcement').value.trim(),
+  };
+  try {
+    await fetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    addLog('ok', `บันทึกค่า: ${JSON.stringify(cfg)}`);
+    showToast();
+    syncConfig();
+  } catch (e) { addLog('err', e.message); }
+}
+
+// ── Status ────────────────────────────────────────────────────
+async function refreshStatus() {
+  const row = document.getElementById('status-row');
+  try {
+    const [loc, demo] = await Promise.all([
+      fetch('/api/locations').then(r => r.json()),
+      fetch('/api/demo/status').then(r => r.json()),
+    ]);
+
+    const pills = [];
+    const realEntry = loc[REAL_VEHICLE_ID]?.current;
+    const realOnline = isVehicleOnline(realEntry);
+
+    pills.push(realOnline
+      ? `<span class="status-pill pill-online"><span class="pill-dot"></span>ESP8266 Online — ${realEntry?.speed ?? '?'} km/h</span>`
+      : `<span class="status-pill pill-offline"><span class="pill-dot"></span>ESP8266 Offline</span>`
+    );
+
+    if (demo.running) {
+      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Demo: ${demo.vehicles} คันวิ่งอยู่</span>`);
+    }
+
+    // demo vehicles
+    for (const id of (demo.ids || [])) {
+      const v = loc[id]?.current;
+      if (v) pills.push(`<span class="status-pill" style="background:#F5F3FF;color:#7C3AED;border:1px solid #DDD6FE;">
+        <span class="pill-dot"></span>${id} ${v.speed}km/h</span>`);
+    }
+
+    row.innerHTML = pills.join('') || `<span class="status-pill pill-offline"><span class="pill-dot"></span>ไม่มีข้อมูล</span>`;
+  } catch (e) {
+    row.innerHTML = `<span class="status-pill pill-offline"><span class="pill-dot"></span>ไม่สามารถเชื่อมต่อ server</span>`;
+  }
+}
+
+setInterval(refreshStatus, 5000);
+refreshStatus();
+
+// ── Action Log ────────────────────────────────────────────────
+function addLog(type, text) {
+  const log = document.getElementById('action-log');
+  const ts  = new Date().toLocaleTimeString('th-TH', { hour12:false });
+  const cls = type === 'ok' ? 'log-ok' : type === 'warn' ? 'log-warn' : type === 'err' ? 'log-err' : '';
+  const div = document.createElement('div');
+  div.className = 'log-line';
+  div.innerHTML = `<span class="log-ts">${ts}</span><span class="${cls}">${text}</span>`;
+  log.appendChild(div);
+  while (log.children.length > 50) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+
+// ── Toast ─────────────────────────────────────────────────────
+function showToast() {
+  const t = document.getElementById('save-toast');
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+</script>
+</body>
+</html>

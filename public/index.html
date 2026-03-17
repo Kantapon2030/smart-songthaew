@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
+  <title>สองแถวสมาร์ท — ติดตามสด</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <style>
+    :root{
+      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
+      --green:#059669;--green-50:#ECFDF5;
+      --amber:#D97706;--amber-50:#FFFBEB;
+      --red:#DC2626;--red-50:#FEF2F2;
+      --purple:#7C3AED;--purple-50:#F5F3FF;
+      --sl50:#F8FAFC;--sl100:#F1F5F9;--sl200:#E2E8F0;
+      --sl400:#94A3B8;--sl500:#64748B;--sl600:#475569;--sl800:#1E293B;
+      --sh-sm:0 1px 3px rgba(0,0,0,.08);--sh-md:0 4px 20px rgba(0,0,0,.12);
+      --sh-lg:0 8px 32px rgba(0,0,0,.14);
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100dvh;overflow:hidden;font-family:'Sarabun',sans-serif;}
+
+    #map{position:absolute;inset:0;z-index:1;}
+    .clean-icon{background:transparent!important;border:none!important;box-shadow:none!important;}
+
+    @keyframes ping  {0%{transform:scale(1);opacity:.5}70%{transform:scale(2);opacity:0}100%{opacity:0}}
+    @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+    @keyframes blink {0%,100%{opacity:1}50%{opacity:.2}}
+
+    /* ══════════════════════════════════════
+       TOP BAR — compact, single line
+    ══════════════════════════════════════ */
+    #topbar{
+      position:absolute;top:0;left:0;right:0;z-index:500;
+      height:46px;
+      background:rgba(255,255,255,.96);
+      backdrop-filter:blur(8px);
+      border-bottom:1px solid var(--sl200);
+      display:flex;align-items:center;
+      padding:0 12px;gap:8px;
+      box-shadow:var(--sh-sm);
+    }
+    .brand{display:flex;align-items:center;gap:7px;}
+    .brand-icon{width:28px;height:28px;border-radius:7px;background:var(--blue);color:white;
+      display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+    .brand-name{font-size:.8rem;font-weight:800;color:var(--sl800);}
+    .brand-count{font-size:.62rem;color:var(--sl400);}
+    .brand-count b{color:var(--blue);font-weight:700;}
+    .top-sep{flex:1;}
+
+    /* top bar chips */
+    .tb-chip{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:8px;
+      background:var(--sl100);border:1px solid var(--sl200);
+      font-size:.65rem;font-weight:600;color:var(--sl500);white-space:nowrap;}
+    .tb-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
+    .tb-chip.demo{background:var(--purple-50);border-color:#DDD6FE;color:var(--purple);}
+    .tb-chip.offline-chip{background:var(--red-50);border-color:#FECACA;color:var(--red);}
+    .tb-chip.demo .dot{background:var(--purple);}
+
+    /* top bar nav links */
+    .tb-link{text-decoration:none;padding:4px 10px;border-radius:8px;
+      background:var(--sl100);border:1px solid var(--sl200);
+      font-size:.65rem;font-weight:700;color:var(--sl600);transition:.12s;white-space:nowrap;}
+    .tb-link:hover{background:var(--sl200);}
+    .tb-link.dash{background:var(--blue-50);border-color:var(--blue-100);color:var(--blue);}
+    .tb-link.admin{background:var(--red-50);border-color:#FECACA;color:var(--red);}
+
+    /* ══════════════════════════════════════
+       LEFT PANEL — compact sidebar
+    ══════════════════════════════════════ */
+    #left-panel{
+      position:absolute;top:54px;left:10px;z-index:500;
+      display:flex;flex-direction:column;gap:8px;
+      width:200px;  /* แคบลงจาก 228px */
+    }
+
+    /* Direction section */
+    .panel-card{
+      background:rgba(255,255,255,.95);
+      backdrop-filter:blur(8px);
+      border:1px solid var(--sl200);
+      border-radius:12px;
+      padding:10px 12px;
+      box-shadow:var(--sh-sm);
+    }
+    .pc-label{font-size:.58rem;font-weight:700;color:var(--sl400);letter-spacing:.07em;
+      text-transform:uppercase;margin-bottom:7px;}
+    .dir-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
+    .dir-btn{display:flex;align-items:center;justify-content:center;gap:5px;
+      padding:7px 4px;border-radius:9px;border:1.5px solid transparent;cursor:pointer;
+      font-size:.7rem;font-weight:700;transition:all .15s;font-family:'Sarabun',sans-serif;}
+    .dir-btn.active{background:var(--blue);border-color:var(--blue);color:white;}
+    .dir-btn.inactive{background:var(--sl50);border-color:var(--sl200);color:var(--sl600);}
+    .dir-btn.inactive:hover{border-color:var(--blue);color:var(--blue);}
+
+    /* Location buttons */
+    .loc-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px;}
+    .loc-btn{display:flex;align-items:center;justify-content:center;gap:4px;
+      padding:6px 4px;border-radius:9px;border:1px solid var(--sl200);
+      background:var(--sl50);color:var(--sl600);font-family:'Sarabun',sans-serif;
+      font-size:.68rem;font-weight:700;cursor:pointer;transition:.12s;}
+    .loc-btn:hover{border-color:var(--blue);background:var(--blue-50);color:var(--blue);}
+    .loc-btn.active{background:var(--green-50);border-color:#A7F3D0;color:var(--green);}
+
+    /* ══════════════════════════════════════
+       BOTTOM INFO PANEL — desktop compact
+       Mobile: full width bottom sheet
+       Desktop: right-aligned narrow panel
+    ══════════════════════════════════════ */
+    #info-panel{
+      position:absolute;
+      bottom:10px;
+      right:10px;
+      z-index:500;
+      width:300px;  /* fixed width บน desktop */
+    }
+    .ip-inner{
+      background:rgba(255,255,255,.97);
+      backdrop-filter:blur(12px);
+      border:1px solid var(--sl200);
+      border-radius:16px;
+      padding:14px 15px 12px;
+      box-shadow:var(--sh-lg);
+    }
+
+    /* Header row */
+    .ip-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+    .ip-vid{font-size:.88rem;font-weight:800;color:var(--sl800);}
+    .ip-dir{font-size:.62rem;color:var(--sl400);}
+    .status-pill{display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:.6rem;font-weight:700;}
+    .status-pill.online{background:var(--green-50);border:1px solid #A7F3D0;color:var(--green);}
+    .status-pill.offline{background:var(--red-50);border:1px solid #FECACA;color:var(--red);}
+
+    /* Stats — 4 items in a row (เพิ่ม GPS fix) */
+    .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
+    .stat-b{background:var(--sl50);border:1px solid var(--sl200);border-radius:9px;
+      padding:7px 4px;text-align:center;}
+    .stat-ic{font-size:.95rem;margin-bottom:2px;}
+    .stat-v{font-family:'IBM Plex Mono',monospace;font-size:.92rem;font-weight:600;color:var(--amber);line-height:1;}
+    .stat-u{font-size:.52rem;color:var(--sl400);}
+    .stat-l{font-size:.55rem;color:var(--sl500);margin-top:1px;}
+    .mini-bar{height:3px;background:var(--sl200);border-radius:2px;overflow:hidden;margin-top:3px;}
+    .mini-fill{height:100%;border-radius:2px;transition:width .5s;}
+
+    /* ETA strip — compact */
+    .eta-strip{
+      display:flex;align-items:center;gap:8px;
+      background:var(--blue-50);border:1px solid var(--blue-100);
+      border-radius:10px;padding:9px 12px;margin-bottom:8px;
+    }
+    .eta-icon{font-size:1rem;flex-shrink:0;}
+    .eta-val{font-size:.95rem;font-weight:800;color:var(--blue);}
+    .eta-note{font-size:.58rem;color:var(--sl400);line-height:1.3;}
+    .eta-dist{font-size:.62rem;font-weight:700;color:var(--sl600);
+      background:white;border:1px solid var(--sl200);border-radius:5px;
+      padding:2px 7px;margin-left:auto;white-space:nowrap;flex-shrink:0;}
+
+    /* Footer */
+    .ip-footer{display:flex;align-items:center;justify-content:space-between;}
+    .ip-ts{font-family:'IBM Plex Mono',monospace;font-size:.57rem;color:var(--sl400);}
+
+    /* ── Offline banner ── */
+    #offline-banner{
+      display:none;position:absolute;
+      top:54px;left:50%;transform:translateX(-50%);
+      z-index:600;background:var(--red-50);border:1px solid #FECACA;
+      border-radius:10px;padding:7px 14px;
+      align-items:center;gap:7px;
+      font-size:.75rem;font-weight:700;color:var(--red);
+      box-shadow:0 4px 16px rgba(220,38,38,.15);white-space:nowrap;
+    }
+    #offline-banner.show{display:flex;animation:fadeIn .3s ease;}
+
+    /* ── Mobile responsive ── */
+    @media(max-width:640px){
+      #left-panel{width:calc(50% - 14px);}
+      #info-panel{right:0;left:0;bottom:0;width:auto;padding:0 10px 14px;}
+      .ip-inner{border-radius:18px 18px 12px 12px;}
+      .stats-row{grid-template-columns:repeat(4,1fr);}
+    }
+    @media(min-width:641px) and (max-width:900px){
+      #info-panel{width:280px;}
+    }
+
+    /* Leaflet overrides */
+    .leaflet-popup-content-wrapper{background:white!important;border-radius:12px!important;
+      box-shadow:var(--sh-lg)!important;font-family:'Sarabun',sans-serif!important;color:var(--sl800)!important;}
+    .leaflet-popup-tip{background:white!important;}
+    .leaflet-control-zoom a{background:white!important;color:var(--sl600)!important;
+      border-color:var(--sl200)!important;font-weight:700!important;}
+    .leaflet-control-zoom a:hover{color:var(--blue)!important;}
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- Offline banner -->
+<div id="offline-banner">📡 รถ Offline <span id="offline-secs"></span></div>
+
+<!-- ══ TOP BAR ══ -->
+<div id="topbar">
+  <div class="brand">
+    <div class="brand-icon">🚐</div>
+    <div>
+      <div class="brand-name">สองแถวสมาร์ท</div>
+      <div class="brand-count">ออนไลน์ <b id="total-active">0</b> คัน</div>
+    </div>
+  </div>
+
+  <div class="top-sep"></div>
+
+  <!-- Status chips -->
+  <div class="tb-chip" id="live-chip">
+    <span class="dot"></span> LIVE
+  </div>
+  <div class="tb-chip demo" id="demo-chip" style="display:none;">
+    🎬 Demo
+  </div>
+
+  <!-- Nav links -->
+  <a href="/dashboard.html" class="tb-link dash">📊 Dashboard</a>
+  <a href="/admin.html"     class="tb-link admin">⚙ Admin</a>
+</div>
+
+<!-- ══ LEFT PANEL ══ -->
+<div id="left-panel">
+
+  <!-- Direction -->
+  <div class="panel-card">
+    <div class="pc-label">🧭 ทิศทาง</div>
+    <div class="dir-row">
+      <button id="btn-dir-phromkhiri" class="dir-btn active" onclick="setDirection('พรหมคีรี')">
+        ⬆️ พรหมคีรี
+      </button>
+      <button id="btn-dir-nakhon" class="dir-btn inactive" onclick="setDirection('นครศรีธรรมราช')">
+        ⬇️ นครศรีฯ
+      </button>
+    </div>
+
+    <div class="pc-label" style="margin-top:9px;margin-bottom:0;">📍 ตำแหน่ง</div>
+    <div class="loc-row">
+      <button class="loc-btn" id="btn-gps" onclick="useMyLocation()">
+        🎯 ตำแหน่งฉัน
+      </button>
+      <button class="loc-btn" id="btn-pin" onclick="togglePinMode()">
+        📌 วางหมุด
+      </button>
+    </div>
+  </div>
+
+</div><!-- /#left-panel -->
+
+<!-- ══ BOTTOM INFO PANEL ══ -->
+<div id="info-panel">
+  <div class="ip-inner">
+
+    <!-- Header -->
+    <div class="ip-head">
+      <div>
+        <div class="ip-vid" id="card-vid">สองแถว</div>
+        <div class="ip-dir" id="card-dir">มุ่งหน้า: —</div>
+      </div>
+      <div class="status-pill online" id="status-pill">
+        <span>●</span><span id="status-tx">Online</span>
+      </div>
+    </div>
+
+    <!-- Stats: Speed / Battery / GPS Fix / Satellites -->
+    <div class="stats-row">
+      <div class="stat-b">
+        <div class="stat-ic">🚀</div>
+        <div class="stat-v"><span id="v-speed">--</span><span class="stat-u">km/h</span></div>
+        <div class="stat-l">ความเร็ว</div>
+      </div>
+      <div class="stat-b">
+        <div class="stat-ic">🔋</div>
+        <div class="stat-v"><span id="v-battery">--</span><span class="stat-u">%</span></div>
+        <div class="stat-l">แบต</div>
+        <div class="mini-bar"><div class="mini-fill" id="bat-bar" style="width:0%"></div></div>
+      </div>
+      <div class="stat-b" id="gps-fix-box">
+        <div class="stat-ic">📡</div>
+        <!-- สถานะ GPS fix แทนดาวเทียม (ESP8266 จำลองไม่ส่งค่า sats) -->
+        <div class="stat-v" id="v-gpsfix" style="font-size:.72rem;color:var(--green)">FIX</div>
+        <div class="stat-l">GPS Fix</div>
+      </div>
+      <div class="stat-b">
+        <div class="stat-ic">⚡</div>
+        <div class="stat-v"><span id="v-power">--</span><span class="stat-u">mA</span></div>
+        <div class="stat-l">กระแส</div>
+      </div>
+    </div>
+
+    <!-- ETA -->
+    <div class="eta-strip">
+      <div class="eta-icon">🕐</div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:.58rem;color:var(--sl400);">AI ประเมินเวลาถึงคุณ</div>
+        <div class="eta-val" id="eta-val">กำลังคำนวณ…</div>
+        <div class="eta-note" id="eta-note">อ้างอิงจากความเร็วและระยะทาง</div>
+      </div>
+      <div class="eta-dist" id="eta-dist">-- กม.</div>
+    </div>
+
+    <!-- Footer -->
+    <div class="ip-footer">
+      <div class="status-pill online" id="status-pill2">
+        <span>●</span><span id="status-tx2">Online</span>
+      </div>
+      <span class="ip-ts" id="last-ts">อัปเดต: --</span>
+    </div>
+
+  </div>
+</div><!-- /#info-panel -->
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="/js/shared.js"></script>
+<script src="/js/app.js"></script>
+</body>
+</html>
