@@ -17,7 +17,7 @@ L.polyline(ROUTE_COORDS, { color: '#2563EB', weight: 5, opacity: 0.5 }).addTo(ma
 map.setView(ROUTE_COORDS[3], 15);  // ซูมเข้า กลาง ถ.อังรีดูนัง
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let userLocation         = [8.463119, 99.864281];
+let userLocation         = [13.7407, 100.5350];  // ประตูจุฬาฯ (อังรีดูนัง)
 let userDesiredDirection = DIR_SOUTH;  // default ลงใต้ (แยก Rama IV)
 let realVehicleData      = null;
 let realVehicleMarker    = null;
