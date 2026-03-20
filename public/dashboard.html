@@ -393,11 +393,15 @@ function updateIoT(v) {
   const avgLat=latencies.length?Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length):0;
   document.getElementById('iot-lat').textContent=avgLat+' ms';
   if(v){
-    const hdop=v.hdop||(1+Math.random()*1.5);
-    const sats=v.sats||(6+Math.floor(Math.random()*6));
-    const hEl=document.getElementById('iot-hdop');
-    if(hEl){hEl.textContent=hdop.toFixed(1);hEl.style.color=hdop<2?'var(--green)':hdop<5?'var(--amber)':'var(--red)';}
-    document.getElementById('iot-sats').textContent=sats;
+    // ค่าจริงจาก Arduino — -1 = ไม่มี GPS fix
+    const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+    const hEl = document.getElementById('iot-hdop');
+    if(hEl){
+      if(hasFix){ hEl.textContent=v.hdop.toFixed(1); hEl.style.color=v.hdop<2?'var(--green)':v.hdop<5?'var(--amber)':'var(--red)'; }
+      else{ hEl.textContent='-1.0'; hEl.style.color='var(--sl400)'; }
+    }
+    const sEl = document.getElementById('iot-sats');
+    if(sEl) sEl.textContent = hasFix ? v.sats : '-1';
   }
 }
 
@@ -477,9 +481,8 @@ function renderTerminal(v, latency, isDemo) {
     addTermLine('tl-info',  '║   ESP8266 NodeMCU + GPS6MV2 (Neo-6M)     ║', ts);
     addTermLine('tl-info',  '╚══════════════════════════════════════════╝', ts);
     addTermLine('tl-ok',    '[BOOT] System initialized', ts);
-    addTermLine('tl-ok',    `[WIFI] Connected — IP: 192.168.1.38`, ts);
-    addTermLine('tl-ok',    `[FIREBASE] Connected — smart-songthaew-50aff`, ts);
-    addTermLine('tl-dim',   '──────────────────────────────────────────', ts);
+    addTermLine('tl-ok',  '[WIFI] Connected', ts);
+    addTermLine('tl-dim', '──────────────────────────────────────────', ts);
     termBooted = true;
   }
 
@@ -490,19 +493,29 @@ function renderTerminal(v, latency, isDemo) {
   }
   if(blink) blink.classList.remove('off');
 
-  const batV  = (3.0 + (v.battery/100)*0.6).toFixed(2);
-  const mA    = (v.speed||0)>0 ? 80+Math.floor(Math.random()*20) : 55+Math.floor(Math.random()*10);
-  const sats  = v.sats  || (6+Math.floor(Math.random()*6));
-  const hdop  = v.hdop  || (1+Math.random()*1.5);
-  const rssi  = -55 - Math.floor(Math.random()*25);
+  // ── ค่าจริงจาก Arduino เท่านั้น ไม่มี random ไม่มีการประมาณ ──
+  const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+  const sats   = hasFix ? String(v.sats)        : '-1';
+  const hdop   = hasFix ? v.hdop.toFixed(1)     : '-1.0';
+  const rssi   = (v.rssi != null)               ? v.rssi + 'dBm' : '--';
+  // แรงดัน: ใช้ battVoltage จาก ADC จริง (mV → V)
+  const batV   = (v.battVoltage != null && v.battVoltage > 0)
+    ? (v.battVoltage / 1000).toFixed(2) + 'V'
+    : '--';
+  // กระแส: ใช้ currentMa จาก Arduino จริง
+  const mA     = (v.currentMa != null && v.currentMa > 0)
+    ? Math.round(v.currentMa) + 'mA'
+    : '--';
   const prefix = isDemo ? '[DEMO]' : '[GPS] ';
+  const fixLine = hasFix ? 'tl-data' : 'tl-warn';
+  const fixTxt  = hasFix ? 'Fix OK' : 'No fix';
 
-  addTermLine('tl-data', `${prefix} Fix OK | Sats:${sats} | HDOP:${hdop.toFixed(1)} | RSSI:${rssi}dBm`, ts);
+  addTermLine(fixLine,    `${prefix} ${fixTxt} | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}`, ts);
   addTermLine('tl-highlight', `${prefix} lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}`, ts);
   addTermLine('tl-data', `${prefix} speed:${v.speed??0} km/h | dir:${v.direction||'?'} | route:${v.routeId||'?'}`, ts);
   addTermLine('tl-warn',
-    v.battery<20 ? `[BAT]  ⚠ LOW ${v.battery}% | ${batV}V | ${mA}mA — ชาร์จด่วน!`
-    : `[BAT]  ${v.battery}% | ${batV}V | ${mA}mA`,
+    v.battery<20 ? `[BAT] ⚠ LOW ${v.battery}% | ${batV} | ${mA} — ชาร์จด่วน!`
+    : `[BAT] ${v.battery}% | ${batV} | ${mA}`,
     ts
   );
   addTermLine(latency < 100 ? 'tl-ok' : latency < 300 ? 'tl-warn' : 'tl-err',
@@ -525,7 +538,7 @@ function updatePowerPanel(v) {
   const curr = v.currentMa   >= 0 ? v.currentMa   : null;
   const pw   = v.powerMw     >= 0 ? v.powerMw     : null;
   const tx   = v.txCount     >= 0 ? v.txCount      : null;
-  const sleep = v.sleepMode ?? 0;
+  // sleepMode ถูกลบออกแล้ว — ระบบ Always On
 
   const setTxt = (id, val, def='—') => { const e=document.getElementById(id); if(e) e.textContent=val!==null?Math.round(val):def; };
   setTxt('pw-volt', volt);
@@ -533,8 +546,8 @@ function updatePowerPanel(v) {
   setTxt('pw-watt', pw);
   setTxt('pw-tx',   tx);
 
-  // WiFi burst bar (random jitter จำลอง)
-  const wifiBurst = curr ? Math.max(0, curr - 117) : Math.floor(Math.random()*50);
+  // WiFi burst bar — ใช้ค่าจริงจาก currentMa เท่านั้น ไม่มี random
+  const wifiBurst = curr ? Math.max(0, curr - 117) : 0;
   const wifiBar = document.getElementById('pbar-wifi');
   const wifiLbl = document.getElementById('pbar-wifi-lbl');
   if(wifiBar) wifiBar.style.width = Math.min(100, wifiBurst/3*100/100) + '%';
@@ -547,17 +560,11 @@ function updatePowerPanel(v) {
   if(totalBar) totalBar.style.width = Math.min(100, total/300*100) + '%';
   if(totalLbl) totalLbl.textContent = Math.round(total) + ' mA';
 
-  // Sleep mode badge
+  // Always Active — ไม่มี sleep mode แล้ว
   const badge = document.getElementById('sleep-badge');
   const desc  = document.getElementById('sleep-desc');
-  const SLEEP_LABELS = [
-    { cls:'sleep-0', text:'● Active — Full Power', desc:'ส่งข้อมูลทุก 2 วินาที' },
-    { cls:'sleep-1', text:'◐ Modem Sleep',         desc:'WiFi ปิดระหว่างรอ — ส่งทุก 15 วินาที' },
-    { cls:'sleep-2', text:'○ Max Power Saving',    desc:'ส่งทุก 30 วินาที (จอดนาน > 5 นาที)' },
-  ];
-  const lbl = SLEEP_LABELS[Math.min(sleep, 2)];
-  if(badge){ badge.className='sleep-badge ' + lbl.cls; badge.textContent=lbl.text; }
-  if(desc) desc.textContent = lbl.desc;
+  if(badge){ badge.className='sleep-badge sleep-0'; badge.textContent='● Active — Always On'; }
+  if(desc) desc.textContent = 'ส่งข้อมูลทุก 2 วินาที ตลอดเวลา';
 }
 
 function switchChart(mode){
