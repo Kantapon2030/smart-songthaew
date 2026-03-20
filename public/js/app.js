@@ -173,13 +173,7 @@ function setGPSFix(online, speed){
   }
 }
 
-/** คำนวณค่ากระแส ESP8266 จาก speed/state */
-function estimateCurrent(speed, battery){
-  // ESP8266: idle ~15mA, active~80mA, WiFi Tx~170-250mA peak
-  // ค่าที่แสดง = ค่าเฉลี่ยในช่วง 2s นั้น
-  if(speed===0) return 55 + Math.floor(Math.random()*10); // จอด: GPS+WiFi idle
-  return 80 + Math.floor(Math.random()*20); // วิ่ง: GPS active
-}
+// [REMOVED] estimateCurrent() — แสดงค่าจริงจาก Arduino เท่านั้น (currentMa field)
 
 function setEl(id,text,color){const e=document.getElementById(id);if(!e)return;e.textContent=text;if(color)e.style.color=color;}
 
@@ -194,22 +188,31 @@ function updateInfoCard(v, isDemo){
   setEl('card-dir', `มุ่งหน้า: ${v.dynamicDirection||v.direction||'—'}`);
   setEl('v-speed', spd);
 
-  const bat=v.battery>=0?v.battery:null;
-  if(bat!==null){
-    setEl('v-battery',bat);
-    const bc=bat<20?'var(--red)':bat<50?'var(--amber)':'var(--green)';
-    document.getElementById('v-battery').style.color=bc;
-    const bar=document.getElementById('bat-bar');
-    if(bar){bar.style.width=bat+'%';bar.style.background=bc;}
+  // Battery % — ค่าจริงจาก Arduino เท่านั้น
+  const bat = (v.battery != null && v.battery >= 0) ? v.battery : null;
+  if(bat !== null){
+    setEl('v-battery', bat);
+    const bc = bat<20 ? 'var(--red)' : bat<50 ? 'var(--amber)' : 'var(--green)';
+    document.getElementById('v-battery').style.color = bc;
+    const bar = document.getElementById('bat-bar');
+    if(bar){ bar.style.width = bat+'%'; bar.style.background = bc; }
+  } else {
+    setEl('v-battery', '--');
+    document.getElementById('v-battery').style.color = 'var(--sl400)';
   }
 
-  // GPS Fix (ไม่แสดง sats เพราะ simulator ไม่ส่ง — แสดง Fix type แทน)
+  // GPS Fix — speed > 0 = 3D Fix, มี lat/lng ถูกต้อง = 2D Fix
   setGPSFix(true, spd);
 
-  // กระแสไฟ
-  const mA=estimateCurrent(spd, bat);
-  setEl('v-power', mA);
-  document.getElementById('v-power').style.color = mA > 150 ? 'var(--red)' : mA > 100 ? 'var(--amber)' : 'var(--blue)';
+  // กระแสไฟ — ใช้ค่าจริงจาก Arduino (currentMa) ไม่ประมาณ
+  const mA = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) : null;
+  if(mA !== null){
+    setEl('v-power', mA);
+    document.getElementById('v-power').style.color = mA > 150 ? 'var(--red)' : mA > 100 ? 'var(--amber)' : 'var(--blue)';
+  } else {
+    setEl('v-power', '--');
+    document.getElementById('v-power').style.color = 'var(--sl400)';
+  }
 
   // ETA
   setEl('eta-val', eta.isStopped?`~${eta.minutes} (จอด)`:String(eta.minutes||'—'));
