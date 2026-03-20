@@ -8,11 +8,12 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────
+// ถ.อังรีดูนัง
 const ROUTE_COORDS = [
-  [8.432450, 99.959129], [8.432796, 99.888032], [8.463119, 99.864281],
-  [8.508510, 99.827826], [8.522536, 99.825067],
+  [13.7451, 100.5358],[13.7428, 100.5356],[13.7407, 100.5350],
+  [13.7384, 100.5345],[13.7360, 100.5340],[13.7342, 100.5337],[13.7311, 100.5336],
 ];
-const ROUTE_NAMES = ['สนามกีฬาฯ นครศรีฯ','มรภ. นครศรีฯ','ท่าแพ','ก่อนพรหมคีรี','พรหมคีรี'];
+const ROUTE_NAMES = ['Siam Square','สาธิตปทุมวัน','ประตูจุฬาฯ','คณะสัตวแพทย์','รพ.จุฬา','สถานเสาวภา','แยก Rama IV'];
 const REAL_VEHICLE_ID = 'songthaew_01';
 const OFFLINE_TIMEOUT = 15_000;
 
@@ -77,7 +78,7 @@ function initMap() {
     }).addTo(adminMap);
   });
 
-  adminMap.fitBounds(L.latLngBounds(ROUTE_COORDS).pad(0.1));
+  adminMap.fitBounds(L.latLngBounds(ROUTE_COORDS).pad(0.12));
 }
 
 function fitAll() {
@@ -240,7 +241,7 @@ function updateDeviceHealth(v) {
       </div>
       <div class="dc-route">
         🗺 ${v.routeId && v.routeId !== 'unassigned' ? v.routeId : 'ไม่ระบุเส้นทาง'}
-        &nbsp;·&nbsp;${v.direction === 'พรหมคีรี' ? '⬆️' : v.direction === 'นครศรีธรรมราช' ? '⬇️' : ''}
+        &nbsp;·&nbsp;${v.direction === 'แยก Rama IV' ? '⬇️' : v.direction === 'Siam Square' ? '⬆️' : ''}
         ${v.direction || '—'}
       </div>
       <div style="font-size:.62rem;color:#94A3B8;margin-top:5px;">📍 ${v.lat?.toFixed(5) ?? '—'}, ${v.lng?.toFixed(5) ?? '—'}</div>
@@ -283,7 +284,7 @@ function appendSerialLog(v, latency) {
     // Boot messages
     addSerialLine(log, ts, 'serial-info', '=== Smart Songthaew Tracker v2 ===');
     addSerialLine(log, ts, 'serial-info', `[BOOT] vehicleId: ${REAL_VEHICLE_ID}`);
-    addSerialLine(log, ts, 'serial-info', '[BOOT] Route: นครศรีธรรมราช ↔ พรหมคีรี (20.1km)');
+    addSerialLine(log, ts, 'serial-info', '[BOOT] Route: Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง) (20.1km)');
     addSerialLine(log, ts, 'serial-ok',   '[WiFi] Connected! IP: 192.168.1.38');
     addSerialLine(log, ts, 'serial-ok',   '[GPS] Waiting for fix...');
   }

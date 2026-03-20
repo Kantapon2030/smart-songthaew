@@ -14,11 +14,11 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
 }).addTo(map);
 
 L.polyline(ROUTE_COORDS, { color: '#2563EB', weight: 5, opacity: 0.5 }).addTo(map);
-map.setView(ROUTE_COORDS[2], 12);
+map.setView(ROUTE_COORDS[3], 15);  // ซูมเข้า กลาง ถ.อังรีดูนัง
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let userLocation         = [8.463119, 99.864281];
-let userDesiredDirection = 'พรหมคีรี';
+let userDesiredDirection = DIR_SOUTH;  // default ลงใต้ (แยก Rama IV)
 let realVehicleData      = null;
 let realVehicleMarker    = null;
 let prevRealBearing      = 0;
@@ -81,8 +81,8 @@ function onConfigChanged(cfg){
 // ── Direction ─────────────────────────────────────────────────────────────────
 function setDirection(dir){
   userDesiredDirection=dir;
-  document.getElementById('btn-dir-phromkhiri').className=`dir-btn ${dir==='พรหมคีรี'?'active':'inactive'}`;
-  document.getElementById('btn-dir-nakhon').className=`dir-btn ${dir==='นครศรีธรรมราช'?'active':'inactive'}`;
+  document.getElementById('btn-dir-south').className=`dir-btn ${dir===DIR_SOUTH?'active':'inactive'}`;
+  document.getElementById('btn-dir-north').className=`dir-btn ${dir===DIR_NORTH?'active':'inactive'}`;
   analyzeAndHighlight();
 }
 
@@ -296,7 +296,7 @@ async function fetchVehicles(){
 // ── Analyze ───────────────────────────────────────────────────────────────────
 function analyzeAndHighlight(){
   const inDemoMode=window.SYS?.demoMode??false;
-  const dest=userDesiredDirection==='พรหมคีรี'?DEST_PHROMKHIRI:DEST_NAKHON;
+  const dest=userDesiredDirection===DIR_SOUTH?DEST_SOUTH:DEST_NORTH;
   const distUD=map.distance(userLocation,dest);
   let bestId=null,bestETA=Infinity,bestIsDemo=false;
 

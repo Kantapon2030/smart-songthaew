@@ -305,19 +305,15 @@ app.get('/api/analytics/peak-hours', async (req, res) => {
 // ============================================================
 //  GET /api/simulate
 //  ── DEV ONLY: inject mock GPS สำหรับทดสอบ ──
-//  เพิ่ม 2 vehicles วิ่งบนเส้นทาง พรหมคีรี ↔ นครศรีฯ
+//  Simulate vehicles บนถนนอังรีดูนัง
 // ============================================================
-const ROUTE_COORDS = [
-  [8.432450, 99.959129],
-  [8.432796, 99.888032],
-  [8.463119, 99.864281],
-  [8.508510, 99.827826],
-  [8.522536, 99.825067],
+const SIM_ROUTE = [
+  [13.7451, 100.5358],[13.7428, 100.5356],[13.7407, 100.5350],
+  [13.7384, 100.5345],[13.7360, 100.5340],[13.7342, 100.5337],[13.7311, 100.5336],
 ];
-
 const SIM_FLEET = {
-  'ST-01': { routeId: 'route_nakhon_main', step: 0, dir: 1 },
-  'ST-02': { routeId: 'route_nakhon_main', step: 2, dir: -1 },
+  'ST-01': { routeId: 'route_henri_dunant', step: 0, dir: 1 },
+  'ST-02': { routeId: 'route_henri_dunant', step: 3, dir: -1 },
 };
 
 app.get('/api/simulate', async (req, res) => {
@@ -330,17 +326,17 @@ app.get('/api/simulate', async (req, res) => {
   const results = {};
 
   for (const [vehicleId, state] of Object.entries(SIM_FLEET)) {
-    const idx  = Math.max(0, Math.min(ROUTE_COORDS.length - 1, state.step));
-    const pt   = ROUTE_COORDS[idx];
+    const idx  = Math.max(0, Math.min(SIM_ROUTE.length - 1, state.step));
+    const pt   = SIM_ROUTE[idx];
 
     const lat  = pt[0] + (Math.random() - 0.5) * 0.001;
     const lng  = pt[1] + (Math.random() - 0.5) * 0.001;
     const ts   = Date.now();
-    const dir  = state.dir > 0 ? 'พรหมคีรี' : 'นครศรีธรรมราช';
+    const dir  = state.dir > 0 ? DIR_SOUTH : DIR_NORTH;
 
     // advance step
     state.step += state.dir;
-    if (state.step >= ROUTE_COORDS.length) { state.step = ROUTE_COORDS.length - 2; state.dir = -1; }
+    if (state.step >= SIM_ROUTE.length) { state.step = SIM_ROUTE.length - 2; state.dir = -1; }
     if (state.step < 0)                    { state.step = 1;                        state.dir = 1;  }
 
     const data = {
@@ -348,7 +344,7 @@ app.get('/api/simulate', async (req, res) => {
       speed:     Math.round(15 + Math.random() * 35),
       battery:   Math.round(60 + Math.random() * 35),
       timestamp: ts,
-      routeId:   state.routeId,
+      routeId:   'route_henri_dunant',
       direction: dir,
     };
 
@@ -380,7 +376,7 @@ app.get('/api/config', async (req, res) => {
     return res.json({
       demoMode:       cfg.demoMode       ?? false,
       demoVehicles:   cfg.demoVehicles   ?? 2,
-      routeName:      cfg.routeName      ?? 'นครศรีธรรมราช ↔ พรหมคีรี',
+      routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
       offlineTimeout: cfg.offlineTimeout ?? 15,
       announcement:   cfg.announcement  ?? '',
       updatedAt:      cfg.updatedAt      ?? null,
@@ -403,185 +399,121 @@ app.post('/api/config', async (req, res) => {
 });
 
 // ============================================================
-//  DEMO VEHICLES — ใช้ waypoints จาก Firebase routes จริง
-//  POST /api/demo/start  { vehicles: N, routeId?: string }
+//  DEMO VEHICLES — server-side simulator ที่ Admin ควบคุม
+//  POST /api/demo/start  { vehicles: N }
 //  POST /api/demo/stop
 //  GET  /api/demo/status
 // ============================================================
-let _demoTimer   = null;
-const _demoState = {}; // { vehicleId: { lat,lng,routeId,routeWps,targetIdx,goForward,dir0,dir1,speed,targetSpeed,stopTicks,battery } }
+let _demoTimer    = null;
+let _demoVehicles = 2;
 
-// ── Fixed Route: ถนนอังรีดูนังต์ Rama I ↔ Rama IV ──────────────
-const FIXED_ROUTE = {
-  id:       'route_henri_dunant',
-  name:     'Siam ↔ Rama IV (ถ.อังรีดูนัง)',
-  waypoints: [
-    {lat:13.7451,lng:100.5358},  // 0: Siam Square / Rama I
-    {lat:13.7428,lng:100.5356},  // 1: ร.ร.สาธิตปทุมวัน
-    {lat:13.7407,lng:100.5350},  // 2: ประตูจุฬาฯ (อังรีดูนัง)
-    {lat:13.7384,lng:100.5345},  // 3: คณะสัตวแพทย์ จุฬาฯ
-    {lat:13.7360,lng:100.5340},  // 4: รพ.จุฬา / สภากาชาด
-    {lat:13.7342,lng:100.5337},  // 5: สถานเสาวภา
-    {lat:13.7311,lng:100.5336},  // 6: แยก Rama IV
-  ],
-};
+// ── ถนนอังรีดูนังต์ Rama I ↔ Rama IV (~1.6 km) ──────────────
+const DEMO_ROUTE = [
+  [13.7451, 100.5358],   // 0: Siam Square / Rama I
+  [13.7428, 100.5356],   // 1: ร.ร.สาธิตปทุมวัน
+  [13.7407, 100.5350],   // 2: ประตูจุฬาฯ (อังรีดูนัง)
+  [13.7384, 100.5345],   // 3: คณะสัตวแพทย์ จุฬาฯ
+  [13.7360, 100.5340],   // 4: รพ.จุฬา / สภากาชาด
+  [13.7342, 100.5337],   // 5: สถานเสาวภา
+  [13.7311, 100.5336],   // 6: แยก Rama IV
+];
+const DIR_NORTH = 'Siam Square';
+const DIR_SOUTH = 'แยก Rama IV';
+const _demoState = {}; // { id: { lat,lng,targetIdx,dir,speed,targetSpeed,stopTicks,battery } }
 
-function getRouteWaypoints(routeId) {
-  return Promise.resolve(FIXED_ROUTE.waypoints);
-}
-
-function getRouteMeta(routeId) {
-  return Promise.resolve(FIXED_ROUTE);
-}
-
-/** สร้าง vehicle บน route ที่กำหนด */
-async function initDemoVehicleOnRoute(vehicleId, routeId) {
-  const wps  = await getRouteWaypoints(routeId);
-  const meta = await getRouteMeta(routeId);
-
-  if (!wps || wps.length < 2) {
-    console.warn(`[DEMO] Route ${routeId} has < 2 waypoints, skipping`);
-    return false;
-  }
-
-  // กระจายรถตามตำแหน่งต่างๆ บน route
-  const existingCount = Object.values(_demoState).filter(v => v.routeId === routeId).length;
-  const si  = existingCount % (wps.length - 1);
-  const t   = 0.2 + Math.random() * 0.6;
-  const p0  = wps[si], p1 = wps[si + 1];
-  const nameParts = (meta.name || routeId).split('↔').map(s => s.trim());
-  const dir0 = nameParts[0] || 'ต้นทาง';
-  const dir1 = nameParts[1] || 'ปลายทาง';
-
-  _demoState[vehicleId] = {
-    routeId,
-    routeWps:    wps,             // [{ lat, lng }, ...]
-    targetIdx:   si + 1,
-    goForward:   si < Math.floor(wps.length / 2), // ครึ่งแรก = ไปปลาย, ครึ่งหลัง = กลับ
-    dir0, dir1,
-    lat:         p0.lat + (p1.lat - p0.lat) * t,
-    lng:         p0.lng + (p1.lng - p0.lng) * t,
+function initDemoVehicle(id, startIdx) {
+  const t = 0.3 + Math.random() * 0.4;
+  const p0 = DEMO_ROUTE[startIdx], p1 = DEMO_ROUTE[startIdx + 1];
+  _demoState[id] = {
+    lat:         p0[0] + (p1[0]-p0[0])*t,
+    lng:         p0[1] + (p1[1]-p0[1])*t,
+    targetIdx:   startIdx + 1,
+    dir:         startIdx < Math.floor(DEMO_ROUTE.length/2) ? DIR_SOUTH : DIR_NORTH,
     speed:       30, targetSpeed: 35, stopTicks: 0,
-    battery:     Math.floor(70 + Math.random() * 25),
+    battery:     Math.floor(70 + Math.random()*25),
   };
-  return true;
 }
 
 async function demoTick() {
-  const ids = Object.keys(_demoState);
+  const today = todayStr();
+  const hour  = new Date().getHours();
+  const ids   = Object.keys(_demoState);
   if (!ids.length) return;
 
   const updates = {};
   for (const id of ids) {
     const v = _demoState[id];
-    const wps = v.routeWps;
-    if (!wps || wps.length < 2) continue;
 
-    // ── Stop timer ──
     if (v.stopTicks > 0) {
       v.stopTicks--; v.speed = 0;
     } else {
-      // ── Random speed behaviour ──
       if (Math.random() < 0.05) {
         const r = Math.random();
-        if      (r < 0.15) { v.stopTicks = 5 + Math.floor(Math.random()*15); v.targetSpeed = 0; }
+        if (r < 0.15) { v.stopTicks = 5 + Math.floor(Math.random()*15); v.targetSpeed = 0; }
         else if (r < 0.35) v.targetSpeed = 15 + Math.floor(Math.random()*10);
-        else               v.targetSpeed = 30 + Math.floor(Math.random()*15);
+        else v.targetSpeed = 30 + Math.floor(Math.random()*15);
       }
-      if (v.speed < v.targetSpeed) v.speed = Math.min(v.speed + 3, v.targetSpeed);
-      else if (v.speed > v.targetSpeed) v.speed = Math.max(v.speed - 3, v.targetSpeed);
+      if (v.speed < v.targetSpeed) v.speed = Math.min(v.speed+3, v.targetSpeed);
+      else if (v.speed > v.targetSpeed) v.speed = Math.max(v.speed-3, v.targetSpeed);
 
-      // ── Move along route ──
       if (v.speed > 0) {
-        const tgt  = wps[v.targetIdx];
-        const dLat = tgt.lat - v.lat, dLng = tgt.lng - v.lng;
-        const dist = Math.sqrt(dLat*dLat + dLng*dLng);
-        const step = (v.speed / 3600) / 111 * 2;  // 2s tick
-
+        const tgt = DEMO_ROUTE[v.targetIdx];
+        const dLat = tgt[0]-v.lat, dLng = tgt[1]-v.lng;
+        const dist = Math.sqrt(dLat*dLat+dLng*dLng);
+        const step = (v.speed/3600)/111 * 2;
         if (dist <= step) {
-          // ถึง waypoint
-          v.lat = tgt.lat; v.lng = tgt.lng;
-          v.stopTicks   = 10 + Math.floor(Math.random() * 20);
-          v.speed       = 0;
-          v.targetSpeed = 30 + Math.floor(Math.random() * 15);
-
-          if (v.goForward) {
+          v.lat = tgt[0]; v.lng = tgt[1];
+          v.stopTicks = 10 + Math.floor(Math.random()*20); v.speed = 0;
+          if (v.dir === DIR_SOUTH) {
             v.targetIdx++;
-            if (v.targetIdx >= wps.length) {
-              v.targetIdx = wps.length - 2;
-              v.goForward = false;
-            }
+            if (v.targetIdx >= DEMO_ROUTE.length) { v.targetIdx = DEMO_ROUTE.length-2; v.dir = DIR_NORTH; }
           } else {
             v.targetIdx--;
-            if (v.targetIdx < 0) {
-              v.targetIdx = 1;
-              v.goForward = true;
-            }
+            if (v.targetIdx < 0) { v.targetIdx = 1; v.dir = DIR_SOUTH; }
           }
+          v.targetSpeed = 30 + Math.floor(Math.random()*15);
         } else {
-          v.lat += (dLat / dist) * step;
-          v.lng += (dLng / dist) * step;
+          v.lat += (dLat/dist)*step; v.lng += (dLng/dist)*step;
         }
       }
     }
-
     if (Math.random() < 0.02) v.battery--;
     if (v.battery < 10) v.battery = 92;
 
-    const direction = v.goForward ? v.dir1 : v.dir0;
     const ts = Date.now();
-    updates[`fleet/${id}/current`] = {
-      lat: v.lat, lng: v.lng,
-      speed: v.speed, battery: v.battery,
-      timestamp: ts,
-      routeId: v.routeId,
-      direction,
-    };
+    const data = { lat:v.lat, lng:v.lng, speed:v.speed, battery:v.battery,
+      timestamp:ts, routeId:'route_henri_dunant', direction:v.dir };
+
+    updates[`fleet/${id}/current`]                        = data;
+    updates[`history/${today}/${id}/${ts}`]               = data;
+    updates[`analytics/peak_hours/${today}/${id}/${hour}`] = admin.database.ServerValue.increment(1);
   }
-  if (Object.keys(updates).length) await db.ref().update(updates);
+  await db.ref().update(updates);
 }
 
 app.post('/api/demo/start', async (req, res) => {
-  const n       = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
-  const routeId = req.body.routeId || null; // ถ้าไม่ระบุ ใช้ route แรกที่มี
+  const n = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
+  _demoVehicles = n;
 
-  // หา route ที่จะใช้
-  let targetRouteId = routeId;
-  if (!targetRouteId) {
-    const routeSnap = await db.ref('routes').once('value');
-    const routes    = routeSnap.val() || {};
-    const ids       = Object.keys(routes);
-    targetRouteId   = ids[0] || null;
-  }
-
-  if (!targetRouteId) {
-    return res.status(400).json({ error: 'ไม่มีเส้นทางในระบบ กรุณาสร้างเส้นทางใน Admin ก่อน' });
-  }
-
-  // ล้าง state เดิม + ลบจาก Firebase
-  clearInterval(_demoTimer); _demoTimer = null;
-  const delUpdates = {};
-  Object.keys(_demoState).forEach(id => { delUpdates[`fleet/${id}`] = null; });
-  if (Object.keys(delUpdates).length) await db.ref().update(delUpdates);
+  // ล้าง state เดิม
   Object.keys(_demoState).forEach(k => delete _demoState[k]);
-
-  // สร้างรถใหม่บน route ที่เลือก
-  let created = 0;
   for (let i = 0; i < n; i++) {
-    const ok = await initDemoVehicleOnRoute(`DEMO_${i+1}`, targetRouteId);
-    if (ok) created++;
+    initDemoVehicle(`DEMO_${i+1}`, i % (DEMO_ROUTE.length-1));
   }
 
+  clearInterval(_demoTimer);
   _demoTimer = setInterval(demoTick, 2000);
 
-  await db.ref('system/config').update({ demoMode:true, demoVehicles:n, demoRouteId:targetRouteId, updatedAt:Date.now() });
-  console.log(`[DEMO] started ${created}/${n} vehicles on route: ${targetRouteId}`);
-  res.json({ ok:true, vehicles:created, routeId:targetRouteId, ids:Object.keys(_demoState) });
+  // บันทึก config
+  await db.ref('system/config').update({ demoMode:true, demoVehicles:n, updatedAt:Date.now() });
+  console.log(`[DEMO] started ${n} vehicles`);
+  res.json({ ok:true, vehicles:n, ids:Object.keys(_demoState) });
 });
 
 app.post('/api/demo/stop', async (req, res) => {
   clearInterval(_demoTimer); _demoTimer = null;
 
+  // ลบ marker demo ออกจาก Firebase
   const updates = {};
   Object.keys(_demoState).forEach(id => { updates[`fleet/${id}`] = null; });
   if (Object.keys(updates).length) await db.ref().update(updates);
@@ -601,13 +533,14 @@ app.get('/api/demo/status', (req, res) => {
 });
 
 
-
-// ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ──────────────────────────────
+// ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
+// [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
+// → frontend parse JSON ไม่ได้ → "Unexpected token '<'"
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ── Start ─────────────────────────────────────────────────────
+// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log('\n🚐  Smart Songthaew Tracker — Server Ready');
   console.log(`    User:       http://localhost:${PORT}/`);
