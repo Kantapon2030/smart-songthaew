@@ -266,22 +266,26 @@ function appendSerialLog(v, latency) {
   const now = new Date().toLocaleTimeString('th-TH', { hour12: false });
   const ts  = `${now}`;
 
-  // สร้าง log lines เหมือน Arduino IDE จริงๆ
-  // ── Serial log จากค่าจริงของ Arduino ── ไม่มี random ──
-  const sats = (v.sats != null && v.sats >= 0)  ? v.sats               : '--';
-  const hdop = (v.hdop != null && v.hdop >= 0)  ? v.hdop.toFixed(1)    : '--';
-  const rssi = (v.rssi != null)                  ? v.rssi + 'dBm'      : '--';
-  const mA   = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) + 'mA' : '--';
-  const volt = (v.battVoltage != null && v.battVoltage > 0) ? (v.battVoltage/1000).toFixed(2)+'V' : '--';
-  const ip   = '--'; // IP ไม่ได้รับจาก Arduino — ไม่แสดงค่าปลอม
+  // ── Serial log ตรงกับ Arduino Serial.printf() จริงทุก field ──
+  // hasFix = true เมื่อ sats > 0 AND hdop > 0 (Arduino ส่ง -1 เมื่อไม่มี fix)
+  const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+  const sats   = hasFix ? String(v.sats)             : '-1';
+  const hdop   = hasFix ? v.hdop.toFixed(1)          : '-1.0';
+  const rssi   = (v.rssi != null) ? v.rssi + 'dBm'   : '--';
+  const mA     = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) + 'mA' : '--';
+  const volt   = (v.battVoltage != null && v.battVoltage > 0) ? (v.battVoltage/1000).toFixed(2)+'V' : '--';
+
+  // บรรทัดแรก: Fix OK หรือ No fix — ตรงกับ Arduino Serial.printf จริง
+  const gpsStatusLine = hasFix
+    ? { cls: 'serial-ok',   text: `[GPS] Fix OK | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` }
+    : { cls: 'serial-warn', text: `[GPS] No fix | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` };
 
   const lines = [
-    { cls: 'serial-data', text: `[GPS] Fix OK | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` },
+    gpsStatusLine,
     { cls: 'serial-data', text: `[GPS] lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}` },
     { cls: 'serial-data', text: `[GPS] speed:${v.speed} km/h | dir:${v.direction || 'unknown'} | route:${v.routeId || 'unassigned'}` },
     { cls: 'serial-data', text: `[BAT] ${v.battery}% | ${volt} | ${mA}` },
-    { cls: v.speed > 0 ? 'serial-ok' : 'serial-warn',
-      text: `[HTTP] POST /api/update-location → 200 OK (${latency}ms)` },
+    { cls: 'serial-ok',   text: `[HTTP] POST /api/update-location → 200 OK (${latency}ms)` },
     { cls: 'serial-sep',  text: '─────────────────────────────────────────' },
   ];
 
@@ -482,31 +486,50 @@ function updateIoTStats(v, latency) {
 
   // RSSI, HDOP, Sats — ค่าจริงจาก Arduino เท่านั้น ไม่มี random
   if (v) {
-    // RSSI จาก WiFi.RSSI() จริง
+    // RSSI — ค่าจริงจาก WiFi.RSSI()
     if (v.rssi != null) {
       setEl('iot-rssi', v.rssi.toString());
       updateSignalBars(v.rssi);
     } else {
       setEl('iot-rssi', '--');
+      updateSignalBars(-99);
     }
-    // HDOP จาก GPS6MV2 จริง
+
+    // hasFix = true เมื่อ Arduino มี GPS fix จริง (sats > 0 && hdop > 0)
+    const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+
+    // HDOP — ค่าจริงจาก GPS6MV2 หรือ -1.0 ถ้าไม่มี fix
     const hdopEl = document.getElementById('iot-hdop');
     if (hdopEl) {
-      if (v.hdop != null && v.hdop >= 0) {
+      if (hasFix) {
         hdopEl.textContent = v.hdop.toFixed(1);
         hdopEl.style.color = v.hdop < 2 ? 'var(--green)' : v.hdop < 5 ? 'var(--amber)' : 'var(--red)';
       } else {
-        hdopEl.textContent = '--';
+        hdopEl.textContent = '-1.0';   // ตรงกับค่าที่ Arduino ส่งมาจริง
         hdopEl.style.color = 'var(--sl400)';
       }
     }
-    // Sats จาก GPS6MV2 จริง
-    setEl('iot-sats', (v.sats != null && v.sats >= 0) ? v.sats.toString() : '--');
+
+    // Sats — ค่าจริงจาก GPS6MV2 หรือ -1 ถ้าไม่มี fix
+    if (hasFix) {
+      setEl('iot-sats', v.sats.toString());
+    } else {
+      setEl('iot-sats', '-1');   // ตรงกับค่าที่ Arduino ส่งมาจริง
+    }
+
+    // GPS Fix status label
+    const fixEl = document.getElementById('iot-gpsfix');
+    if (fixEl) {
+      fixEl.textContent = hasFix ? 'Fix OK' : 'No fix';
+      fixEl.style.color = hasFix ? 'var(--green)' : 'var(--amber)';
+    }
   } else {
     setEl('iot-rssi', '--');
     setEl('iot-sats', '--');
     const hdopEl = document.getElementById('iot-hdop');
     if (hdopEl) { hdopEl.textContent = '--'; hdopEl.style.color = 'var(--sl400)'; }
+    const fixEl = document.getElementById('iot-gpsfix');
+    if (fixEl) { fixEl.textContent = '--'; fixEl.style.color = 'var(--sl400)'; }
   }
 }
 
