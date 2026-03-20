@@ -104,12 +104,16 @@ app.post('/api/update-location', async (req, res) => {
     battery     = -1,
     routeId     = 'unassigned',
     direction   = 'unknown',
-    // ── Power fields จาก Arduino (ใหม่) ──────────────
+    // ── Power fields จาก Arduino ──────────────────────
     battVoltage = -1,   // แรงดันแบต (mV) จาก ADC A0
-    currentMa   = -1,   // กระแสไฟ (mA) วัดจาก INA219/คำนวณ
+    currentMa   = -1,   // กระแสไฟ (mA)
     powerMw     = -1,   // กำลังไฟ (mW)
     sleepMode   = 0,    // 0=active, 1=light-sleep, 2=deep-sleep cycle
     txCount     = -1,   // จำนวน packet ที่ส่งตั้งแต่ boot
+    // ── GPS quality fields จาก Arduino (v6+) ─────────────
+    sats        = -1,   // จำนวนดาวเทียม (จาก GPS6MV2 จริง)
+    hdop        = -1,   // Horizontal Dilution of Precision (จาก GPS6MV2 จริง)
+    rssi        = null, // WiFi signal strength dBm (จาก WiFi.RSSI() จริง)
   } = req.body;
 
   if (!vehicleId) {
@@ -138,6 +142,9 @@ app.post('/api/update-location', async (req, res) => {
   const powF   = parseFloat(powerMw)     || (currF > 0 && batVF > 0 ? parseFloat((currF * batVF / 1000).toFixed(0)) : -1);
   const sleepI = parseInt(sleepMode, 10) || 0;
   const txI    = parseInt(txCount,   10) || -1;
+  const satsI  = parseInt(sats,      10) ?? -1;  // จำนวนดาวเทียมจริง
+  const hdopF  = parseFloat(hdop)        || -1;  // HDOP จริง
+  const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
 
   const data = {
     lat: latF, lng: lngF,
@@ -148,6 +155,9 @@ app.post('/api/update-location', async (req, res) => {
     powerMw:     powF,     // mW
     sleepMode:   sleepI,
     txCount:     txI,
+    sats:        satsI,   // จำนวนดาวเทียมจริงจาก GPS
+    hdop:        hdopF,   // HDOP จริงจาก GPS
+    rssi:        rssiI,   // WiFi RSSI dBm จริง
     timestamp:   ts,
     routeId:     routeId   || 'unassigned',
     direction:   direction || 'unknown',
@@ -175,7 +185,7 @@ app.post('/api/update-location', async (req, res) => {
 
     await db.ref().update(updates);
 
-    console.log(`[GPS] ${vehicleId} | ${latF},${lngF} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sleep:${sleepI} | ${direction}`);
+    console.log(`[GPS] ${vehicleId} | ${latF},${lngF} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | sleep:${sleepI} | ${direction}`);
 
     return res.status(200).json({ message: 'Location & Route updated successfully', timestamp: ts });
 

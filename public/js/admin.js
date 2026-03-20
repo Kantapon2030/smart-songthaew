@@ -46,7 +46,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadChart();
   setInterval(fetchData, 4000);
   setInterval(loadChart, 20_000);
-  setInterval(updatePowerSimulation, 3000);
+  // [REMOVED] setInterval(updatePowerSimulation, 3000) — ไม่ simulate power
 });
 
 // ════════════════════════════════════════════════════════════
@@ -124,6 +124,7 @@ async function fetchData() {
     updateDeviceHealth(v);
     updateMapMarker(v);
     updateIoTStats(v, latency);
+    updatePowerFromReal(v);  // [NEW] ใช้ค่าจริงจาก Arduino
     if (v) {
       appendSerialLog(v, latency);
       updateBatteryHistory(v.battery);
@@ -266,14 +267,21 @@ function appendSerialLog(v, latency) {
   const ts  = `${now}`;
 
   // สร้าง log lines เหมือน Arduino IDE จริงๆ
+  // ── Serial log จากค่าจริงของ Arduino ── ไม่มี random ──
+  const sats = (v.sats != null && v.sats >= 0)  ? v.sats               : '--';
+  const hdop = (v.hdop != null && v.hdop >= 0)  ? v.hdop.toFixed(1)    : '--';
+  const rssi = (v.rssi != null)                  ? v.rssi + 'dBm'      : '--';
+  const mA   = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) + 'mA' : '--';
+  const volt = (v.battVoltage != null && v.battVoltage > 0) ? (v.battVoltage/1000).toFixed(2)+'V' : '--';
+  const ip   = '--'; // IP ไม่ได้รับจาก Arduino — ไม่แสดงค่าปลอม
+
   const lines = [
-    { cls: 'serial-ok',   text: `[WiFi] Connected | IP: 192.168.1.38` },
-    { cls: 'serial-data', text: `[GPS] Fix OK | Sats:${v.sats || randomInt(6,12)} | HDOP:${(v.hdop || (1.0 + Math.random())).toFixed(1)}` },
-    { cls: 'serial-data', text: `[LOC] lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)} | spd:${v.speed}km/h` },
-    { cls: 'serial-data', text: `[BAT] ${v.battery}% | ${batToVolt(v.battery)}V | ${batToMa(v.speed)}mA` },
+    { cls: 'serial-data', text: `[GPS] Fix OK | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` },
+    { cls: 'serial-data', text: `[GPS] lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}` },
+    { cls: 'serial-data', text: `[GPS] speed:${v.speed} km/h | dir:${v.direction || 'unknown'} | route:${v.routeId || 'unassigned'}` },
+    { cls: 'serial-data', text: `[BAT] ${v.battery}% | ${volt} | ${mA}` },
     { cls: v.speed > 0 ? 'serial-ok' : 'serial-warn',
-      text: `[SEND] POST /api/update-location → HTTP 200 (${latency}ms)` },
-    { cls: 'serial-info', text: `[DIR] ${v.direction || 'unknown'} | routeId:${v.routeId || 'unassigned'}` },
+      text: `[HTTP] POST /api/update-location → 200 OK (${latency}ms)` },
     { cls: 'serial-sep',  text: '─────────────────────────────────────────' },
   ];
 
@@ -282,10 +290,10 @@ function appendSerialLog(v, latency) {
   if (placeholder && placeholder.textContent.includes('รอการเชื่อมต่อ')) {
     log.innerHTML = '';
     // Boot messages
-    addSerialLine(log, ts, 'serial-info', '=== Smart Songthaew Tracker v2 ===');
+    addSerialLine(log, ts, 'serial-info', '=== Smart Songthaew Tracker v6 ===');
     addSerialLine(log, ts, 'serial-info', `[BOOT] vehicleId: ${REAL_VEHICLE_ID}`);
-    addSerialLine(log, ts, 'serial-info', '[BOOT] Route: Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง) (20.1km)');
-    addSerialLine(log, ts, 'serial-ok',   '[WiFi] Connected! IP: 192.168.1.38');
+    addSerialLine(log, ts, 'serial-info', '[BOOT] Route: Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)');
+    addSerialLine(log, ts, 'serial-ok',   '[WiFi] Connecting...');
     addSerialLine(log, ts, 'serial-ok',   '[GPS] Waiting for fix...');
   }
 
@@ -340,13 +348,9 @@ function toggleAutoScroll() {
 //  POWER DASHBOARD
 // ════════════════════════════════════════════════════════════
 
-// ESP8266 power model
+// [REMOVED] batToMa(), randomInt() — ใช้ค่าจริง currentMa จาก Arduino แทน
+// batToVolt ยังคงไว้ใช้ใน buildPopup fallback
 function batToVolt(pct) { return (3.0 + (pct / 100) * 0.6).toFixed(2); }
-function batToMa(speed) {
-  // Active ~80mA + WiFi tx burst ~170mA = ~250mA peak
-  return speed > 0 ? 80 + randomInt(0, 20) : 55 + randomInt(0, 10);
-}
-function randomInt(min, max) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 
 function updateBatteryRing(pct) {
   const circ = 2 * Math.PI * 40; // r=40
@@ -362,42 +366,63 @@ function updateBatteryRing(pct) {
   num.textContent = pct;
   num.style.color = color;
 
-  // update voltage & power stats
-  setEl('pw-voltage', batToVolt(pct) + ' V');
+  // voltage อัปเดตจาก updatePowerFromReal(v) แล้ว — ไม่ประมาณที่นี่
 }
 
-function updatePowerSimulation() {
-  // Simulate WiFi TX burst every send cycle
-  const isTx = Math.random() > 0.5;
-  const wifiBar = document.getElementById('wifi-bar');
-  const wifiMa  = document.getElementById('wifi-ma');
-  if (wifiBar && wifiMa) {
-    if (isTx) {
-      const ma = randomInt(150, 250);
-      wifiBar.style.width = (ma / 300 * 100) + '%';
-      wifiMa.textContent  = ma + ' mA';
-    } else {
-      wifiBar.style.width = '0%';
-      wifiMa.textContent  = '0 mA';
-    }
+/**
+ * updatePowerFromReal(v) — อัปเดต Power Dashboard จากค่าจริงของ Arduino
+ * เรียกใน fetchData() แทน updatePowerSimulation()
+ * ไม่มี Math.random() ไม่มีการประมาณ
+ */
+function updatePowerFromReal(v) {
+  if (!v) {
+    setEl('pw-voltage', '--');
+    setEl('pw-current', '--');
+    setEl('pw-watt',    '--');
+    setEl('pw-solar',   'N/A');  // ไม่มีแผงโซลาร์ในระบบนี้
+    const wifiBar = document.getElementById('wifi-bar');
+    const wifiMa  = document.getElementById('wifi-ma');
+    if (wifiBar) wifiBar.style.width = '0%';
+    if (wifiMa)  wifiMa.textContent  = '-- mA';
+    return;
   }
 
-  // Solar input varies with "time of day"
-  const hour = new Date().getHours();
-  const solar = hour >= 8 && hour <= 17
-    ? (0.5 + Math.random() * 0.5).toFixed(2)
-    : '0.00';
+  // แรงดัน (mV → V) จาก ADC จริง
+  if (v.battVoltage != null && v.battVoltage > 0) {
+    setEl('pw-voltage', (v.battVoltage / 1000).toFixed(2) + ' V');
+  } else {
+    setEl('pw-voltage', '--');
+  }
+
+  // กระแสไฟ (mA) จาก datasheet จริงตาม sleep mode ที่ Arduino คำนวณ
+  if (v.currentMa != null && v.currentMa > 0) {
+    const mA = Math.round(v.currentMa);
+    setEl('pw-current', mA + ' mA');
+    const watt = v.powerMw != null && v.powerMw > 0
+      ? (v.powerMw / 1000).toFixed(2)
+      : (mA * (v.battVoltage || 3700) / 1000 / 1000).toFixed(2);
+    setEl('pw-watt', watt + ' W');
+
+    // WiFi bar — แสดง currentMa (ค่ารวมระบบ ไม่ใช่แค่ WiFi)
+    const wifiBar = document.getElementById('wifi-bar');
+    const wifiMa  = document.getElementById('wifi-ma');
+    if (wifiBar) wifiBar.style.width = Math.min(100, mA / 250 * 100) + '%';
+    if (wifiMa)  wifiMa.textContent  = mA + ' mA';
+  } else {
+    setEl('pw-current', '--');
+    setEl('pw-watt',    '--');
+  }
+
+  // Solar — ระบบนี้ไม่มีแผงโซลาร์ Arduino ไม่ได้ส่งค่า
+  setEl('pw-solar', 'N/A');
   const solarBar = document.getElementById('solar-bar');
   const solarMa  = document.getElementById('solar-ma');
-  if (solarBar) solarBar.style.width = (parseFloat(solar) / 1.0 * 100) + '%';
-  if (solarMa)  solarMa.textContent  = solar + ' W';
-  setEl('pw-solar', solar + ' W');
-
-  // Current draw
-  const mA = isTx ? randomInt(200, 260) : randomInt(70, 100);
-  setEl('pw-current', mA + ' mA');
-  setEl('pw-watt', (mA * 3.3 / 1000).toFixed(2) + ' W');
+  if (solarBar) solarBar.style.width = '0%';
+  if (solarMa)  solarMa.textContent  = 'N/A';
 }
+
+// [REMOVED] updatePowerSimulation() — ลบออกเพราะใช้ Math.random() ทั้งหมด
+// ใช้ updatePowerFromReal(v) แทน ซึ่งเรียกใน fetchData()
 
 // Battery history mini chart
 function initBatteryChart() {
@@ -455,21 +480,33 @@ function updateIoTStats(v, latency) {
   setEl('iot-lat', avgLat + ' ms');
   setEl('iot-http', '200');
 
-  // Simulated RSSI (-50 to -80 dBm range)
-  const rssi = -55 - randomInt(0, 25);
-  setEl('iot-rssi', rssi.toString());
-  updateSignalBars(rssi);
-
+  // RSSI, HDOP, Sats — ค่าจริงจาก Arduino เท่านั้น ไม่มี random
   if (v) {
-    // Simulate HDOP and satellites
-    const hdop = v.hdop || (1.0 + Math.random() * 1.5);
-    const sats = v.sats || randomInt(6, 12);
+    // RSSI จาก WiFi.RSSI() จริง
+    if (v.rssi != null) {
+      setEl('iot-rssi', v.rssi.toString());
+      updateSignalBars(v.rssi);
+    } else {
+      setEl('iot-rssi', '--');
+    }
+    // HDOP จาก GPS6MV2 จริง
     const hdopEl = document.getElementById('iot-hdop');
     if (hdopEl) {
-      hdopEl.textContent = hdop.toFixed(1);
-      hdopEl.style.color = hdop < 2 ? 'var(--green)' : hdop < 5 ? 'var(--amber)' : 'var(--red)';
+      if (v.hdop != null && v.hdop >= 0) {
+        hdopEl.textContent = v.hdop.toFixed(1);
+        hdopEl.style.color = v.hdop < 2 ? 'var(--green)' : v.hdop < 5 ? 'var(--amber)' : 'var(--red)';
+      } else {
+        hdopEl.textContent = '--';
+        hdopEl.style.color = 'var(--sl400)';
+      }
     }
-    setEl('iot-sats', sats.toString());
+    // Sats จาก GPS6MV2 จริง
+    setEl('iot-sats', (v.sats != null && v.sats >= 0) ? v.sats.toString() : '--');
+  } else {
+    setEl('iot-rssi', '--');
+    setEl('iot-sats', '--');
+    const hdopEl = document.getElementById('iot-hdop');
+    if (hdopEl) { hdopEl.textContent = '--'; hdopEl.style.color = 'var(--sl400)'; }
   }
 }
 
