@@ -1,558 +1,688 @@
 /**
- * ============================================================
- *  server.js — Smart Songthaew Tracker (Improved v2)
- *  Node.js + Express + Firebase Admin SDK
- * ============================================================
- *
- *  BUG FIXES จากโค้ดเดิม:
- *  - [FIX] ลบ POST /api/update-location ซ้ำ (route ที่ 2 ถูก ignore)
- *  - [FIX] เพิ่ม GET /api/locations ที่ frontend เรียกใช้จริง
- *  - [FIX] แก้ todayStr() ให้ใช้ timezone Asia/Bangkok
- *
- *  IMPROVEMENTS:
- *  - รวม fields ทั้งสอง route เข้าด้วยกัน (vehicleId, routeId, direction, speed, battery)
- *  - เพิ่ม GET /api/analytics/peak-hours สำหรับ Admin chart
- *  - เพิ่ม GET /api/analytics/speed-by-hour สำหรับ Admin Speed chart
- *  - เพิ่ม GET /api/simulate สำหรับ dev test
- *  - Validation GPS coordinates
- *
- *  Firebase DB Structure:
- *    fleet/{vehicleId}/current         ← live position (overwrite)
- *    history/{date}/{vehicleId}/{ts}   ← time-series log
- *    routes_active/{date}/{routeId}/{vehicleId}
- *    analytics/peak_hours/{date}/{vehicleId}/{hour}
- * ============================================================
+ * admin.js — Fleet Admin Dashboard (v5)
+ * [NEW] Serial Monitor — จำลอง log จาก ESP8266
+ * [NEW] Power Dashboard — battery ring, solar, current draw
+ * [NEW] IoT Stats — packets, latency, HDOP, satellites, RSSI
+ * [NEW] Demo Mode — simulator auto-run พร้อม overlay
  */
-
 'use strict';
 
-require('dotenv').config();
-
-const express = require('express');
-const cors    = require('cors');
-const admin   = require('firebase-admin');
-const path    = require('path');
-
-// ── Firebase Init ─────────────────────────────────────────────────────────────
-// [DEPLOY] อ่าน credentials จาก Environment Variable (Railway/Vercel)
-// local dev: fallback อ่านจากไฟล์ firebase-service-account.json
-let serviceAccount;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-  try {
-    serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    console.log('[Firebase] Using credentials from ENV');
-  } catch (e) {
-    console.error('[Firebase] ERROR: FIREBASE_SERVICE_ACCOUNT is not valid JSON');
-    process.exit(1);
-  }
-} else {
-  try {
-    serviceAccount = require('./firebase-service-account.json');
-    console.log('[Firebase] Using credentials from file (local dev)');
-  } catch (e) {
-    console.error('[Firebase] ERROR: No credentials found.');
-    console.error('  - Set FIREBASE_SERVICE_ACCOUNT env var (production)');
-    console.error('  - Or place firebase-service-account.json in project root (local)');
-    process.exit(1);
-  }
-}
-
-admin.initializeApp({
-  credential:  admin.credential.cert(serviceAccount),
-  databaseURL: 'https://smart-songthaew-50aff-default-rtdb.asia-southeast1.firebasedatabase.app',
-});
-
-const db = admin.database();
-
-// ── Express ───────────────────────────────────────────────────────────────────
-const app  = express();
-const PORT = process.env.PORT || 3000;
-
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-/** วันที่ปัจจุบัน (timezone Bangkok) → "2026-03-16" */
-function todayStr() {
-  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
-}
-
-/** ตรวจ GPS bound (Thailand) */
-function validLatLng(lat, lng) {
-  return (
-    typeof lat === 'number' && typeof lng === 'number' &&
-    !isNaN(lat) && !isNaN(lng) &&
-    lat >= 5.5 && lat <= 20.5 &&
-    lng >= 97.5 && lng <= 105.7
-  );
-}
-
-// ============================================================
-//  POST /api/update-location
-//  ── รับข้อมูล GPS จาก ESP8266 ──
-//  [FIX] รวม 2 duplicate route เป็น 1 เดียว
-//
-//  Body: { vehicleId, lat, lng, speed?, battery?, routeId?, direction? }
-// ============================================================
-app.post('/api/update-location', async (req, res) => {
-  const {
-    vehicleId,
-    lat,
-    lng,
-    speed       = 0,
-    battery     = -1,
-    routeId     = 'unassigned',
-    direction   = 'unknown',
-    // ── Power fields จาก Arduino ──────────────────────
-    battVoltage = -1,   // แรงดันแบต (mV) จาก ADC A0
-    currentMa   = -1,   // กระแสไฟ (mA)
-    powerMw     = -1,   // กำลังไฟ (mW)
-    txCount     = -1,   // จำนวน packet ที่ส่งตั้งแต่ boot
-    // ── GPS quality fields จาก Arduino (v6+) ─────────────
-    sats        = -1,   // จำนวนดาวเทียม (จาก GPS6MV2 จริง)
-    hdop        = -1,   // Horizontal Dilution of Precision (จาก GPS6MV2 จริง)
-    rssi        = null, // WiFi signal strength dBm (จาก WiFi.RSSI() จริง)
-  } = req.body;
-
-  if (!vehicleId) {
-    return res.status(400).json({ error: 'vehicleId is required' });
-  }
-
-  const latF = parseFloat(lat);
-  const lngF = parseFloat(lng);
-
-  if (!validLatLng(latF, lngF)) {
-    return res.status(400).json({
-      error: 'lat/lng missing or outside Thailand bounds',
-      hint:  'lat: 5.5–20.5, lng: 97.5–105.7',
-    });
-  }
-
-  const spdF  = parseFloat(speed)  || 0;
-  const batI  = parseInt(battery, 10) ?? -1;
-  const ts    = Date.now();
-  const today = todayStr();
-  const hour  = new Date().getHours();
-
-  // Power fields
-  const batVF  = parseFloat(battVoltage) || -1;
-  const currF  = parseFloat(currentMa)   || -1;
-  const powF   = parseFloat(powerMw)     || (currF > 0 && batVF > 0 ? parseFloat((currF * batVF / 1000).toFixed(0)) : -1);
-  const txI    = parseInt(txCount,   10) || -1;
-  const satsI  = parseInt(sats,      10) ?? -1;  // จำนวนดาวเทียมจริง
-  const hdopF  = parseFloat(hdop)        || -1;  // HDOP จริง
-  const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
-
-  const data = {
-    lat: latF, lng: lngF,
-    speed:       parseFloat(spdF.toFixed(1)),
-    battery:     batI,
-    battVoltage: batVF,    // mV
-    currentMa:   currF,    // mA
-    powerMw:     powF,     // mW
-    txCount:     txI,
-    sats:        satsI,   // จำนวนดาวเทียมจริงจาก GPS
-    hdop:        hdopF,   // HDOP จริงจาก GPS
-    rssi:        rssiI,   // WiFi RSSI dBm จริง
-    timestamp:   ts,
-    routeId:     routeId   || 'unassigned',
-    direction:   direction || 'unknown',
-  };
-
-  try {
-    const updates = {};
-
-    // 1. Live current position (overwrite)
-    updates[`fleet/${vehicleId}/current`] = data;
-
-    // 2. History แยกตามวัน (key = timestamp ms)
-    updates[`history/${today}/${vehicleId}/${ts}`] = data;
-
-    // 3. Routes active
-    if (routeId && routeId !== 'unassigned') {
-      updates[`routes_active/${today}/${routeId}/${vehicleId}`] = {
-        lastActive: ts, lat: latF, lng: lngF,
-      };
-    }
-
-    // 4. Peak-hours counter (atomic increment)
-    updates[`analytics/peak_hours/${today}/${vehicleId}/${hour}`] =
-      admin.database.ServerValue.increment(1);
-
-    await db.ref().update(updates);
-
-    console.log(`[GPS] ${vehicleId} | ${latF},${lngF} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${direction}`);
-
-    return res.status(200).json({ message: 'Location & Route updated successfully', timestamp: ts });
-
-  } catch (err) {
-    console.error('[POST /api/update-location]', err);
-    return res.status(500).json({ error: 'Database error', details: err.message });
-  }
-});
-
-// ============================================================
-//  GET /api/locations
-//  [FIX] Endpoint ที่ frontend (app.js, admin.js) เรียกจริง
-//  ── ดึงตำแหน่งปัจจุบันของรถทุกคัน พร้อม history structure ──
-//  Response: { "ST-01": { current: {...} }, "ST-02": { current: {...} } }
-// ============================================================
-app.get('/api/locations', async (req, res) => {
-  try {
-    const snap = await db.ref('fleet').once('value');
-    const raw  = snap.val() || {};
-
-    // ส่งโครงสร้าง { vehicleId: { current: {...} } } ตามที่ frontend expect
-    const result = {};
-    for (const [id, val] of Object.entries(raw)) {
-      if (val?.current) {
-        result[id] = { current: val.current };
-      }
-    }
-
-    return res.status(200).json(result);
-  } catch (err) {
-    console.error('[GET /api/locations]', err);
-    return res.status(500).json({ error: 'Failed to fetch locations' });
-  }
-});
-
-// ============================================================
-//  GET /api/analytics/today
-//  ── raw history ของวันนี้ (เหมือนโค้ดเดิม) ──
-// ============================================================
-app.get('/api/analytics/today', async (req, res) => {
-  const today = todayStr();
-  try {
-    const snap = await db.ref(`history/${today}`).once('value');
-    return res.status(200).json(snap.val() || {});
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch analytics' });
-  }
-});
-
-// ============================================================
-//  GET /api/analytics/speed-by-hour
-//  ── ค่าเฉลี่ยความเร็วแยกตามชั่วโมง สำหรับ Admin Chart ──
-//  Query: ?date=YYYY-MM-DD
-//  Response: { labels: ["00:00",...], data: [45, 30, ...] }
-// ============================================================
-app.get('/api/analytics/speed-by-hour', async (req, res) => {
-  const date = req.query.date || todayStr();
-  try {
-    const snap    = await db.ref(`history/${date}`).once('value');
-    const histRaw = snap.val() || {};
-
-    // ตาราง { hour: [speed, speed, ...] }
-    const speedsByHour = {};
-    for (let h = 0; h < 24; h++) speedsByHour[h] = [];
-
-    for (const vehicleHistory of Object.values(histRaw)) {
-      for (const rec of Object.values(vehicleHistory)) {
-        if (rec?.timestamp && typeof rec.speed === 'number') {
-          const h = new Date(rec.timestamp).getHours();
-          speedsByHour[h].push(rec.speed);
-        }
-      }
-    }
-
-    // คำนวณ average
-    const labels = [];
-    const data   = [];
-    for (let h = 0; h < 24; h++) {
-      const arr = speedsByHour[h];
-      labels.push(`${String(h).padStart(2,'0')}:00`);
-      data.push(arr.length > 0 ? Math.round(arr.reduce((a,b) => a+b, 0) / arr.length) : 0);
-    }
-
-    return res.status(200).json({ labels, data });
-  } catch (err) {
-    console.error('[GET /api/analytics/speed-by-hour]', err);
-    return res.status(500).json({ error: 'Failed to compute speed analytics' });
-  }
-});
-
-// ============================================================
-//  GET /api/analytics/peak-hours
-//  ── นับจำนวน GPS events ต่อชั่วโมง สำหรับ peak chart ──
-// ============================================================
-app.get('/api/analytics/peak-hours', async (req, res) => {
-  const date = req.query.date || todayStr();
-  try {
-    const snap = await db.ref(`analytics/peak_hours/${date}`).once('value');
-    const raw  = snap.val() || {};
-
-    const totals = {};
-    for (let h = 0; h < 24; h++) totals[h] = 0;
-
-    for (const vehicleHours of Object.values(raw)) {
-      for (const [hour, count] of Object.entries(vehicleHours)) {
-        totals[parseInt(hour, 10)] += count;
-      }
-    }
-
-    // Fallback: คำนวณจาก history ถ้า analytics ยังว่าง
-    if (Object.values(totals).reduce((a,b) => a+b, 0) === 0) {
-      const histSnap = await db.ref(`history/${date}`).once('value');
-      const histRaw  = histSnap.val() || {};
-      for (const vhist of Object.values(histRaw)) {
-        for (const rec of Object.values(vhist)) {
-          if (rec?.timestamp) totals[new Date(rec.timestamp).getHours()]++;
-        }
-      }
-    }
-
-    return res.status(200).json(totals);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to compute peak hours' });
-  }
-});
-
-// ============================================================
-//  GET /api/simulate
-//  ── DEV ONLY: inject mock GPS สำหรับทดสอบ ──
-//  Simulate vehicles บนถนนอังรีดูนัง
-// ============================================================
-const SIM_ROUTE = [
+// ─────────────────────────────────────────────────────────────
+// ถ.อังรีดูนัง
+const ROUTE_COORDS = [
   [13.7451, 100.5358],[13.7428, 100.5356],[13.7407, 100.5350],
   [13.7384, 100.5345],[13.7360, 100.5340],[13.7342, 100.5337],[13.7311, 100.5336],
 ];
-const SIM_FLEET = {
-  'ST-01': { routeId: 'route_henri_dunant', step: 0, dir: 1 },
-  'ST-02': { routeId: 'route_henri_dunant', step: 3, dir: -1 },
-};
+const ROUTE_NAMES = ['Siam Square','สาธิตปทุมวัน','ประตูจุฬาฯ','คณะสัตวแพทย์','รพ.จุฬา','สถานเสาวภา','แยก Rama IV'];
+const REAL_VEHICLE_ID = 'songthaew_01';
+const OFFLINE_TIMEOUT = 30_000;  // 30s — Arduino ส่งทุก 2s เผื่อ network latency
 
-app.get('/api/simulate', async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: 'Disabled in production' });
-  }
+// ─── State ────────────────────────────────────────────────────
+let adminMap     = null;
+let marker       = null;
+let chartObj     = null;
+let batChart     = null;
+let chartMode    = 'speed';
+let demoMode     = false;
+let demoInterval = null;
+let uptimeStart  = Date.now();
 
-  const today = todayStr();
-  const hour  = new Date().getHours();
-  const results = {};
+// IoT Stats counters
+let pktTotal   = 0;
+let pktSuccess = 0;
+let latencies  = [];  // rolling 10
+let batHistory = [];  // rolling 20
 
-  for (const [vehicleId, state] of Object.entries(SIM_FLEET)) {
-    const idx  = Math.max(0, Math.min(SIM_ROUTE.length - 1, state.step));
-    const pt   = SIM_ROUTE[idx];
+// Serial auto-scroll
+let autoScroll = true;
 
-    const lat  = pt[0] + (Math.random() - 0.5) * 0.001;
-    const lng  = pt[1] + (Math.random() - 0.5) * 0.001;
-    const ts   = Date.now();
-    const dir  = state.dir > 0 ? DIR_SOUTH : DIR_NORTH;
-
-    // advance step
-    state.step += state.dir;
-    if (state.step >= SIM_ROUTE.length) { state.step = SIM_ROUTE.length - 2; state.dir = -1; }
-    if (state.step < 0)                    { state.step = 1;                        state.dir = 1;  }
-
-    const data = {
-      lat, lng,
-      speed:     Math.round(15 + Math.random() * 35),
-      battery:   Math.round(60 + Math.random() * 35),
-      timestamp: ts,
-      routeId:   'route_henri_dunant',
-      direction: dir,
-    };
-
-    const updates = {};
-    updates[`fleet/${vehicleId}/current`]                              = data;
-    updates[`history/${today}/${vehicleId}/${ts}`]                     = data;
-    updates[`routes_active/${today}/${state.routeId}/${vehicleId}`]    = { lastActive: ts, lat, lng };
-    updates[`analytics/peak_hours/${today}/${vehicleId}/${hour}`]      = admin.database.ServerValue.increment(1);
-    await db.ref().update(updates);
-
-    results[vehicleId] = data;
-  }
-
-  console.log('[SIM] Injected:', Object.keys(results).join(', '));
-  return res.status(200).json({ success: true, data: results });
+// ─── Boot ─────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  initMap();
+  initBatteryChart();
+  startClock();
+  startUptimeCounter();
+  fetchData();
+  loadChart();
+  setInterval(fetchData, 4000);
+  setInterval(loadChart, 20_000);
+  // [REMOVED] setInterval(updatePowerSimulation, 3000) — ไม่ simulate power
 });
 
-// ============================================================
-//  CENTRAL CONFIG — Admin controls สิ่งที่ทุกหน้าต้องรู้
-//  GET  /api/config          ← ทุกหน้าอ่าน
-//  POST /api/config          ← Admin เขียน
-//  Firebase: system/config
-// ============================================================
-app.get('/api/config', async (req, res) => {
-  try {
-    const snap = await db.ref('system/config').once('value');
-    const cfg  = snap.val() || {};
-    // defaults
-    return res.json({
-      demoMode:       cfg.demoMode       ?? false,
-      demoVehicles:   cfg.demoVehicles   ?? 2,
-      routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
-      offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 30) ? cfg.offlineTimeout : 30,
-      announcement:   cfg.announcement  ?? '',
-      updatedAt:      cfg.updatedAt      ?? null,
-    });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+// ════════════════════════════════════════════════════════════
+//  MAP
+// ════════════════════════════════════════════════════════════
+function initMap() {
+  const el = document.getElementById('admin-map');
+  if (!el) return;
+  adminMap = L.map('admin-map', { zoomControl: false });
+  L.control.zoom({ position: 'bottomright' }).addTo(adminMap);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap', maxZoom: 19,
+  }).addTo(adminMap);
 
-app.post('/api/config', async (req, res) => {
-  try {
-    const allowed = ['demoMode','demoVehicles','routeName','offlineTimeout','announcement'];
-    const patch   = {};
-    for (const k of allowed) {
-      if (k in req.body) patch[k] = req.body[k];
-    }
-    patch.updatedAt = Date.now();
-    await db.ref('system/config').update(patch);
-    console.log('[CONFIG]', patch);
-    return res.json({ ok: true, config: patch });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
+  // Route polyline
+  L.polyline(ROUTE_COORDS, { color: '#2563EB', weight: 5, opacity: 0.5 }).addTo(adminMap);
 
-// ============================================================
-//  DEMO VEHICLES — server-side simulator ที่ Admin ควบคุม
-//  POST /api/demo/start  { vehicles: N }
-//  POST /api/demo/stop
-//  GET  /api/demo/status
-// ============================================================
-let _demoTimer    = null;
-let _demoVehicles = 2;
-
-// ── ถนนอังรีดูนังต์ Rama I ↔ Rama IV (~1.6 km) ──────────────
-const DEMO_ROUTE = [
-  [13.7451, 100.5358],   // 0: Siam Square / Rama I
-  [13.7428, 100.5356],   // 1: ร.ร.สาธิตปทุมวัน
-  [13.7407, 100.5350],   // 2: ประตูจุฬาฯ (อังรีดูนัง)
-  [13.7384, 100.5345],   // 3: คณะสัตวแพทย์ จุฬาฯ
-  [13.7360, 100.5340],   // 4: รพ.จุฬา / สภากาชาด
-  [13.7342, 100.5337],   // 5: สถานเสาวภา
-  [13.7311, 100.5336],   // 6: แยก Rama IV
-];
-const DIR_NORTH = 'Siam Square';
-const DIR_SOUTH = 'แยก Rama IV';
-const _demoState = {}; // { id: { lat,lng,targetIdx,dir,speed,targetSpeed,stopTicks,battery } }
-
-function initDemoVehicle(id, startIdx) {
-  const t = 0.3 + Math.random() * 0.4;
-  const p0 = DEMO_ROUTE[startIdx], p1 = DEMO_ROUTE[startIdx + 1];
-  _demoState[id] = {
-    lat:         p0[0] + (p1[0]-p0[0])*t,
-    lng:         p0[1] + (p1[1]-p0[1])*t,
-    targetIdx:   startIdx + 1,
-    dir:         startIdx < Math.floor(DEMO_ROUTE.length/2) ? DIR_SOUTH : DIR_NORTH,
-    speed:       30, targetSpeed: 35, stopTicks: 0,
-    battery:     Math.floor(70 + Math.random()*25),
-  };
-}
-
-async function demoTick() {
-  const today = todayStr();
-  const hour  = new Date().getHours();
-  const ids   = Object.keys(_demoState);
-  if (!ids.length) return;
-
-  const updates = {};
-  for (const id of ids) {
-    const v = _demoState[id];
-
-    if (v.stopTicks > 0) {
-      v.stopTicks--; v.speed = 0;
-    } else {
-      if (Math.random() < 0.05) {
-        const r = Math.random();
-        if (r < 0.15) { v.stopTicks = 5 + Math.floor(Math.random()*15); v.targetSpeed = 0; }
-        else if (r < 0.35) v.targetSpeed = 15 + Math.floor(Math.random()*10);
-        else v.targetSpeed = 30 + Math.floor(Math.random()*15);
-      }
-      if (v.speed < v.targetSpeed) v.speed = Math.min(v.speed+3, v.targetSpeed);
-      else if (v.speed > v.targetSpeed) v.speed = Math.max(v.speed-3, v.targetSpeed);
-
-      if (v.speed > 0) {
-        const tgt = DEMO_ROUTE[v.targetIdx];
-        const dLat = tgt[0]-v.lat, dLng = tgt[1]-v.lng;
-        const dist = Math.sqrt(dLat*dLat+dLng*dLng);
-        const step = (v.speed/3600)/111 * 2;
-        if (dist <= step) {
-          v.lat = tgt[0]; v.lng = tgt[1];
-          v.stopTicks = 10 + Math.floor(Math.random()*20); v.speed = 0;
-          if (v.dir === DIR_SOUTH) {
-            v.targetIdx++;
-            if (v.targetIdx >= DEMO_ROUTE.length) { v.targetIdx = DEMO_ROUTE.length-2; v.dir = DIR_NORTH; }
-          } else {
-            v.targetIdx--;
-            if (v.targetIdx < 0) { v.targetIdx = 1; v.dir = DIR_SOUTH; }
-          }
-          v.targetSpeed = 30 + Math.floor(Math.random()*15);
-        } else {
-          v.lat += (dLat/dist)*step; v.lng += (dLng/dist)*step;
-        }
-      }
-    }
-    if (Math.random() < 0.02) v.battery--;
-    if (v.battery < 10) v.battery = 92;
-
-    const ts = Date.now();
-    const data = { lat:v.lat, lng:v.lng, speed:v.speed, battery:v.battery,
-      timestamp:ts, routeId:'route_henri_dunant', direction:v.dir };
-
-    updates[`fleet/${id}/current`]                        = data;
-    updates[`history/${today}/${id}/${ts}`]               = data;
-    updates[`analytics/peak_hours/${today}/${id}/${hour}`] = admin.database.ServerValue.increment(1);
-  }
-  await db.ref().update(updates);
-}
-
-app.post('/api/demo/start', async (req, res) => {
-  const n = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
-  _demoVehicles = n;
-
-  // ล้าง state เดิม
-  Object.keys(_demoState).forEach(k => delete _demoState[k]);
-  for (let i = 0; i < n; i++) {
-    initDemoVehicle(`DEMO_${i+1}`, i % (DEMO_ROUTE.length-1));
-  }
-
-  clearInterval(_demoTimer);
-  _demoTimer = setInterval(demoTick, 2000);
-
-  // บันทึก config
-  await db.ref('system/config').update({ demoMode:true, demoVehicles:n, updatedAt:Date.now() });
-  console.log(`[DEMO] started ${n} vehicles`);
-  res.json({ ok:true, vehicles:n, ids:Object.keys(_demoState) });
-});
-
-app.post('/api/demo/stop', async (req, res) => {
-  clearInterval(_demoTimer); _demoTimer = null;
-
-  // ลบ marker demo ออกจาก Firebase
-  const updates = {};
-  Object.keys(_demoState).forEach(id => { updates[`fleet/${id}`] = null; });
-  if (Object.keys(updates).length) await db.ref().update(updates);
-  Object.keys(_demoState).forEach(k => delete _demoState[k]);
-
-  await db.ref('system/config').update({ demoMode:false, updatedAt:Date.now() });
-  console.log('[DEMO] stopped');
-  res.json({ ok:true });
-});
-
-app.get('/api/demo/status', (req, res) => {
-  res.json({
-    running: _demoTimer !== null,
-    vehicles: Object.keys(_demoState).length,
-    ids: Object.keys(_demoState),
+  // Stop markers
+  ROUTE_COORDS.forEach((pos, i) => {
+    L.marker(pos, {
+      icon: L.divIcon({
+        className: 'clean-icon',
+        html: `<div style="background:white;color:#475569;border:1px solid #E2E8F0;border-radius:8px;
+          padding:4px 9px;font-family:'Sarabun',sans-serif;font-size:10px;font-weight:700;
+          white-space:nowrap;box-shadow:0 2px 8px rgba(0,0,0,.08);">
+          ${i === 0 || i === 4 ? '📍' : '●'} ${ROUTE_NAMES[i]}</div>`,
+        iconAnchor: [0, 0],
+      }),
+    }).addTo(adminMap);
   });
-});
 
+  adminMap.fitBounds(L.latLngBounds(ROUTE_COORDS).pad(0.12));
+}
 
-// ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
-// [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
-// → frontend parse JSON ไม่ได้ → "Unexpected token '<'"
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+function fitAll() {
+  if (adminMap) adminMap.fitBounds(L.latLngBounds(ROUTE_COORDS).pad(0.1), { animate: true });
+}
 
-// ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log('\n🚐  Smart Songthaew Tracker — Server Ready');
-  console.log(`    User:       http://localhost:${PORT}/`);
-  console.log(`    Dashboard:  http://localhost:${PORT}/dashboard.html`);
-  console.log(`    Admin:      http://localhost:${PORT}/admin.html`);
-  console.log(`    Demo start: POST http://localhost:${PORT}/api/demo/start`);
-  console.log(`    Config:     GET  http://localhost:${PORT}/api/config\n`);
-});
+// ── Vehicle icon ──────────────────────────────────────────────
+function vehicleIcon(speed = 0, online = true) {
+  const color = !online ? '#94A3B8' : speed === 0 ? '#DC2626' : speed < 20 ? '#D97706' : '#2563EB';
+  return L.divIcon({
+    className: 'clean-icon', iconSize: [44, 56], iconAnchor: [22, 46],
+    html: `<div style="text-align:center;${!online ? 'opacity:.45;' : ''}">
+      <div style="width:40px;height:40px;border-radius:50%;background:${color};border:3px solid white;
+        display:inline-flex;align-items:center;justify-content:center;font-size:18px;
+        box-shadow:0 4px 14px ${color}44;">🚐</div>
+      <div style="background:${color};color:white;border-radius:6px;font-family:'IBM Plex Mono',monospace;
+        font-size:9px;font-weight:700;padding:1px 6px;margin-top:2px;white-space:nowrap;">
+        ${REAL_VEHICLE_ID}</div>
+    </div>`,
+  });
+}
+
+function isOnline(v) { return !!(v?.timestamp && (Date.now() - v.timestamp) < OFFLINE_TIMEOUT); }
+
+// ════════════════════════════════════════════════════════════
+//  FETCH + UPDATE
+// ════════════════════════════════════════════════════════════
+async function fetchData() {
+  const t0 = Date.now();
+  try {
+    const res = await fetch('/api/locations');
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const v    = data[REAL_VEHICLE_ID]?.current;
+
+    const latency = Date.now() - t0;
+    pktTotal++;
+    pktSuccess++;
+    latencies.push(latency);
+    if (latencies.length > 10) latencies.shift();
+
+    updateKPI(v);
+    updateDeviceHealth(v);
+    updateMapMarker(v);
+    updateIoTStats(v, latency);
+    updatePowerFromReal(v);  // [NEW] ใช้ค่าจริงจาก Arduino
+    if (v) {
+      appendSerialLog(v, latency);
+      updateBatteryHistory(v.battery);
+    }
+
+  } catch (err) {
+    pktTotal++;
+    console.error('[admin] fetchData:', err.message);
+    appendSerialLogError(err.message);
+    updateKPI(null);
+    updateDeviceHealth(null);
+  }
+}
+
+// ── Map Marker ────────────────────────────────────────────────
+function updateMapMarker(v) {
+  if (!adminMap) return;
+  if (!v || !isOnline(v)) {
+    if (marker) { adminMap.removeLayer(marker); marker = null; }
+    return;
+  }
+  const icon = vehicleIcon(v.speed || 0, true);
+  if (!marker) {
+    marker = L.marker([v.lat, v.lng], { icon }).addTo(adminMap).bindPopup(buildPopup(v));
+    adminMap.setView([v.lat, v.lng], 13, { animate: true });
+  } else {
+    marker.setLatLng([v.lat, v.lng]);
+    marker.setIcon(icon);
+    marker.setPopupContent(buildPopup(v));
+  }
+}
+
+function buildPopup(v) {
+  const ts = v.timestamp ? new Date(v.timestamp).toLocaleTimeString('th-TH') : '—';
+  return `<div style="min-width:160px;padding:4px;font-family:'Sarabun',sans-serif;">
+    <div style="font-size:1rem;font-weight:800;color:#2563EB;margin-bottom:8px;">${REAL_VEHICLE_ID}</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:.82rem;">
+      <span>🚀 <b style="color:#D97706">${v.speed ?? '--'}</b> km/h</span>
+      <span>🔋 <b style="color:#059669">${v.battery ?? '--'}</b>%</span>
+    </div>
+    <div style="margin-top:8px;font-size:.72rem;color:#94A3B8;">🧭 ${v.direction || '—'}<br/>🕐 ${ts}</div>
+  </div>`;
+}
+
+// ── KPI ───────────────────────────────────────────────────────
+function updateKPI(v) {
+  const online = isOnline(v);
+  const speed  = v?.speed  ?? null;
+  const bat    = v?.battery >= 0 ? v.battery : null;
+
+  setEl('kpi-active', online ? '1' : '0', online ? 'var(--blue)' : 'var(--slate-400)');
+  setEl('kpi-speed',  speed !== null ? speed : '—');
+  setEl('kpi-bat',    bat   !== null ? bat + '%' : '—');
+  setEl('nc-online',  online ? '1' : '0');
+  setEl('nc-speed',   speed !== null ? speed : '—');
+
+  if (bat !== null) {
+    const c = bat < 20 ? 'var(--red)' : bat < 50 ? 'var(--amber)' : 'var(--green)';
+    const el = document.getElementById('kpi-bat');
+    if (el) { el.style.color = c; }
+    const bar = document.getElementById('kpi-bat-bar');
+    if (bar) { bar.style.width = bat + '%'; bar.style.background = c; }
+    updateBatteryRing(bat);
+  }
+}
+
+function setEl(id, text, color) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  if (color) el.style.color = color;
+}
+
+// ── Device Health ─────────────────────────────────────────────
+function updateDeviceHealth(v) {
+  const list   = document.getElementById('device-list');
+  const online = isOnline(v);
+
+  if (!v) {
+    list.innerHTML = `<div class="no-data"><div class="icon">📡</div>รอ GPS จาก ESP8266…</div>`;
+    return;
+  }
+
+  const moving   = online && (v.speed || 0) > 2;
+  const bat      = v.battery >= 0 ? v.battery : null;
+  const batColor = bat === null ? '#94A3B8' : bat < 20 ? '#DC2626' : bat < 50 ? '#D97706' : '#059669';
+  const status   = !online ? 'off' : moving ? 'on' : 'idle';
+  const statusTx = { on: 'กำลังวิ่ง', idle: 'จอดอยู่', off: 'Offline' }[status];
+  const badgeCls = { on: 'b-on', idle: 'b-idle', off: 'b-off' }[status];
+  const ts       = v.timestamp ? new Date(v.timestamp).toLocaleTimeString('th-TH') : '—';
+  const secsAgo  = v.timestamp ? Math.round((Date.now() - v.timestamp) / 1000) : null;
+  const tsAgo    = secsAgo !== null ? (secsAgo < 60 ? secsAgo + 's' : Math.floor(secsAgo / 60) + 'm') + 'ที่แล้ว' : '—';
+
+  const offlineBanner = !online ? `
+    <div style="background:#FEF2F2;border:1px solid #FECACA;border-radius:10px;padding:10px 12px;margin-top:10px;
+      display:flex;align-items:center;gap:8px;font-size:.78rem;font-weight:700;color:#DC2626;">
+      <span>📡</span>
+      <div><div>ไม่ได้รับสัญญาณ</div><div style="font-weight:400;color:#B91C1C;font-size:.7rem;">อัปเดตล่าสุด ${tsAgo}</div></div>
+    </div>` : '';
+
+  list.innerHTML = `
+    <div class="device-card">
+      <div class="dc-head">
+        <span class="dc-id">${REAL_VEHICLE_ID}</span>
+        <span class="dc-badge ${badgeCls}">${statusTx}</span>
+      </div>
+      <div class="dc-stats">
+        <div class="dcs"><div class="dcs-val" style="color:#D97706">${online ? (v.speed ?? '--') : '—'}</div><div class="dcs-lbl">km/h</div></div>
+        <div class="dcs"><div class="dcs-val" style="color:${batColor}">${bat ?? '--'}%</div><div class="dcs-lbl">Battery</div></div>
+        <div class="dcs"><div class="dcs-val" style="color:#475569;font-size:.72rem">${tsAgo}</div><div class="dcs-lbl">อัปเดต</div></div>
+      </div>
+      <div class="bat-row">
+        <div class="bat-track"><div class="bat-fill" style="width:${bat ?? 0}%;background:${batColor}"></div></div>
+        <span class="bat-pct" style="color:${batColor}">${bat ?? '--'}%</span>
+      </div>
+      <div class="dc-route">
+        🗺 ${v.routeId && v.routeId !== 'unassigned' ? v.routeId : 'ไม่ระบุเส้นทาง'}
+        &nbsp;·&nbsp;${v.direction === 'แยก Rama IV' ? '⬇️' : v.direction === 'Siam Square' ? '⬆️' : ''}
+        ${v.direction || '—'}
+      </div>
+      <div style="font-size:.62rem;color:#94A3B8;margin-top:5px;">📍 ${v.lat?.toFixed(5) ?? '—'}, ${v.lng?.toFixed(5) ?? '—'}</div>
+      <div style="font-size:.62rem;color:#94A3B8;margin-top:2px;">🕐 ${ts}</div>
+      ${offlineBanner}
+    </div>`;
+
+  const upd = document.getElementById('device-last-update');
+  if (upd) upd.textContent = `อัปเดต: ${ts}`;
+}
+
+// ════════════════════════════════════════════════════════════
+//  SERIAL MONITOR
+// ════════════════════════════════════════════════════════════
+const MAX_SERIAL_LINES = 80;
+
+function appendSerialLog(v, latency) {
+  const log = document.getElementById('serial-log');
+  if (!log) return;
+
+  const now = new Date().toLocaleTimeString('th-TH', { hour12: false });
+  const ts  = `${now}`;
+
+  // ── Serial log ตรงกับ Arduino Serial.printf() จริงทุก field ──
+  // hasFix = true เมื่อ sats > 0 AND hdop > 0 (Arduino ส่ง -1 เมื่อไม่มี fix)
+  const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+  const sats   = hasFix ? String(v.sats)             : '-1';
+  const hdop   = hasFix ? v.hdop.toFixed(1)          : '-1.0';
+  const rssi   = (v.rssi != null) ? v.rssi + 'dBm'   : '--';
+  const mA     = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) + 'mA' : '--';
+  const volt   = (v.battVoltage != null && v.battVoltage > 0) ? (v.battVoltage/1000).toFixed(2)+'V' : '--';
+
+  // บรรทัดแรก: Fix OK หรือ No fix — ตรงกับ Arduino Serial.printf จริง
+  const gpsStatusLine = hasFix
+    ? { cls: 'serial-ok',   text: `[GPS] Fix OK | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` }
+    : { cls: 'serial-warn', text: `[GPS] No fix | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}` };
+
+  const lines = [
+    gpsStatusLine,
+    { cls: 'serial-data', text: `[GPS] lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}` },
+    { cls: 'serial-data', text: `[GPS] speed:${v.speed} km/h | dir:${v.direction || 'unknown'} | route:${v.routeId || 'unassigned'}` },
+    { cls: 'serial-data', text: `[BAT] ${v.battery}% | ${volt} | ${mA}` },
+    { cls: 'serial-ok',   text: `[HTTP] POST /api/update-location → 200 OK (${latency}ms)` },
+    { cls: 'serial-sep',  text: '─────────────────────────────────────────' },
+  ];
+
+  // เพิ่ม separator ก่อนกลุ่มใหม่ถ้ามีข้อมูลแล้ว
+  const placeholder = log.querySelector('.serial-info');
+  if (placeholder && placeholder.textContent.includes('รอการเชื่อมต่อ')) {
+    log.innerHTML = '';
+    // Boot messages
+    addSerialLine(log, ts, 'serial-info', '=== Smart Songthaew Tracker v6 ===');
+    addSerialLine(log, ts, 'serial-info', `[BOOT] vehicleId: ${REAL_VEHICLE_ID}`);
+    addSerialLine(log, ts, 'serial-info', '[BOOT] Route: Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)');
+    addSerialLine(log, ts, 'serial-ok',   '[WiFi] Connecting...');
+    addSerialLine(log, ts, 'serial-ok',   '[GPS] Waiting for fix...');
+  }
+
+  lines.forEach(l => addSerialLine(log, ts, l.cls, l.text));
+
+  // trim ถ้าเกิน limit
+  while (log.children.length > MAX_SERIAL_LINES) log.removeChild(log.firstChild);
+
+  if (autoScroll) log.scrollTop = log.scrollHeight;
+
+  // update serial dot
+  const dot = document.getElementById('serial-dot');
+  if (dot) { dot.classList.remove('off'); }
+}
+
+function appendSerialLogError(msg) {
+  const log = document.getElementById('serial-log');
+  if (!log) return;
+  const ts = new Date().toLocaleTimeString('th-TH', { hour12: false });
+  addSerialLine(log, ts, 'serial-err', `[ERROR] ${msg}`);
+  if (autoScroll) log.scrollTop = log.scrollHeight;
+  const dot = document.getElementById('serial-dot');
+  if (dot) dot.classList.add('off');
+}
+
+function addSerialLine(container, ts, cls, text) {
+  const div = document.createElement('div');
+  div.className = 'serial-line';
+  div.innerHTML = `<span class="serial-ts">${ts}</span><span class="${cls}">${escapeHtml(text)}</span>`;
+  container.appendChild(div);
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function clearSerial() {
+  const log = document.getElementById('serial-log');
+  if (log) log.innerHTML = '';
+}
+
+function toggleAutoScroll() {
+  autoScroll = !autoScroll;
+  const btn = document.getElementById('serial-scroll-btn');
+  if (btn) {
+    btn.textContent = autoScroll ? 'Auto ↓' : 'Manual';
+    btn.style.color = autoScroll ? '#3FB950' : '#D29922';
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+//  POWER DASHBOARD
+// ════════════════════════════════════════════════════════════
+
+// [REMOVED] batToMa(), randomInt() — ใช้ค่าจริง currentMa จาก Arduino แทน
+// batToVolt ยังคงไว้ใช้ใน buildPopup fallback
+function batToVolt(pct) { return (3.0 + (pct / 100) * 0.6).toFixed(2); }
+
+function updateBatteryRing(pct) {
+  const circ = 2 * Math.PI * 40; // r=40
+  const fill  = document.getElementById('bat-ring-fill');
+  const num   = document.getElementById('bat-ring-pct');
+  if (!fill || !num) return;
+
+  const offset = circ - (pct / 100) * circ;
+  fill.setAttribute('stroke-dashoffset', offset.toFixed(1));
+
+  const color = pct < 20 ? '#DC2626' : pct < 50 ? '#D97706' : '#059669';
+  fill.setAttribute('stroke', color);
+  num.textContent = pct;
+  num.style.color = color;
+
+  // voltage อัปเดตจาก updatePowerFromReal(v) แล้ว — ไม่ประมาณที่นี่
+}
+
+/**
+ * updatePowerFromReal(v) — อัปเดต Power Dashboard จากค่าจริงของ Arduino
+ * เรียกใน fetchData() แทน updatePowerSimulation()
+ * ไม่มี Math.random() ไม่มีการประมาณ
+ */
+function updatePowerFromReal(v) {
+  if (!v) {
+    setEl('pw-voltage', '--');
+    setEl('pw-current', '--');
+    setEl('pw-watt',    '--');
+    setEl('pw-solar',   'N/A');  // ไม่มีแผงโซลาร์ในระบบนี้
+    const wifiBar = document.getElementById('wifi-bar');
+    const wifiMa  = document.getElementById('wifi-ma');
+    if (wifiBar) wifiBar.style.width = '0%';
+    if (wifiMa)  wifiMa.textContent  = '-- mA';
+    return;
+  }
+
+  // แรงดัน (mV → V) จาก ADC จริง
+  if (v.battVoltage != null && v.battVoltage > 0) {
+    setEl('pw-voltage', (v.battVoltage / 1000).toFixed(2) + ' V');
+  } else {
+    setEl('pw-voltage', '--');
+  }
+
+  // กระแสไฟ (mA) จาก datasheet จริงตาม sleep mode ที่ Arduino คำนวณ
+  if (v.currentMa != null && v.currentMa > 0) {
+    const mA = Math.round(v.currentMa);
+    setEl('pw-current', mA + ' mA');
+    const watt = v.powerMw != null && v.powerMw > 0
+      ? (v.powerMw / 1000).toFixed(2)
+      : (mA * (v.battVoltage || 3700) / 1000 / 1000).toFixed(2);
+    setEl('pw-watt', watt + ' W');
+
+    // WiFi bar — แสดง currentMa (ค่ารวมระบบ ไม่ใช่แค่ WiFi)
+    const wifiBar = document.getElementById('wifi-bar');
+    const wifiMa  = document.getElementById('wifi-ma');
+    if (wifiBar) wifiBar.style.width = Math.min(100, mA / 250 * 100) + '%';
+    if (wifiMa)  wifiMa.textContent  = mA + ' mA';
+  } else {
+    setEl('pw-current', '--');
+    setEl('pw-watt',    '--');
+  }
+
+  // Solar — ระบบนี้ไม่มีแผงโซลาร์ Arduino ไม่ได้ส่งค่า
+  setEl('pw-solar', 'N/A');
+  const solarBar = document.getElementById('solar-bar');
+  const solarMa  = document.getElementById('solar-ma');
+  if (solarBar) solarBar.style.width = '0%';
+  if (solarMa)  solarMa.textContent  = 'N/A';
+}
+
+// [REMOVED] updatePowerSimulation() — ลบออกเพราะใช้ Math.random() ทั้งหมด
+// ใช้ updatePowerFromReal(v) แทน ซึ่งเรียกใน fetchData()
+
+// Battery history mini chart
+function initBatteryChart() {
+  const ctx = document.getElementById('battery-history-chart');
+  if (!ctx) return;
+  batChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels:   [],
+      datasets: [{ data: [], borderColor: '#059669', backgroundColor: 'rgba(5,150,105,.08)',
+        borderWidth: 1.5, fill: true, tension: 0.4, pointRadius: 0 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
+      plugins: { legend: { display: false }, tooltip: { enabled: false } },
+      scales: {
+        x: { display: false },
+        y: { display: false, min: 0, max: 100 },
+      },
+    },
+  });
+}
+
+function updateBatteryHistory(bat) {
+  if (!batChart || bat == null) return;
+  batHistory.push(bat);
+  if (batHistory.length > 20) batHistory.shift();
+
+  const labels = batHistory.map((_, i) => i.toString());
+  batChart.data.labels             = labels;
+  batChart.data.datasets[0].data  = batHistory;
+
+  const color = bat < 20 ? '#DC2626' : bat < 50 ? '#D97706' : '#059669';
+  batChart.data.datasets[0].borderColor      = color;
+  batChart.data.datasets[0].backgroundColor  = color.replace(')', ',.08)').replace('rgb', 'rgba');
+  batChart.update('none');
+}
+
+// ════════════════════════════════════════════════════════════
+//  IoT STATS
+// ════════════════════════════════════════════════════════════
+function updateIoTStats(v, latency) {
+  setEl('iot-pkts', pktTotal.toLocaleString());
+
+  const rate = pktTotal > 0 ? Math.round((pktSuccess / pktTotal) * 100) : 0;
+  const rateEl = document.getElementById('iot-rate');
+  if (rateEl) {
+    rateEl.textContent = rate + '%';
+    rateEl.style.color = rate >= 95 ? 'var(--green)' : rate >= 80 ? 'var(--amber)' : 'var(--red)';
+  }
+
+  const avgLat = latencies.length > 0
+    ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
+    : 0;
+  setEl('iot-lat', avgLat + ' ms');
+  setEl('iot-http', '200');
+
+  // RSSI, HDOP, Sats — ค่าจริงจาก Arduino เท่านั้น ไม่มี random
+  if (v) {
+    // RSSI — ค่าจริงจาก WiFi.RSSI()
+    if (v.rssi != null) {
+      setEl('iot-rssi', v.rssi.toString());
+      updateSignalBars(v.rssi);
+    } else {
+      setEl('iot-rssi', '--');
+      updateSignalBars(-99);
+    }
+
+    // hasFix = true เมื่อ Arduino มี GPS fix จริง (sats > 0 && hdop > 0)
+    const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
+
+    // HDOP — ค่าจริงจาก GPS6MV2 หรือ -1.0 ถ้าไม่มี fix
+    const hdopEl = document.getElementById('iot-hdop');
+    if (hdopEl) {
+      if (hasFix) {
+        hdopEl.textContent = v.hdop.toFixed(1);
+        hdopEl.style.color = v.hdop < 2 ? 'var(--green)' : v.hdop < 5 ? 'var(--amber)' : 'var(--red)';
+      } else {
+        hdopEl.textContent = '-1.0';   // ตรงกับค่าที่ Arduino ส่งมาจริง
+        hdopEl.style.color = 'var(--sl400)';
+      }
+    }
+
+    // Sats — ค่าจริงจาก GPS6MV2 หรือ -1 ถ้าไม่มี fix
+    if (hasFix) {
+      setEl('iot-sats', v.sats.toString());
+    } else {
+      setEl('iot-sats', '-1');   // ตรงกับค่าที่ Arduino ส่งมาจริง
+    }
+
+    // GPS Fix status label
+    const fixEl = document.getElementById('iot-gpsfix');
+    if (fixEl) {
+      fixEl.textContent = hasFix ? 'Fix OK' : 'No fix';
+      fixEl.style.color = hasFix ? 'var(--green)' : 'var(--amber)';
+    }
+  } else {
+    setEl('iot-rssi', '--');
+    setEl('iot-sats', '--');
+    const hdopEl = document.getElementById('iot-hdop');
+    if (hdopEl) { hdopEl.textContent = '--'; hdopEl.style.color = 'var(--sl400)'; }
+    const fixEl = document.getElementById('iot-gpsfix');
+    if (fixEl) { fixEl.textContent = '--'; fixEl.style.color = 'var(--sl400)'; }
+  }
+}
+
+function updateSignalBars(rssi) {
+  const bars = document.querySelectorAll('#signal-bars .sig-b');
+  if (!bars.length) return;
+  // rssi: > -60 = 4 bars, > -70 = 3, > -80 = 2, else 1
+  const level = rssi > -60 ? 4 : rssi > -70 ? 3 : rssi > -80 ? 2 : 1;
+  bars.forEach((b, i) => {
+    b.classList.toggle('active', i < level);
+    b.style.background = i < level ? 'var(--green)' : 'var(--slate-300)';
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+//  CHART
+// ════════════════════════════════════════════════════════════
+async function loadChart() {
+  try {
+    let labels, data, type, borderColor, bgColor, label;
+    if (chartMode === 'speed') {
+      const j = await fetch('/api/analytics/speed-by-hour').then(r => r.json());
+      labels = j.labels || Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2,'0')}:00`);
+      data   = j.data   || new Array(24).fill(0);
+      type = 'line'; borderColor = '#2563EB'; bgColor = 'rgba(37,99,235,.08)';
+      label = 'ความเร็วเฉลี่ย (km/h)';
+      setEl('chart-sub', 'ค่าเฉลี่ยความเร็วต่อชั่วโมง (km/h)');
+    } else {
+      const j = await fetch('/api/analytics/peak-hours').then(r => r.json());
+      labels = Array.from({ length: 24 }, (_, h) => `${String(h).padStart(2,'0')}:00`);
+      data   = labels.map((_, i) => j[i] || 0);
+      type = 'bar';
+      const avg = data.reduce((a, b) => a + b, 0) / 24;
+      borderColor = data.map(v => v > avg * 1.4 ? '#2563EB' : '#CBD5E1');
+      bgColor     = data.map(v => v > avg * 1.4 ? 'rgba(37,99,235,.75)' : 'rgba(203,213,225,.6)');
+      label = 'GPS events';
+      setEl('chart-sub', 'จำนวน GPS events ต่อชั่วโมง');
+    }
+
+    setEl('kpi-points', data.reduce((a, b) => a + b, 0).toLocaleString() || '—');
+
+    const ctx = document.getElementById('activityChart')?.getContext('2d');
+    if (!ctx) return;
+    if (chartObj) chartObj.destroy();
+    chartObj = new Chart(ctx, {
+      type,
+      data: { labels, datasets: [{ label, data, borderColor, backgroundColor: bgColor,
+        borderWidth: 2, fill: chartMode === 'speed', tension: 0.4,
+        borderRadius: chartMode === 'activity' ? 5 : 0,
+        pointBackgroundColor: '#2563EB', pointRadius: chartMode === 'speed' ? 3 : 0 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, animation: { duration: 400 },
+        plugins: { legend: { display: false }, tooltip: {
+          backgroundColor: 'white', borderColor: '#E2E8F0', borderWidth: 1,
+          titleColor: '#1E293B', bodyColor: '#64748B',
+          titleFont: { family: "'IBM Plex Mono',monospace", size: 11 },
+          bodyFont:  { family: "'IBM Plex Mono',monospace", size: 11 },
+          padding: 10, cornerRadius: 9,
+          callbacks: { label: i => ` ${i.raw} ${chartMode === 'speed' ? 'km/h' : 'events'}` },
+        }},
+        scales: {
+          x: { ticks: { color: '#94A3B8', font: { family: "'IBM Plex Mono',monospace", size: 9 },
+              maxRotation: 0, callback: (_, i) => i % 3 === 0 ? labels[i] : '' },
+            grid: { color: '#F1F5F9' } },
+          y: { beginAtZero: true, ...(chartMode === 'speed' ? { suggestedMax: 60 } : {}),
+            ticks: { color: '#94A3B8', font: { family: "'IBM Plex Mono',monospace", size: 9 } },
+            grid: { color: '#F1F5F9' } },
+        },
+      },
+    });
+  } catch (err) { console.error('[admin] loadChart:', err.message); }
+}
+
+function switchChart(mode) {
+  chartMode = mode;
+  document.getElementById('tab-speed')?.classList.toggle('active', mode === 'speed');
+  document.getElementById('tab-activity')?.classList.toggle('active', mode === 'activity');
+  loadChart();
+}
+
+// ════════════════════════════════════════════════════════════
+//  SIMULATE
+// ════════════════════════════════════════════════════════════
+async function triggerSimulate() {
+  try {
+    await fetch('/api/simulate');
+    await fetchData();
+    await loadChart();
+    appendSerialLogRaw('serial-info', '[SIM] Server-side GPS inject triggered');
+  } catch (err) { console.error('[admin] simulate:', err.message); }
+}
+
+function appendSerialLogRaw(cls, text) {
+  const log = document.getElementById('serial-log');
+  if (!log) return;
+  const ts = new Date().toLocaleTimeString('th-TH', { hour12: false });
+  addSerialLine(log, ts, cls, text);
+  if (autoScroll) log.scrollTop = log.scrollHeight;
+}
+
+// ════════════════════════════════════════════════════════════
+//  DEMO MODE
+// ════════════════════════════════════════════════════════════
+function showDemoOverlay() {
+  document.getElementById('demo-overlay').classList.add('active');
+}
+
+function startDemoMode() {
+  demoMode = true;
+  document.getElementById('demo-overlay').classList.remove('active');
+  document.getElementById('demo-banner').classList.add('active');
+
+  // Auto simulate every 2s (matches Arduino interval)
+  demoInterval = setInterval(async () => {
+    if (!demoMode) return;
+    await triggerSimulate();
+  }, 2000);
+
+  appendSerialLogRaw('serial-info', '=== DEMO MODE STARTED ===');
+  appendSerialLogRaw('serial-ok',   '[DEMO] Auto-simulate ทุก 2 วินาที');
+  console.info('[admin] Demo mode ON');
+}
+
+function stopDemoMode() {
+  demoMode = false;
+  clearInterval(demoInterval);
+  document.getElementById('demo-banner').classList.remove('active');
+  appendSerialLogRaw('serial-warn', '[DEMO] Demo mode stopped');
+  console.info('[admin] Demo mode OFF');
+}
+
+// ════════════════════════════════════════════════════════════
+//  CLOCK + UPTIME
+// ════════════════════════════════════════════════════════════
+function startClock() {
+  const tick = () => {
+    const el = document.getElementById('nc-time');
+    if (el) el.textContent = new Date().toLocaleTimeString('th-TH', { hour12: false });
+  };
+  tick();
+  setInterval(tick, 1000);
+}
+
+function startUptimeCounter() {
+  setInterval(() => {
+    const secs  = Math.floor((Date.now() - uptimeStart) / 1000);
+    const h     = Math.floor(secs / 3600);
+    const m     = Math.floor((secs % 3600) / 60);
+    const s     = secs % 60;
+    const str   = h > 0
+      ? `${h}h ${String(m).padStart(2,'0')}m`
+      : `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+    setEl('kpi-uptime', str);
+  }, 1000);
+}
+
