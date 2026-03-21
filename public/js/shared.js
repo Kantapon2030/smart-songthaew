@@ -126,6 +126,7 @@ function renderAnnouncement(text) {
       box-shadow:0 -2px 16px rgba(0,0,0,.2);
     `;
     document.body.appendChild(el);
+    
   }
   el.innerHTML = `<span style="font-size:1rem;">📢</span><span>${text}</span>`;
 }
