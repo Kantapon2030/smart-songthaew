@@ -122,12 +122,10 @@ app.post('/api/update-location', async (req, res) => {
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
 
-  if (!validLatLng(latF, lngF)) {
-    return res.status(400).json({
-      error: 'lat/lng missing or outside Thailand bounds',
-      hint:  'lat: 5.5–20.5, lng: 97.5–105.7',
-    });
-  }
+  const hasValidGPS = validLatLng(latF, lngF);
+  // ถ้า lat/lng ไม่ valid (เช่น 0,0 ตอนยังไม่ fix)
+  // ยังรับ packet ได้ แต่ไม่อัปเดตพิกัด — เพื่อให้ timestamp + battery อัปเดต
+  // frontend จะรู้ว่า online อยู่แต่ยังไม่มี GPS fix
 
   const spdF  = parseFloat(speed)  || 0;
   const batI  = parseInt(battery, 10) ?? -1;
@@ -145,8 +143,9 @@ app.post('/api/update-location', async (req, res) => {
   const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
 
   const data = {
-    lat: latF, lng: lngF,
-    speed:       parseFloat(spdF.toFixed(1)),
+    // ถ้าไม่มี GPS fix ยังคง lat/lng เดิมใน Firebase (ไม่ส่ง 0,0 ทับ)
+    ...(hasValidGPS ? { lat: latF, lng: lngF } : {}),
+    speed:       hasValidGPS ? parseFloat(spdF.toFixed(1)) : 0,
     battery:     batI,
     battVoltage: batVF,    // mV
     currentMa:   currF,    // mA
@@ -166,8 +165,8 @@ app.post('/api/update-location', async (req, res) => {
     // 1. Live current position (overwrite)
     updates[`fleet/${vehicleId}/current`] = data;
 
-    // 2. History แยกตามวัน (key = timestamp ms)
-    updates[`history/${today}/${vehicleId}/${ts}`] = data;
+    // 2. History แยกตามวัน — เก็บเฉพาะเมื่อมี GPS fix จริง
+    if (hasValidGPS) updates[`history/${today}/${vehicleId}/${ts}`] = data;
 
     // 3. Routes active
     if (routeId && routeId !== 'unassigned') {
@@ -182,7 +181,8 @@ app.post('/api/update-location', async (req, res) => {
 
     await db.ref().update(updates);
 
-    console.log(`[GPS] ${vehicleId} | ${latF},${lngF} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${direction}`);
+    const gpsStatus = hasValidGPS ? `${latF},${lngF}` : 'no-fix';
+  console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${direction}`);
 
     return res.status(200).json({ message: 'Location & Route updated successfully', timestamp: ts });
 
