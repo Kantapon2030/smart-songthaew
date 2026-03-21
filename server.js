@@ -384,7 +384,7 @@ app.get('/api/config', async (req, res) => {
       demoMode:       cfg.demoMode       ?? false,
       demoVehicles:   cfg.demoVehicles   ?? 2,
       routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
-      offlineTimeout: cfg.offlineTimeout ?? 15,
+      offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 30) ? cfg.offlineTimeout : 30,
       announcement:   cfg.announcement  ?? '',
       updatedAt:      cfg.updatedAt      ?? null,
     });

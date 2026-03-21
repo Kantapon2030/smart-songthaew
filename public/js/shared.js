@@ -30,7 +30,7 @@ window.SYS = {
   demoMode:       false,
   demoVehicles:   2,
   routeName:      'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
-  offlineTimeout: 15,   // วินาที
+  offlineTimeout: 30,   // วินาที — Arduino ส่งทุก 2s, เผื่อ network latency
   announcement:   '',
   updatedAt:      null,
 };
@@ -64,7 +64,7 @@ function calculateBearing(la1,lo1,la2,lo2) {
 }
 
 function isVehicleOnline(v) {
-  const timeout = (window.SYS?.offlineTimeout ?? 15) * 1000;
+  const timeout = (window.SYS?.offlineTimeout ?? 30) * 1000;
   return !!(v?.timestamp && (Date.now()-v.timestamp) < timeout);
 }
 
