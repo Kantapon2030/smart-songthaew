@@ -13,12 +13,24 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© OpenStreetMap', maxZoom: 19,
 }).addTo(map);
 
-L.polyline(ROUTE_COORDS, { color: '#2563EB', weight: 5, opacity: 0.5 }).addTo(map);
-map.setView(ROUTE_COORDS[3], 15);  // ซูมเข้า กลาง ถ.อังรีดูนัง
+// [FIX] ไม่วาด polyline hardcoded อีกต่อไป — ใช้ changeRoute() แทน
+// เริ่มที่ตำแหน่งกลางของเส้นทาง default ก่อนโหลดเสร็จ
+map.setView([8.432450, 99.959129], 13);
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let userLocation         = [13.7407, 100.5350];  // ประตูจุฬาฯ (อังรีดูนัง)
-let userDesiredDirection = DIR_SOUTH;  // default ลงใต้ (แยก Rama IV)
+let userLocation = [8.445000, 99.965000];  // Default
+try {
+  const saved = localStorage.getItem('userPinLocation');
+  if (saved) {
+    const parsed = JSON.parse(saved);
+    if (parsed && parsed.length === 2) userLocation = parsed;
+  }
+} catch (e) {}
+
+let userDesiredDirection = null; // จะตั้งค่าอัตโนมัติตาม ต้นทาง/ปลายทาง ที่เลือก
+let userOriginIdx        = 0;
+let userDestIdx          = 1;
+
 let realVehicleData      = null;
 let realVehicleMarker    = null;
 let prevRealBearing      = 0;
@@ -27,6 +39,148 @@ let isPinMode            = false;
 let demoMarkers          = {};
 let offlineInterval      = null;
 let offlineSecs          = 0;
+let isBottomPanelExpanded= false;
+let currentRouteId       = null;
+let allRoutes            = {};
+let routePolyline        = null;  // [FIX] เก็บ reference เพื่อลบได้ถูกต้อง
+let _initialPolylineDone = false; // กันไม่ให้ fitBounds ทุกครั้งที่ fetch
+
+// ── Bottom Panel Toggle ─────────────────────────────────────────────────────
+function toggleBottomPanel() {
+  isBottomPanelExpanded = !isBottomPanelExpanded;
+  const panel = document.getElementById('info-panel');
+  
+  if (isBottomPanelExpanded) {
+    panel.classList.add('expanded');
+  } else {
+    panel.classList.remove('expanded');
+  }
+  updateBottomPanel();
+}
+
+function updateBottomPanel(vehicleData = null) {
+  // Use passed data or fallback to realVehicleData. We still update ETA even without vehicle data.
+  const vehicle = vehicleData || realVehicleData;
+  
+  const collapsedTitle = document.getElementById('collapsed-title');
+  const collapsedETA = document.getElementById('collapsed-eta');
+  
+  if (collapsedTitle && vehicle) {
+    const dir = vehicle.direction === 'เซ็นทรัลนครศรีธรรมราช' ? '→ Central' : '→ เตรียมอุดมฯ';
+    const speed = vehicle.speed || 0;
+    collapsedTitle.textContent = `🚐 ${speed} km/h ${dir}`;
+  }
+  
+  if (collapsedETA) {
+    // [FIX] ใช้ _etaCache เสมอ — ทั้ง real และ demo mode อัปเดต cache นี้
+    const eta = _etaCache.minutes;
+    if (eta !== null && eta !== undefined) {
+      const dist = _etaCache.distKm;
+      const distTxt = dist < 1 ? `${Math.round(dist*1000)} ม.` : `${dist.toFixed(1)} กม.`;
+      collapsedETA.textContent = `⏱️ ${eta} นาที (${distTxt})`;
+    } else {
+      collapsedETA.textContent = 'กำลังคำนวณ ETA...';
+    }
+  }
+}
+
+// ── Route Management ─────────────────────────────────────────────────────────
+async function loadRoutes() {
+  try {
+    allRoutes = await fetchRoutes();
+    const select = document.getElementById('route-select');
+    
+    if (select) {
+      select.innerHTML = Object.entries(allRoutes).map(([id, route]) => 
+        `<option value="${id}">${route.name}</option>`
+      ).join('');
+      
+      // Select first route if none selected
+      if (!currentRouteId && select.options.length > 0) {
+        currentRouteId = select.options[0].value;
+        select.value = currentRouteId;
+        changeRoute(currentRouteId);
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load routes:', e);
+  }
+}
+
+function changeRoute(routeId) {
+  if (!routeId) return;
+  // รอ allRoutes โหลดก่อน
+  if (!allRoutes[routeId]) {
+    // ถ้ายังไม่มีข้อมูล ลอง fetch ใหม่
+    fetchRoutes().then(routes => { allRoutes = routes; changeRoute(routeId); });
+    return;
+  }
+  
+  currentRouteId = routeId;
+  const route = allRoutes[routeId];
+
+  // [FIX] ลบ polyline เดิมทุกกรณี รวมถึง polyline hardcoded
+  if (routePolyline) { map.removeLayer(routePolyline); routePolyline = null; }
+
+  if (route.coords && route.coords.length > 1) {
+    routePolyline = L.polyline(route.coords, {
+      color: '#2563EB', weight: 5, opacity: 0.6,
+    }).addTo(map);
+    // fitBounds เฉพาะครั้งแรก หรือเมื่อเปลี่ยนเส้นทาง
+    map.fitBounds(routePolyline.getBounds().pad(0.12));
+  }
+
+  // Populate Origin and Destination dropdowns
+  const originSelect = document.getElementById('origin-select');
+  const destSelect = document.getElementById('dest-select');
+  if (originSelect && destSelect && route.stops) {
+    let opts = '';
+    route.stops.forEach((stop, idx) => {
+      opts += `<option value="${idx}">${stop.name}</option>`;
+    });
+    originSelect.innerHTML = opts;
+    destSelect.innerHTML = opts;
+    
+    // Default: Origin = 0, Dest = last
+    originSelect.value = 0;
+    destSelect.value = route.stops.length - 1;
+    
+    updateOdSelection(false); // Update internal state without fetching immediately
+  }
+
+  refreshLocations();
+}
+
+function updateOdSelection(refresh = true) {
+  const originSelect = document.getElementById('origin-select');
+  const destSelect = document.getElementById('dest-select');
+  if (!originSelect || !destSelect || !currentRouteId || !allRoutes[currentRouteId]) return;
+
+  const oIdx = parseInt(originSelect.value);
+  const dIdx = parseInt(destSelect.value);
+  const route = allRoutes[currentRouteId];
+
+  userOriginIdx = oIdx;
+  userDestIdx = dIdx;
+
+  if (oIdx === dIdx) {
+    userDesiredDirection = null; // Cannot compute
+  } else {
+    // If destination is after origin in the stops array, direction is toward the last stop
+    // If destination is before origin in the stops array, direction is toward the first stop
+    if (dIdx > oIdx) {
+      userDesiredDirection = route.stops[route.stops.length - 1].name;
+    } else {
+      userDesiredDirection = route.stops[0].name;
+    }
+  }
+
+  if (refresh) analyzeAndHighlight();
+}
+
+async function refreshLocations() {
+  await fetchVehicles();
+}
 
 // ── ETA Engine ────────────────────────────────────────────────────────────────
 const ETA_ALPHA = 0.3, SPEED_WIN = 8;
@@ -69,7 +223,16 @@ const userMarker = L.marker(userLocation, {
     iconSize:[36,36],iconAnchor:[18,36],popupAnchor:[0,-40],
   }),
 }).addTo(map);
-userMarker.on('dragend',(e)=>{userLocation=[e.target.getLatLng().lat,e.target.getLatLng().lng];analyzeAndHighlight();});
+
+function saveUserLocation() {
+  localStorage.setItem('userPinLocation', JSON.stringify(userLocation));
+}
+
+userMarker.on('dragend',(e)=>{
+  userLocation=[e.target.getLatLng().lat,e.target.getLatLng().lng];
+  saveUserLocation();
+  analyzeAndHighlight();
+});
 
 // ── Config hook ───────────────────────────────────────────────────────────────
 function onConfigChanged(cfg){
@@ -78,21 +241,20 @@ function onConfigChanged(cfg){
   renderAnnouncement(cfg.announcement);
 }
 
-// ── Direction ─────────────────────────────────────────────────────────────────
-function setDirection(dir){
-  userDesiredDirection=dir;
-  document.getElementById('btn-dir-south').className=`dir-btn ${dir===DIR_SOUTH?'active':'inactive'}`;
-  document.getElementById('btn-dir-north').className=`dir-btn ${dir===DIR_NORTH?'active':'inactive'}`;
-  analyzeAndHighlight();
-}
-
 // ── Location Buttons ──────────────────────────────────────────────────────────
 function useMyLocation(){
   const btn=document.getElementById('btn-gps');
   if(!navigator.geolocation){alert('เบราว์เซอร์ไม่รองรับ GPS');return;}
   btn.classList.add('active');
   navigator.geolocation.getCurrentPosition(
-    pos=>{userLocation=[pos.coords.latitude,pos.coords.longitude];userMarker.setLatLng(userLocation);map.setView(userLocation,14,{animate:true});analyzeAndHighlight();btn.classList.remove('active');},
+    pos=>{
+      userLocation=[pos.coords.latitude,pos.coords.longitude];
+      userMarker.setLatLng(userLocation);
+      map.setView(userLocation,14,{animate:true});
+      saveUserLocation();
+      analyzeAndHighlight();
+      btn.classList.remove('active');
+    },
     ()=>{alert('ไม่สามารถดึงตำแหน่งได้');btn.classList.remove('active');},
     {enableHighAccuracy:true,timeout:8000}
   );
@@ -102,7 +264,15 @@ function togglePinMode(){
   const btn=document.getElementById('btn-pin');
   btn.classList.toggle('active',isPinMode);
   map.getContainer().style.cursor=isPinMode?'crosshair':'';
-  if(isPinMode) map.once('click',e=>{userLocation=[e.latlng.lat,e.latlng.lng];userMarker.setLatLng(userLocation);analyzeAndHighlight();isPinMode=false;btn.classList.remove('active');map.getContainer().style.cursor='';});
+  if(isPinMode) map.once('click',e=>{
+    userLocation=[e.latlng.lat,e.latlng.lng];
+    userMarker.setLatLng(userLocation);
+    saveUserLocation();
+    analyzeAndHighlight();
+    isPinMode=false;
+    btn.classList.remove('active');
+    map.getContainer().style.cursor='';
+  });
 }
 
 // ── Offline / Online ──────────────────────────────────────────────────────────
@@ -179,8 +349,35 @@ function setEl(id,text,color){const e=document.getElementById(id);if(!e)return;e
 
 // ── Update info card ──────────────────────────────────────────────────────────
 function updateInfoCard(v, isDemo){
-  if(!v) return;
-  const eta=isDemo?calcSimETA(v.lat,v.lng,v.speed):getETA();
+  if(!v) {
+    // No vehicle data - show offline state
+    setEl('card-vid', 'ไม่มีรถในระบบ');
+    setEl('card-dir', 'สถานะ: offline');
+    setEl('v-speed', 'offline');
+    setEl('v-battery', 'offline');
+    setEl('v-power', 'offline');
+    setEl('eta-val', 'ไม่มีรถในระบบ');
+    setEl('eta-note', 'กรุณารอรถจริง');
+    setEl('eta-dist', '--');
+    setEl('last-ts', 'อัปเดต: offline');
+    
+    // Update collapsed panel
+    const collapsedTitle = document.getElementById('collapsed-title');
+    const collapsedETA = document.getElementById('collapsed-eta');
+    if(collapsedTitle) collapsedTitle.textContent = 'ไม่มีรถในระบบ';
+    if(collapsedETA) collapsedETA.textContent = 'รอข้อมูลจากบอร์ด...';
+    return;
+  }
+  
+  // [FIX] Demo mode: คำนวณ ETA และเขียนเข้า _etaCache ด้วย ไม่ใช่แค่คืนค่า local
+  let eta;
+  if (isDemo) {
+    eta = calcSimETA(v.lat, v.lng, v.speed);
+    // อัปเดต cache เพื่อให้ collapsedPanel อ่านได้
+    _etaCache = { ...eta, computedAt: Date.now() };
+  } else {
+    eta = getETA();
+  }
   const distLabel=eta.distKm<1?`${Math.round(eta.distKm*1000)} ม.`:`${eta.distKm.toFixed(2)} กม.`;
   const spd=v.speed||0;
 
@@ -202,7 +399,8 @@ function updateInfoCard(v, isDemo){
   }
 
   // GPS Fix — speed > 0 = 3D Fix, มี lat/lng ถูกต้อง = 2D Fix
-  setGPSFix(true, spd);
+  const hasGPS = v.lat && v.lng && v.lat !== 0 && v.lng !== 0;
+  setGPSFix(hasGPS, spd);
 
   // กระแสไฟ — ใช้ค่าจริงจาก Arduino (currentMa) ไม่ประมาณ
   const mA = (v.currentMa != null && v.currentMa > 0) ? Math.round(v.currentMa) : null;
@@ -210,7 +408,7 @@ function updateInfoCard(v, isDemo){
     setEl('v-power', mA);
     document.getElementById('v-power').style.color = mA > 150 ? 'var(--red)' : mA > 100 ? 'var(--amber)' : 'var(--blue)';
   } else {
-    setEl('v-power', '--');
+    setEl('v-power', 'offline');
     document.getElementById('v-power').style.color = 'var(--sl400)';
   }
 
@@ -221,12 +419,16 @@ function updateInfoCard(v, isDemo){
 
   const ts=v.timestamp?new Date(v.timestamp<1e12?v.timestamp*1000:v.timestamp).toLocaleTimeString('th-TH'):'--';
   setEl('last-ts','อัปเดต: '+ts);
+  
+  // Update collapsed bottom panel
+  updateBottomPanel(v);
 }
 
 // ── Fetch ─────────────────────────────────────────────────────────────────────
 async function fetchVehicles(){
   try{
-    const res=await fetch('/api/locations');
+    const url = currentRouteId ? `/api/locations?routeId=${currentRouteId}` : '/api/locations';
+    const res=await fetch(url);
     const data=await res.json();
     const inDemoMode=window.SYS?.demoMode??false;
     const rv=data[REAL_VEHICLE_ID]?.current;
@@ -255,7 +457,6 @@ async function fetchVehicles(){
           realVehicleMarker.setLatLng([rv.lat,rv.lng]);
           realVehicleMarker.setIcon(busMarkerIcon(rv.speed,true,false));
         }
-        updateInfoCard(rv,false);
       }
     } else if(inDemoMode){
       if(realVehicleMarker){map.removeLayer(realVehicleMarker);realVehicleMarker=null;}
@@ -275,14 +476,11 @@ async function fetchVehicles(){
           demoMarkers[id].setLatLng([v.lat,v.lng]);
           demoMarkers[id].setIcon(busMarkerIcon(v.speed,true,true));
         }
+        demoMarkers[id].vData = v; // Store data for analyzeAndHighlight
       });
       Object.keys(demoMarkers).forEach(id=>{
         if(!demoIds.includes(id)){map.removeLayer(demoMarkers[id]);delete demoMarkers[id];}
       });
-      if(demoIds.length>0){
-        const fv=data[demoIds[0]]?.current;
-        if(fv){fv.dynamicDirection=fv.direction||'unknown';updateInfoCard(fv,true);}
-      }
     } else {
       Object.keys(demoMarkers).forEach(id=>{map.removeLayer(demoMarkers[id]);delete demoMarkers[id];});
     }
@@ -299,43 +497,56 @@ async function fetchVehicles(){
 // ── Analyze ───────────────────────────────────────────────────────────────────
 function analyzeAndHighlight(){
   const inDemoMode=window.SYS?.demoMode??false;
-  const dest=userDesiredDirection===DIR_SOUTH?DEST_SOUTH:DEST_NORTH;
-  const distUD=map.distance(userLocation,dest);
-  let bestId=null,bestETA=Infinity,bestIsDemo=false;
+  
+  if (!currentRouteId || !allRoutes[currentRouteId]) return;
+  const route = allRoutes[currentRouteId];
+  if (!route.stops || route.stops.length === 0) return;
 
-  if(!inDemoMode && vehicleIsOnline && realVehicleData){
-    const v=realVehicleData;
-    if((v.dynamicDirection||v.direction)===userDesiredDirection){
-      const eta=getETA();
-      const distVD=map.distance([v.lat,v.lng],dest);
-      if(typeof eta.minutes==='number'&&eta.rawM<15_000&&distVD>=distUD-200&&eta.minutes<bestETA){
-        bestETA=eta.minutes;bestId=REAL_VEHICLE_ID;bestIsDemo=false;
+  let destLatLng = [route.stops[userDestIdx].lat, route.stops[userDestIdx].lng];
+  const distUD = map.distance(userLocation, destLatLng);
+  let bestId = null, bestETA = Infinity, bestIsDemo = false, bestVehicleData = null;
+
+  if (!inDemoMode && vehicleIsOnline && realVehicleData){
+    const v = realVehicleData;
+    if ((v.dynamicDirection || v.direction) === userDesiredDirection || !userDesiredDirection){
+      const eta = getETA();
+      const distVD = map.distance([v.lat, v.lng], destLatLng);
+      if (typeof eta.minutes==='number' && distVD >= distUD - 200 && eta.minutes < bestETA){
+        bestETA = eta.minutes; bestId = REAL_VEHICLE_ID; bestIsDemo = false;
+        bestVehicleData = v;
       }
     }
   }
-  if(inDemoMode){
-    Object.keys(demoMarkers).forEach(id=>{
-      const m=demoMarkers[id]; if(!m) return;
-      const ll=m.getLatLng();
-      const eta=calcSimETA(ll.lat,ll.lng,30);
-      const distVD=map.distance([ll.lat,ll.lng],dest);
-      if(typeof eta.minutes==='number'&&eta.rawM<15_000&&distVD>=distUD-200&&eta.minutes<bestETA){
-        bestETA=eta.minutes;bestId=id;bestIsDemo=true;
+  if (inDemoMode){
+    Object.keys(demoMarkers).forEach(id => {
+      const m = demoMarkers[id]; if (!m || !m.vData) return;
+      const v = m.vData;
+      if ((v.dynamicDirection || v.direction) === userDesiredDirection || !userDesiredDirection){
+        const eta = calcSimETA(v.lat, v.lng, v.speed || 30);
+        const distVD = map.distance([v.lat, v.lng], destLatLng);
+        if (typeof eta.minutes==='number' && distVD >= distUD - 200 && eta.minutes < bestETA){
+          bestETA = eta.minutes; bestId = id; bestIsDemo = true;
+          bestVehicleData = v;
+        }
       }
     });
   }
 
   // Reset icons
-  if(realVehicleMarker&&realVehicleData) realVehicleMarker.setIcon(busMarkerIcon(realVehicleData.speed,true,false,false));
+  if(realVehicleMarker && realVehicleData) realVehicleMarker.setIcon(busMarkerIcon(realVehicleData.speed,true,false,false));
   Object.keys(demoMarkers).forEach(id=>{if(demoMarkers[id]) demoMarkers[id].setIcon(busMarkerIcon(30,true,true,false));});
 
   if(!bestId){
-    userMarker.bindPopup(`<div style="text-align:center;padding:10px;font-family:'Sarabun',sans-serif;color:#94A3B8;font-size:13px;font-weight:600;">ไม่มีรถที่กำลังมาหาคุณ</div>`).openPopup();
+    userMarker.bindPopup(`<div style="text-align:center;padding:10px;font-family:'Sarabun',sans-serif;color:#94A3B8;font-size:13px;font-weight:600;">ไม่มีรถที่กำลังมาหาคุณในเส้นทางนี้</div>`).openPopup();
+    updateInfoCard(null, false); // Clear bottom panel
     return;
   }
 
-  if(!bestIsDemo&&realVehicleMarker) realVehicleMarker.setIcon(busMarkerIcon(realVehicleData?.speed||0,true,false,true));
-  else if(bestIsDemo&&demoMarkers[bestId]) demoMarkers[bestId].setIcon(busMarkerIcon(30,true,true,true));
+  if(!bestIsDemo && realVehicleMarker) realVehicleMarker.setIcon(busMarkerIcon(realVehicleData?.speed||0,true,false,true));
+  else if(bestIsDemo && demoMarkers[bestId]) demoMarkers[bestId].setIcon(busMarkerIcon(30,true,true,true));
+
+  // Update Bottom Panel with best vehicle
+  updateInfoCard(bestVehicleData, bestIsDemo);
 
   const dotColor=bestIsDemo?'#7C3AED':'#059669';
   const eta=bestIsDemo?calcSimETA(demoMarkers[bestId]?.getLatLng()?.lat||0,demoMarkers[bestId]?.getLatLng()?.lng||0,30):getETA();
@@ -355,5 +566,6 @@ function analyzeAndHighlight(){
 }
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
+loadRoutes();  // Load routes first
 fetchVehicles();
 setInterval(fetchVehicles, 3000);

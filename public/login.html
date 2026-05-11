@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Admin Login — สองแถวสมาร์ท</title>
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet"/>
+  <style>
+    :root{
+      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
+      --slate-50:#F8FAFC;--slate-100:#F1F5F9;--slate-200:#E2E8F0;
+      --slate-400:#94A3B8;--slate-500:#64748B;--slate-600:#475569;
+      --slate-700:#334155;--slate-800:#1E293B;
+      --red:#DC2626;--red-50:#FEF2F2;
+    }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+    html,body{font-family:'Sarabun',sans-serif;height:100%;}
+    body{
+      background:linear-gradient(135deg,var(--blue-50) 0%,var(--slate-100) 100%);
+      display:flex;align-items:center;justify-content:center;
+      padding:20px;
+    }
+    .login-card{
+      background:white;border-radius:20px;
+      box-shadow:0 10px 40px rgba(0,0,0,.1);
+      width:100%;max-width:400px;padding:40px 35px;
+    }
+    .logo{text-align:center;margin-bottom:30px;}
+    .logo-icon{font-size:3rem;margin-bottom:10px;}
+    .logo-title{font-size:1.4rem;font-weight:700;color:var(--slate-800);}
+    .logo-sub{font-size:.85rem;color:var(--slate-500);margin-top:5px;}
+    
+    .form-group{margin-bottom:20px;}
+    .form-label{
+      display:block;font-size:.75rem;font-weight:600;
+      color:var(--slate-600);text-transform:uppercase;
+      letter-spacing:.05em;margin-bottom:8px;
+    }
+    .form-input{
+      width:100%;padding:12px 15px;border:2px solid var(--slate-200);
+      border-radius:12px;font-family:'Sarabun',sans-serif;
+      font-size:1rem;color:var(--slate-800);transition:.2s;
+    }
+    .form-input:focus{outline:none;border-color:var(--blue);}
+    
+    .login-btn{
+      width:100%;padding:14px;border:none;border-radius:12px;
+      background:var(--blue);color:white;font-family:'Sarabun',sans-serif;
+      font-size:1rem;font-weight:600;cursor:pointer;transition:.2s;
+      margin-top:10px;
+    }
+    .login-btn:hover{background:#1D4ED8;}
+    .login-btn:disabled{opacity:.6;cursor:not-allowed;}
+    
+    .error-msg{
+      background:var(--red-50);color:var(--red);padding:12px 15px;
+      border-radius:10px;font-size:.9rem;margin-bottom:20px;display:none;
+    }
+    .error-msg.show{display:block;}
+    
+    .back-link{
+      display:block;text-align:center;margin-top:25px;
+      color:var(--slate-500);text-decoration:none;font-size:.9rem;
+    }
+    .back-link:hover{color:var(--blue);}
+  </style>
+</head>
+<body>
+
+<div class="login-card">
+  <div class="logo">
+    <div class="logo-icon">🚐</div>
+    <div class="logo-title">สองแถวสมาร์ท</div>
+    <div class="logo-sub">ระบบจัดการผู้ดูแล</div>
+  </div>
+  
+  <div class="error-msg" id="error-msg"></div>
+  
+  <form id="login-form">
+    <div class="form-group">
+      <label class="form-label">ชื่อผู้ใช้</label>
+      <input type="text" class="form-input" id="username" placeholder="Admin123" required/>
+    </div>
+    
+    <div class="form-group">
+      <label class="form-label">รหัสผ่าน</label>
+      <input type="password" class="form-input" id="password" placeholder="••••••••" required/>
+    </div>
+    
+    <button type="submit" class="login-btn" id="login-btn">เข้าสู่ระบบ</button>
+  </form>
+  
+  <a href="/" class="back-link">← กลับไปหน้าหลัก</a>
+</div>
+
+<script>
+const loginForm = document.getElementById('login-form');
+const errorMsg = document.getElementById('error-msg');
+const loginBtn = document.getElementById('login-btn');
+
+// Check if already logged in
+const token = localStorage.getItem('adminToken');
+if (token) {
+  // Verify token
+  fetch('/api/auth/verify', {
+    headers: { 'Authorization': 'Bearer ' + token }
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      window.location.href = '/admin.html';
+    } else {
+      localStorage.removeItem('adminToken');
+    }
+  })
+  .catch(() => localStorage.removeItem('adminToken'));
+}
+
+loginForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  
+  const username = document.getElementById('username').value.trim();
+  const password = document.getElementById('password').value;
+  
+  errorMsg.classList.remove('show');
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'กำลังเข้าสู่ระบบ...';
+  
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    
+    const data = await res.json();
+    
+    if (data.ok && data.token) {
+      localStorage.setItem('adminToken', data.token);
+      localStorage.setItem('adminUsername', data.username);
+      window.location.href = '/admin.html';
+    } else {
+      errorMsg.textContent = data.error || 'เข้าสู่ระบบไม่สำเร็จ';
+      errorMsg.classList.add('show');
+    }
+  } catch (e) {
+    errorMsg.textContent = 'เกิดข้อผิดพลาด กรุณาลองใหม่อีกครั้ง';
+    errorMsg.classList.add('show');
+  } finally {
+    loginBtn.disabled = false;
+    loginBtn.textContent = 'เข้าสู่ระบบ';
+  }
+});
+</script>
+
+</body>
+</html>

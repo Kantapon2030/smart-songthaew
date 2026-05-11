@@ -28,10 +28,12 @@
 
 require('dotenv').config();
 
-const express = require('express');
-const cors    = require('cors');
-const admin   = require('firebase-admin');
-const path    = require('path');
+const express    = require('express');
+const cors       = require('cors');
+const admin      = require('firebase-admin');
+const path       = require('path');
+const bcrypt     = require('bcryptjs');
+const jwt        = require('jsonwebtoken');
 
 // ── Firebase Init ─────────────────────────────────────────────────────────────
 // [DEPLOY] อ่าน credentials จาก Environment Variable (Railway/Vercel)
@@ -64,6 +66,102 @@ admin.initializeApp({
 
 const db = admin.database();
 
+// ── JWT Config ────────────────────────────────────────────────────────────────
+const JWT_SECRET = process.env.JWT_SECRET || 'smart-songthaew-secret-key-change-in-production';
+const JWT_EXPIRES = '8h'; // 8 hours
+
+// ── Rate Limiting Store ───────────────────────────────────────────────────────
+const rateLimitStore = new Map(); // vehicleId -> lastRequestTime
+const RATE_LIMIT_MS = 2000; // 2 seconds between requests
+
+// ── Auth Middleware ───────────────────────────────────────────────────────────
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Unauthorized - No token' });
+  }
+  
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (e) {
+    return res.status(401).json({ error: 'Unauthorized - Invalid token' });
+  }
+}
+
+// ── Rate Limit Middleware ───────────────────────────────────────────────────
+function rateLimitMiddleware(req, res, next) {
+  const vehicleId = req.body.vehicleId || req.query.vehicleId;
+  if (!vehicleId) return next(); // Skip if no vehicleId
+  
+  const now = Date.now();
+  const lastRequest = rateLimitStore.get(vehicleId);
+  
+  if (lastRequest && (now - lastRequest) < RATE_LIMIT_MS) {
+    return res.status(429).json({ 
+      error: 'Too Many Requests', 
+      retryAfter: Math.ceil((RATE_LIMIT_MS - (now - lastRequest)) / 1000)
+    });
+  }
+  
+  rateLimitStore.set(vehicleId, now);
+  next();
+}
+
+// ── Initialize Default Data ───────────────────────────────────────────────────
+async function initializeDefaultData() {
+  try {
+    // Check if admin exists
+    const adminSnap = await db.ref('system/admin').once('value');
+    if (!adminSnap.exists()) {
+      // Create default admin
+      const hashedPassword = bcrypt.hashSync('admin123', 10);
+      await db.ref('system/admin').set({
+        username: 'Admin123',
+        passwordHash: hashedPassword,
+        createdAt: Date.now()
+      });
+      console.log('[Init] Default admin created: Admin123 / admin123');
+    }
+    
+    // Check if default route exists
+    const routesSnap = await db.ref('routes').once('value');
+    if (!routesSnap.exists()) {
+      // Create default route
+      const defaultRoute = {
+        name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้ ↔ เซ็นทรัลนครศรีธรรมราช',
+        description: 'เส้นทางหลัก นครศรีธรรมราช',
+        coords: [
+          [8.432450, 99.959129],
+          [8.435500, 99.960500],
+          [8.440000, 99.962000],
+          [8.445000, 99.965000],
+          [8.452000, 99.968000],
+          [8.460000, 99.971000],
+          [8.467100, 99.974300]
+        ],
+        stops: [
+          { name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้', lat: 8.432450, lng: 99.959129 },
+          { name: 'ถนนปั้นน้ำ', lat: 8.435500, lng: 99.960500 },
+          { name: 'แยกพรหมคีรี', lat: 8.440000, lng: 99.962000 },
+          { name: 'ถนนราชดำเนิน', lat: 8.445000, lng: 99.965000 },
+          { name: 'วงเวียนนาคร', lat: 8.452000, lng: 99.968000 },
+          { name: 'ถนนมหาราช', lat: 8.460000, lng: 99.971000 },
+          { name: 'เซ็นทรัลนครศรีธรรมราช', lat: 8.467100, lng: 99.974300 }
+        ],
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+      await db.ref('routes/route_nakhon_01').set(defaultRoute);
+      console.log('[Init] Default route created');
+    }
+  } catch (e) {
+    console.error('[Init] Error:', e);
+  }
+}
+
 // ── Express ───────────────────────────────────────────────────────────────────
 const app  = express();
 const PORT = process.env.PORT || 3000;
@@ -95,7 +193,7 @@ function validLatLng(lat, lng) {
 //
 //  Body: { vehicleId, lat, lng, speed?, battery?, routeId?, direction? }
 // ============================================================
-app.post('/api/update-location', async (req, res) => {
+app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const {
     vehicleId,
     lat,
@@ -194,20 +292,25 @@ app.post('/api/update-location', async (req, res) => {
 
 // ============================================================
 //  GET /api/locations
-//  [FIX] Endpoint ที่ frontend (app.js, admin.js) เรียกจริง
+//  [FIX] Endpoint ที่ frontend (app.js, admin.js) เรียกใช้จริง
 //  ── ดึงตำแหน่งปัจจุบันของรถทุกคัน พร้อม history structure ──
+//  Query: ?routeId=xxx (optional) - filter by route
 //  Response: { "ST-01": { current: {...} }, "ST-02": { current: {...} } }
 // ============================================================
 app.get('/api/locations', async (req, res) => {
   try {
+    const { routeId } = req.query;
     const snap = await db.ref('fleet').once('value');
     const raw  = snap.val() || {};
 
     // ส่งโครงสร้าง { vehicleId: { current: {...} } } ตามที่ frontend expect
     const result = {};
     for (const [id, val] of Object.entries(raw)) {
+      // Filter by routeId if specified
+      if (routeId && val.routeId !== routeId) continue;
+      
       if (val?.current) {
-        result[id] = { current: val.current };
+        result[id] = { current: val.current, routeId: val.routeId, type: val.type };
       }
     }
 
@@ -312,15 +415,15 @@ app.get('/api/analytics/peak-hours', async (req, res) => {
 // ============================================================
 //  GET /api/simulate
 //  ── DEV ONLY: inject mock GPS สำหรับทดสอบ ──
-//  Simulate vehicles บนถนนอังรีดูนัง
+//  Simulate vehicles เส้นทางนครศรีธรรมราช
 // ============================================================
 const SIM_ROUTE = [
-  [13.7451, 100.5358],[13.7428, 100.5356],[13.7407, 100.5350],
-  [13.7384, 100.5345],[13.7360, 100.5340],[13.7342, 100.5337],[13.7311, 100.5336],
+  [8.432450, 99.959129],[8.435500, 99.960500],[8.440000, 99.962000],
+  [8.445000, 99.965000],[8.452000, 99.968000],[8.460000, 99.971000],[8.467100, 99.974300],
 ];
 const SIM_FLEET = {
-  'ST-01': { routeId: 'route_henri_dunant', step: 0, dir: 1 },
-  'ST-02': { routeId: 'route_henri_dunant', step: 3, dir: -1 },
+  'ST-01': { routeId: 'nakhon_central_route', step: 0, dir: 1 },
+  'ST-02': { routeId: 'nakhon_central_route', step: 3, dir: -1 },
 };
 
 app.get('/api/simulate', async (req, res) => {
@@ -413,29 +516,34 @@ app.post('/api/config', async (req, res) => {
 // ============================================================
 let _demoTimer    = null;
 let _demoVehicles = 2;
+let _demoSpeedMultiplier = 1; // ตัวคูณความเร็ว Demo
 
-// ── ถนนอังรีดูนังต์ Rama I ↔ Rama IV (~1.6 km) ──────────────
-const DEMO_ROUTE = [
-  [13.7451, 100.5358],   // 0: Siam Square / Rama I
-  [13.7428, 100.5356],   // 1: ร.ร.สาธิตปทุมวัน
-  [13.7407, 100.5350],   // 2: ประตูจุฬาฯ (อังรีดูนัง)
-  [13.7384, 100.5345],   // 3: คณะสัตวแพทย์ จุฬาฯ
-  [13.7360, 100.5340],   // 4: รพ.จุฬา / สภากาชาด
-  [13.7342, 100.5337],   // 5: สถานเสาวภา
-  [13.7311, 100.5336],   // 6: แยก Rama IV
+// [FIX] _demoRoute: ค่า default — จะถูกแทนด้วย coords จาก Firebase เมื่อ demo/start
+let _demoRoute = [
+  [8.432450, 99.959129],
+  [8.435500, 99.960500],
+  [8.440000, 99.962000],
+  [8.445000, 99.965000],
+  [8.452000, 99.968000],
+  [8.460000, 99.971000],
+  [8.467100, 99.974300],
 ];
-const DIR_NORTH = 'Siam Square';
-const DIR_SOUTH = 'แยก Rama IV';
+let _demoRouteId = 'unassigned';
 const _demoState = {}; // { id: { lat,lng,targetIdx,dir,speed,targetSpeed,stopTicks,battery } }
 
-function initDemoVehicle(id, startIdx) {
-  const t = 0.3 + Math.random() * 0.4;
-  const p0 = DEMO_ROUTE[startIdx], p1 = DEMO_ROUTE[startIdx + 1];
+function initDemoVehicle(id, startIdx, route) {
+  const R = route || _demoRoute;
+  const safeIdx = Math.min(startIdx, R.length - 2);
+  const t  = 0.3 + Math.random() * 0.4;
+  const p0 = R[safeIdx], p1 = R[safeIdx + 1];
+  const midLat = p0[0] + (p1[0]-p0[0])*t;
+  const midLng = p0[1] + (p1[1]-p0[1])*t;
+  const DIR_S = R[R.length-1].toString();
+  const DIR_N = R[0].toString();
   _demoState[id] = {
-    lat:         p0[0] + (p1[0]-p0[0])*t,
-    lng:         p0[1] + (p1[1]-p0[1])*t,
-    targetIdx:   startIdx + 1,
-    dir:         startIdx < Math.floor(DEMO_ROUTE.length/2) ? DIR_SOUTH : DIR_NORTH,
+    lat: midLat, lng: midLng,
+    targetIdx:   safeIdx + 1,
+    dir:         safeIdx < Math.floor(R.length/2) ? 'south' : 'north',
     speed:       30, targetSpeed: 35, stopTicks: 0,
     battery:     Math.floor(70 + Math.random()*25),
   };
@@ -447,6 +555,8 @@ async function demoTick() {
   const ids   = Object.keys(_demoState);
   if (!ids.length) return;
 
+  const R = _demoRoute;  // ใช้ route ที่ดึงจาก Firebase
+
   const updates = {};
   for (const id of ids) {
     const v = _demoState[id];
@@ -454,31 +564,32 @@ async function demoTick() {
     if (v.stopTicks > 0) {
       v.stopTicks--; v.speed = 0;
     } else {
-      if (Math.random() < 0.05) {
+      // โอกาสหยุดจอดแบบสุ่ม (น้อยมาก)
+      if (Math.random() < 0.01) {
         const r = Math.random();
-        if (r < 0.15) { v.stopTicks = 5 + Math.floor(Math.random()*15); v.targetSpeed = 0; }
-        else if (r < 0.35) v.targetSpeed = 15 + Math.floor(Math.random()*10);
-        else v.targetSpeed = 30 + Math.floor(Math.random()*15);
+        if (r < 0.1) { v.stopTicks = 2 + Math.floor(Math.random()*3); v.targetSpeed = 0; } // จอดสั้นๆ 4-10 วิ
+        else if (r < 0.3) v.targetSpeed = 15 + Math.floor(Math.random()*10);
+        else v.targetSpeed = 30 + Math.floor(Math.random()*20);
       }
       if (v.speed < v.targetSpeed) v.speed = Math.min(v.speed+3, v.targetSpeed);
       else if (v.speed > v.targetSpeed) v.speed = Math.max(v.speed-3, v.targetSpeed);
 
       if (v.speed > 0) {
-        const tgt = DEMO_ROUTE[v.targetIdx];
+        const tgt = R[v.targetIdx];
+        if (!tgt) { v.targetIdx = 1; v.dir = 'south'; continue; }
         const dLat = tgt[0]-v.lat, dLng = tgt[1]-v.lng;
         const dist = Math.sqrt(dLat*dLat+dLng*dLng);
-        const step = (v.speed/3600)/111 * 2;
+        const step = (v.speed/3600)/111 * 2 * _demoSpeedMultiplier;
         if (dist <= step) {
           v.lat = tgt[0]; v.lng = tgt[1];
-          v.stopTicks = 10 + Math.floor(Math.random()*20); v.speed = 0;
-          if (v.dir === DIR_SOUTH) {
+          // ไม่ต้องจอดทุกจุดของเส้น (เพราะเป็นแค่จุดวาดโค้ง) ข้ามไปจุดต่อไปได้เลย
+          if (v.dir === 'south') {
             v.targetIdx++;
-            if (v.targetIdx >= DEMO_ROUTE.length) { v.targetIdx = DEMO_ROUTE.length-2; v.dir = DIR_NORTH; }
+            if (v.targetIdx >= R.length) { v.targetIdx = R.length-2; v.dir = 'north'; }
           } else {
             v.targetIdx--;
-            if (v.targetIdx < 0) { v.targetIdx = 1; v.dir = DIR_SOUTH; }
+            if (v.targetIdx < 0) { v.targetIdx = 1; v.dir = 'south'; }
           }
-          v.targetSpeed = 30 + Math.floor(Math.random()*15);
         } else {
           v.lat += (dLat/dist)*step; v.lng += (dLng/dist)*step;
         }
@@ -488,33 +599,87 @@ async function demoTick() {
     if (v.battery < 10) v.battery = 92;
 
     const ts = Date.now();
-    const data = { lat:v.lat, lng:v.lng, speed:v.speed, battery:v.battery,
-      timestamp:ts, routeId:'route_henri_dunant', direction:v.dir };
+    // ทิศทาง: ใช้ชื่อ stop จาก route จริง ถ้ามี
+    const routeData = await db.ref(`routes/${_demoRouteId}`).once('value');
+    const rInfo = routeData.val();
+    const stopNames = rInfo?.stops || [];
+    const dir = v.dir === 'south'
+      ? (stopNames[stopNames.length-1]?.name || 'ปลายทาง')
+      : (stopNames[0]?.name || 'ต้นทาง');
 
-    updates[`fleet/${id}/current`]                        = data;
-    updates[`history/${today}/${id}/${ts}`]               = data;
+    const data = {
+      lat: v.lat, lng: v.lng, speed: v.speed, battery: v.battery,
+      timestamp: ts, routeId: _demoRouteId, direction: dir,
+    };
+
+    updates[`fleet/${id}/current`]                         = data;
+    updates[`history/${today}/${id}/${ts}`]                = data;
     updates[`analytics/peak_hours/${today}/${id}/${hour}`] = admin.database.ServerValue.increment(1);
   }
   await db.ref().update(updates);
 }
 
 app.post('/api/demo/start', async (req, res) => {
-  const n = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
+  const n       = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
+  const routeId = req.body.routeId || null;
   _demoVehicles = n;
+
+  // ดึง route จาก Firebase ถ้ามี routeId
+  let chosenRouteId = routeId;
+  try {
+    if (routeId) {
+      const snap = await db.ref(`routes/${routeId}`).once('value');
+      const r = snap.val();
+      if (r?.coords?.length >= 2) {
+        _demoRoute   = r.coords;
+        _demoRouteId = routeId;
+        console.log(`[DEMO] Using route ${routeId} (${r.coords.length} waypoints)`);
+      }
+    } else {
+      // ไม่ระบุ route → ดึง route แรกจาก Firebase
+      const snap = await db.ref('routes').limitToFirst(1).once('value');
+      const routes = snap.val() || {};
+      const firstId = Object.keys(routes)[0];
+      if (firstId && routes[firstId]?.coords?.length >= 2) {
+        _demoRoute   = routes[firstId].coords;
+        _demoRouteId = firstId;
+        chosenRouteId = firstId;
+        console.log(`[DEMO] Auto-selected route ${firstId}`);
+      }
+    }
+  } catch (e) {
+    console.warn('[DEMO] Could not fetch route from Firebase, using default coords:', e.message);
+  }
 
   // ล้าง state เดิม
   Object.keys(_demoState).forEach(k => delete _demoState[k]);
   for (let i = 0; i < n; i++) {
-    initDemoVehicle(`DEMO_${i+1}`, i % (DEMO_ROUTE.length-1));
+    initDemoVehicle(`DEMO_${i+1}`, i % (_demoRoute.length-1), _demoRoute);
   }
 
   clearInterval(_demoTimer);
   _demoTimer = setInterval(demoTick, 2000);
 
-  // บันทึก config
-  await db.ref('system/config').update({ demoMode:true, demoVehicles:n, updatedAt:Date.now() });
-  console.log(`[DEMO] started ${n} vehicles`);
-  res.json({ ok:true, vehicles:n, ids:Object.keys(_demoState) });
+  await db.ref('system/config').update({
+    demoMode: true, demoVehicles: n,
+    demoRouteId: _demoRouteId,
+    demoSpeed: _demoSpeedMultiplier,
+    updatedAt: Date.now(),
+  });
+  console.log(`[DEMO] started ${n} vehicles on route ${_demoRouteId}`);
+  res.json({ ok:true, vehicles:n, routeId: _demoRouteId, ids:Object.keys(_demoState) });
+});
+
+app.post('/api/demo/speed', async (req, res) => {
+  const speed = parseFloat(req.body.speed);
+  if (!isNaN(speed) && speed > 0 && speed <= 10) {
+    _demoSpeedMultiplier = speed;
+    await db.ref('system/config').update({ demoSpeed: speed, updatedAt: Date.now() });
+    console.log(`[DEMO] Speed multiplier set to ${speed}x`);
+    res.json({ ok: true, speed });
+  } else {
+    res.status(400).json({ error: 'Invalid speed multiplier' });
+  }
 });
 
 app.post('/api/demo/stop', async (req, res) => {
@@ -539,6 +704,390 @@ app.get('/api/demo/status', (req, res) => {
   });
 });
 
+// ============================================================
+//  AUTHENTICATION APIs
+// ============================================================
+
+// POST /api/auth/login
+app.post('/api/auth/login', async (req, res) => {
+  const { username, password } = req.body;
+  
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+  
+  try {
+    const adminSnap = await db.ref('system/admin').once('value');
+    const admin = adminSnap.val();
+    
+    if (!admin) {
+      return res.status(500).json({ error: 'Admin not configured' });
+    }
+    
+    // Check username (case-insensitive for username)
+    if (username.toLowerCase() !== admin.username.toLowerCase()) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Check password
+    const valid = bcrypt.compareSync(password, admin.passwordHash);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    // Generate JWT
+    const token = jwt.sign(
+      { username: admin.username, role: 'admin' },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES }
+    );
+    
+    res.json({ ok: true, token, username: admin.username });
+  } catch (e) {
+    console.error('[Auth Login Error]', e);
+    res.status(500).json({ error: 'Login failed' });
+  }
+});
+
+// GET /api/auth/verify - Check if token is still valid
+app.get('/api/auth/verify', authMiddleware, (req, res) => {
+  res.json({ ok: true, user: req.user });
+});
+
+// ============================================================
+//  ROUTE MANAGEMENT APIs (Protected)
+// ============================================================
+
+// GET /api/routes - List all routes
+app.get('/api/routes', async (req, res) => {
+  try {
+    const snap = await db.ref('routes').once('value');
+    const routes = snap.val() || {};
+    
+    // Add vehicle count to each route
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+    
+    const result = {};
+    for (const [id, route] of Object.entries(routes)) {
+      const vehicleCount = Object.values(fleet).filter(v => v.routeId === id).length;
+      result[id] = { ...route, vehicleCount };
+    }
+    
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch routes' });
+  }
+});
+
+// POST /api/routes - Create new route (admin only)
+app.post('/api/routes', authMiddleware, async (req, res) => {
+  const { name, description, coords, stops } = req.body;
+  
+  if (!name || !coords || !Array.isArray(coords)) {
+    return res.status(400).json({ error: 'Name and coords array required' });
+  }
+  
+  try {
+    const routeId = 'route_' + Date.now();
+    const route = {
+      name,
+      description: description || '',
+      coords,
+      stops: stops || [],
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    
+    await db.ref(`routes/${routeId}`).set(route);
+    res.json({ ok: true, routeId, route });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to create route' });
+  }
+});
+
+// DELETE /api/routes/:id - Delete route (admin only)
+app.delete('/api/routes/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  
+  try {
+    // Unassign all vehicles from this route
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+    
+    const updates = {};
+    for (const [vid, v] of Object.entries(fleet)) {
+      if (v.routeId === id) {
+        updates[`fleet/${vid}/routeId`] = null;
+      }
+    }
+    
+    // Delete route
+    updates[`routes/${id}`] = null;
+    
+    await db.ref().update(updates);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to delete route' });
+  }
+});
+
+// PATCH /api/routes/:id - Edit route (admin only)
+app.patch('/api/routes/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { name, description, coords, stops } = req.body;
+
+  try {
+    const snap = await db.ref(`routes/${id}`).once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'Route not found' });
+
+    const patch = { updatedAt: Date.now() };
+    if (name)        patch.name        = name;
+    if (description !== undefined) patch.description = description;
+    if (coords)      patch.coords      = coords;
+    if (stops)       patch.stops       = stops;
+
+    await db.ref(`routes/${id}`).update(patch);
+    console.log(`[ROUTE] Updated ${id}:`, Object.keys(patch));
+    res.json({ ok: true, routeId: id });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to update route' });
+  }
+});
+
+// DELETE /api/routes/:id - Delete route (admin only)
+app.delete('/api/routes/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // Unassign all vehicles from this route
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+
+    const updates = {};
+    for (const [vid, v] of Object.entries(fleet)) {
+      if (v.routeId === id) {
+        updates[`fleet/${vid}/routeId`] = 'unassigned';
+      }
+    }
+
+    // Delete route
+    updates[`routes/${id}`] = null;
+
+    await db.ref().update(updates);
+    console.log(`[ROUTE] Deleted route ${id}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to delete route' });
+  }
+});
+
+// DELETE /api/admin/all-routes - Delete ALL routes (admin only, for full reset)
+app.delete('/api/admin/all-routes', authMiddleware, async (req, res) => {
+  try {
+    // Unassign all fleet vehicles
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+    const updates = {};
+    for (const vid of Object.keys(fleet)) {
+      updates[`fleet/${vid}/routeId`] = 'unassigned';
+    }
+    updates['routes'] = null;
+    await db.ref().update(updates);
+    console.log('[ROUTE] Deleted ALL routes');
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to delete all routes' });
+  }
+});
+
+// POST /api/routes/:id/vehicles - Add vehicle to route (admin only)
+app.post('/api/routes/:id/vehicles', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  const { vehicleId, type = 'real' } = req.body;
+
+  if (!vehicleId) {
+    return res.status(400).json({ error: 'vehicleId required' });
+  }
+
+  try {
+    const routeSnap = await db.ref(`routes/${id}`).once('value');
+    if (!routeSnap.exists()) {
+      return res.status(404).json({ error: 'Route not found' });
+    }
+
+    await db.ref(`fleet/${vehicleId}`).update({
+      routeId:    id,
+      type:       type,
+      assignedAt: Date.now()
+    });
+
+    console.log(`[FLEET] Assigned ${vehicleId} → route ${id}`);
+    res.json({ ok: true, vehicleId, routeId: id });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to add vehicle' });
+  }
+});
+
+// DELETE /api/routes/:id/vehicles/:vid - Remove vehicle from route (admin only)
+app.delete('/api/routes/:id/vehicles/:vid', authMiddleware, async (req, res) => {
+  const { vid } = req.params;
+
+  try {
+    await db.ref(`fleet/${vid}`).update({ routeId: 'unassigned', type: null });
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to remove vehicle' });
+  }
+});
+
+// GET /api/routes/:id/vehicles - Get vehicles in route
+app.get('/api/routes/:id/vehicles', async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+
+    const vehicles = {};
+    for (const [vid, v] of Object.entries(fleet)) {
+      if (v.routeId === id) {
+        vehicles[vid] = v;
+      }
+    }
+
+    res.json(vehicles);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch vehicles' });
+  }
+});
+
+// ============================================================
+//  FLEET MANAGEMENT
+//  GET  /api/fleet              ← รายชื่อรถทั้งหมดใน Firebase
+//  POST /api/fleet/register     ← ลงทะเบียนรถใหม่
+//  DELETE /api/fleet/:id        ← ลบรถออกจากระบบ
+//  PATCH /api/fleet/:id         ← แก้ไขรถ (เปลี่ยน routeId)
+// ============================================================
+app.get('/api/fleet', async (req, res) => {
+  try {
+    const snap  = await db.ref('fleet').once('value');
+    const fleet = snap.val() || {};
+    const result = {};
+    for (const [id, v] of Object.entries(fleet)) {
+      result[id] = {
+        vehicleId:  id,
+        routeId:    v.routeId || 'unassigned',
+        type:       v.type || 'real',
+        assignedAt: v.assignedAt || null,
+        current: v.current ? {
+          lat:       v.current.lat,
+          lng:       v.current.lng,
+          speed:     v.current.speed,
+          battery:   v.current.battery,
+          timestamp: v.current.timestamp,
+        } : null,
+      };
+    }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to fetch fleet' });
+  }
+});
+
+app.post('/api/fleet/register', authMiddleware, async (req, res) => {
+  const { vehicleId, routeId = 'unassigned', description = '', type = 'real' } = req.body;
+  if (!vehicleId || !/^[a-zA-Z0-9_-]+$/.test(vehicleId)) {
+    return res.status(400).json({ error: 'vehicleId required (a-z, 0-9, _, -)' });
+  }
+  try {
+    const existing = await db.ref(`fleet/${vehicleId}`).once('value');
+    if (existing.exists()) {
+      return res.status(409).json({ error: `Vehicle "${vehicleId}" already registered` });
+    }
+    await db.ref(`fleet/${vehicleId}`).set({
+      routeId,
+      type,
+      description,
+      registeredAt: Date.now(),
+      assignedAt:   Date.now(),
+    });
+    console.log(`[FLEET] Registered new vehicle: ${vehicleId} → ${routeId}`);
+    res.json({ ok: true, vehicleId, routeId });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to register vehicle' });
+  }
+});
+
+app.delete('/api/fleet/:id', authMiddleware, async (req, res) => {
+  const { id } = req.params;
+  try {
+    await db.ref(`fleet/${id}`).remove();
+    console.log(`[FLEET] Removed vehicle: ${id}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to delete vehicle' });
+  }
+});
+
+app.patch('/api/fleet/:id', authMiddleware, async (req, res) => {
+  const { id }      = req.params;
+  const { routeId, description, type } = req.body;
+  try {
+    const patch = { updatedAt: Date.now() };
+    if (routeId     !== undefined) patch.routeId     = routeId;
+    if (description !== undefined) patch.description = description;
+    if (type        !== undefined) patch.type        = type;
+    await db.ref(`fleet/${id}`).update(patch);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: 'Failed to update vehicle' });
+  }
+});
+
+
+
+// ============================================================
+//  POST /api/admin/purge-ghosts
+//  ── ลบรถที่ข้อมูลผี (Offline > 1 ชั่วโมง หรือพิกัดนอก Thailand) ──
+//  ไม่ต้อง Auth เพื่อให้ Dashboard กดได้ด้วย
+//  Response: { ok, removed, ids }
+// ============================================================
+app.post('/api/admin/purge-ghosts', async (req, res) => {
+  try {
+    const snap  = await db.ref('fleet').once('value');
+    const fleet = snap.val() || {};
+    const now   = Date.now();
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+
+    const toRemove = [];
+    for (const [id, v] of Object.entries(fleet)) {
+      const cur = v?.current;
+      if (!cur) { toRemove.push(id); continue; }
+
+      // Offline > 1 ชั่วโมง
+      const age = cur.timestamp ? (now - cur.timestamp) : Infinity;
+      if (age > ONE_HOUR_MS) { toRemove.push(id); continue; }
+
+      // พิกัดไม่ถูกต้อง (นอก Thailand)
+      if (cur.lat != null && cur.lng != null && !validLatLng(cur.lat, cur.lng)) {
+        toRemove.push(id); continue;
+      }
+    }
+
+    if (toRemove.length) {
+      const updates = {};
+      toRemove.forEach(id => { updates[`fleet/${id}`] = null; });
+      await db.ref().update(updates);
+    }
+
+    console.log(`[PURGE] Removed ${toRemove.length} ghost vehicles:`, toRemove);
+    return res.json({ ok: true, removed: toRemove.length, ids: toRemove });
+  } catch (e) {
+    console.error('[PURGE]', e);
+    return res.status(500).json({ error: e.message });
+  }
+});
 
 // ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
 // [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
@@ -548,11 +1097,15 @@ app.use((req, res) => {
 });
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
+  // Initialize default data
+  await initializeDefaultData();
+  
   console.log('\n🚐  Smart Songthaew Tracker — Server Ready');
   console.log(`    User:       http://localhost:${PORT}/`);
   console.log(`    Dashboard:  http://localhost:${PORT}/dashboard.html`);
   console.log(`    Admin:      http://localhost:${PORT}/admin.html`);
+  console.log(`    Login:      http://localhost:${PORT}/login.html`);
   console.log(`    Demo start: POST http://localhost:${PORT}/api/demo/start`);
   console.log(`    Config:     GET  http://localhost:${PORT}/api/config\n`);
 });

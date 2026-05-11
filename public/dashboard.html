@@ -216,7 +216,12 @@
     <div class="card">
       <div class="card-head">
         <div class="card-title">📡 Device Health</div>
-        <div class="card-sub" id="device-ts">—</div>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <div class="card-sub" id="device-ts">—</div>
+          <button onclick="purgeGhosts()" title="ลบรถ Offline/ข้อมูลผีออกจากระบบ"
+            style="padding:2px 9px;border:1px solid #FECACA;border-radius:6px;background:#FEF2F2;
+              color:#DC2626;font-size:.62rem;font-weight:600;cursor:pointer;">🗑 ล้างผี</button>
+        </div>
       </div>
       <div style="padding:12px;" id="device-list">
         <div class="no-data"><div class="icon">📡</div>รอข้อมูล...</div>
@@ -224,14 +229,14 @@
     </div>
 
     <div class="card">
-      <div class="card-head"><div class="card-title">📶 IoT Network Stats</div></div>
+      <div class="card-head"><div class="card-title">📡 IoT Device Stats <span style="font-size:.6rem;color:var(--sl400);font-weight:400;">(ค่าจาก ESP8266 จริง)</span></div></div>
       <div class="iot-grid">
-        <div class="iot-stat"><div class="iot-lbl">Packets Sent</div><div class="iot-val" id="iot-pkts">0</div><div class="iot-sub">รวมทั้งหมด</div></div>
-        <div class="iot-stat"><div class="iot-lbl">Success Rate</div><div class="iot-val" id="iot-rate" style="color:var(--green)">—</div><div class="iot-sub">HTTP 200/total</div></div>
-        <div class="iot-stat"><div class="iot-lbl">Avg Latency</div><div class="iot-val" id="iot-lat">—</div><div class="iot-sub">ms round-trip</div></div>
-        <div class="iot-stat"><div class="iot-lbl">GPS HDOP</div><div class="iot-val" id="iot-hdop" style="color:var(--green)">—</div><div class="iot-sub">ดี &lt; 2.0</div></div>
-        <div class="iot-stat"><div class="iot-lbl">Satellites</div><div class="iot-val" id="iot-sats">—</div><div class="iot-sub">ดาวเทียม</div></div>
-        <div class="iot-stat"><div class="iot-lbl">Data/Packet</div><div class="iot-val">~180</div><div class="iot-sub">bytes</div></div>
+        <div class="iot-stat"><div class="iot-lbl">TX Packets</div><div class="iot-val" id="iot-pkts">--</div><div class="iot-sub">จาก Boot (txCount)</div></div>
+        <div class="iot-stat"><div class="iot-lbl">WiFi RSSI</div><div class="iot-val" id="iot-rate" style="color:var(--green)">--</div><div class="iot-sub">dBm สัญญาณ WiFi</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Avg Latency</div><div class="iot-val" id="iot-lat">--</div><div class="iot-sub">ms รอบล่าสุด</div></div>
+        <div class="iot-stat"><div class="iot-lbl">GPS HDOP</div><div class="iot-val" id="iot-hdop" style="color:var(--green)">--</div><div class="iot-sub">ดี &lt; 2.0</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Satellites</div><div class="iot-val" id="iot-sats">--</div><div class="iot-sub">ดาวเทียม</div></div>
+        <div class="iot-stat"><div class="iot-lbl">Battery V</div><div class="iot-val" id="iot-batv">--</div><div class="iot-sub">Volt (ADC)</div></div>
       </div>
     </div>
   </div>
@@ -325,8 +330,11 @@ setInterval(fetchData,4000); fetchData();
 setInterval(loadChart,20000); loadChart();
 
 function updateAll(data) {
-  // รวมรถจริง + demo
-  const vehicles=Object.entries(data).map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('DEMO_')}));
+  // รวมรถจริงเท่านั้น - ไม่แสดง demo vehicles บน admin dashboard
+  const vehicles=Object.entries(data)
+    .map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('DEMO_')}))
+    .filter(v=>!v.isDemo); // Filter out demo vehicles
+  
   const online=vehicles.filter(v=>isVehicleOnline(v.data));
 
   document.getElementById('kpi-active').textContent=online.length||'0';
@@ -349,7 +357,12 @@ function updateAll(data) {
   updateIoT(realV);
   updatePowerPanel(realV);
   const isDemo=window.SYS?.demoMode??false;
-  const termV=isDemo?Object.values(data).find(v=>v?.current&&Object.keys(data).find(k=>k.startsWith("DEMO_")))?.current:realV;
+  // [FIX] เลือกรถ DEMO แรกที่ online จริงๆ
+  let termV = realV;
+  if(isDemo) {
+    const demoKey = Object.keys(data).find(k => k.startsWith('DEMO_') && data[k]?.current);
+    termV = demoKey ? data[demoKey].current : null;
+  }
   renderTerminal(termV, latencies[latencies.length-1]||0, isDemo);
 }
 
@@ -385,25 +398,55 @@ function updateDeviceList(vehicles) {
   if(ts) ts.textContent='อัปเดต: '+new Date().toLocaleTimeString('th-TH');
 }
 
+// [FIX] updateIoT — แสดงค่าจริงจาก ESP8266 เท่านั้น ไม่ใช่ internal fetch counter
 function updateIoT(v) {
-  document.getElementById('iot-pkts').textContent=pktTotal.toLocaleString();
-  const rate=pktTotal>0?Math.round(pktOk/pktTotal*100):0;
-  const rEl=document.getElementById('iot-rate');
-  if(rEl){rEl.textContent=rate+'%';rEl.style.color=rate>=95?'var(--green)':rate>=80?'var(--amber)':'var(--red)';}
-  const avgLat=latencies.length?Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length):0;
-  document.getElementById('iot-lat').textContent=avgLat+' ms';
-  if(v){
-    // ค่าจริงจาก Arduino — -1 = ไม่มี GPS fix
-    const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
-    const hEl = document.getElementById('iot-hdop');
-    if(hEl){
-      if(hasFix){ hEl.textContent=v.hdop.toFixed(1); hEl.style.color=v.hdop<2?'var(--green)':v.hdop<5?'var(--amber)':'var(--red)'; }
-      else{ hEl.textContent='-1.0'; hEl.style.color='var(--sl400)'; }
-    }
-    const sEl = document.getElementById('iot-sats');
-    if(sEl) sEl.textContent = hasFix ? v.sats : '-1';
+  // Avg Latency ยังใช้ค่า fetch round-trip ได้ (วัดจาก browser → server จริง)
+  const avgLat = latencies.length ? Math.round(latencies.reduce((a,b)=>a+b,0)/latencies.length) : 0;
+  const latEl  = document.getElementById('iot-lat');
+  if(latEl) latEl.textContent = avgLat > 0 ? avgLat + ' ms' : '--';
+
+  const def = (el) => { if(el){ el.textContent='--'; el.style.color='var(--sl400)'; } };
+
+  const hEl    = document.getElementById('iot-hdop');
+  const sEl    = document.getElementById('iot-sats');
+  const pktsEl = document.getElementById('iot-pkts');
+  const rssiEl = document.getElementById('iot-rate');
+  const batvEl = document.getElementById('iot-batv');
+
+  if(!v) {
+    [hEl,sEl,pktsEl,rssiEl,batvEl].forEach(def);
+    return;
+  }
+
+  // TX packets จาก firmware (txCount field)
+  if(pktsEl) pktsEl.textContent = (v.txCount != null && v.txCount > 0) ? v.txCount.toLocaleString() : '--';
+
+  // WiFi RSSI จาก ESP8266 (rssi field, dBm — ค่า negative)
+  if(rssiEl) {
+    if(v.rssi != null && v.rssi !== -1 && v.rssi < 0) {
+      rssiEl.textContent = v.rssi + ' dBm';
+      rssiEl.style.color = v.rssi >= -60 ? 'var(--green)' : v.rssi >= -80 ? 'var(--amber)' : 'var(--red)';
+    } else { def(rssiEl); }
+  }
+
+  // GPS HDOP + Sats จาก firmware
+  const hasRealFix = v.sats != null && v.sats > 0 && v.hdop != null && v.hdop > 0 && v.hdop !== -1;
+  if(hEl) {
+    if(hasRealFix){
+      hEl.textContent = v.hdop.toFixed(1);
+      hEl.style.color = v.hdop < 2 ? 'var(--green)' : v.hdop < 5 ? 'var(--amber)' : 'var(--red)';
+    } else def(hEl);
+  }
+  if(sEl) sEl.textContent = hasRealFix ? v.sats : '--';
+
+  // Battery Voltage จาก ADC (mV → V)
+  if(batvEl) {
+    if(v.battVoltage != null && v.battVoltage > 0 && v.battVoltage !== -1) {
+      batvEl.textContent = (v.battVoltage / 1000).toFixed(2) + ' V';
+    } else def(batvEl);
   }
 }
+
 
 async function loadChart() {
   try {
@@ -493,33 +536,38 @@ function renderTerminal(v, latency, isDemo) {
   }
   if(blink) blink.classList.remove('off');
 
-  // ── ค่าจริงจาก Arduino เท่านั้น ไม่มี random ไม่มีการประมาณ ──
-  const hasFix = (v.sats != null && v.sats > 0) && (v.hdop != null && v.hdop > 0);
-  const sats   = hasFix ? String(v.sats)        : '-1';
-  const hdop   = hasFix ? v.hdop.toFixed(1)     : '-1.0';
-  const rssi   = (v.rssi != null)               ? v.rssi + 'dBm' : '--';
-  // แรงดัน: ใช้ battVoltage จาก ADC จริง (mV → V)
-  const batV   = (v.battVoltage != null && v.battVoltage > 0)
+  // [FIX] -1 = sentinel (no real data) → แสดงเป็น '--' ในทุก field
+  const hasRealFix = v.sats != null && v.sats > 0 && v.hdop != null && v.hdop > 0 && v.hdop !== -1;
+  const sats    = hasRealFix ? String(v.sats)        : '--';   // [FIX] -1 → '--'
+  const hdop    = hasRealFix ? v.hdop.toFixed(1)     : '--';   // [FIX] -1.0 → '--'
+  const rssiRaw = v.rssi != null && v.rssi !== -1 && v.rssi < 0;
+  const rssi    = rssiRaw ? v.rssi + 'dBm' : '--';
+  // แรงดัน: ใช้ battVoltage จาก ADC จริง (mV → V) — -1 = ไม่มีการวัด
+  const batV = (v.battVoltage != null && v.battVoltage > 0 && v.battVoltage !== -1)
     ? (v.battVoltage / 1000).toFixed(2) + 'V'
     : '--';
-  // กระแส: ใช้ currentMa จาก Arduino จริง
-  const mA     = (v.currentMa != null && v.currentMa > 0)
+  // กระแส: ใช้ currentMa จาก Arduino จริง — -1 = ไม่มีการวัด
+  const mA = (v.currentMa != null && v.currentMa > 0 && v.currentMa !== -1)
     ? Math.round(v.currentMa) + 'mA'
     : '--';
-  const prefix = isDemo ? '[DEMO]' : '[GPS] ';
-  const fixLine = hasFix ? 'tl-data' : 'tl-warn';
-  const fixTxt  = hasFix ? 'Fix OK' : 'No fix';
+  const bat  = (v.battery != null && v.battery >= 0) ? v.battery + '%' : '--';
+  const spd  = v.speed ?? 0;
+  const prefix   = isDemo ? '[DEMO]' : '[GPS] ';
+  const fixLine  = hasRealFix ? 'tl-data' : 'tl-warn';
+  const fixTxt   = hasRealFix ? 'Fix OK'  : 'No fix';
 
-  addTermLine(fixLine,    `${prefix} ${fixTxt} | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}`, ts);
-  addTermLine('tl-highlight', `${prefix} lat:${v.lat?.toFixed(6)} lng:${v.lng?.toFixed(6)}`, ts);
-  addTermLine('tl-data', `${prefix} speed:${v.speed??0} km/h | dir:${v.direction||'?'} | route:${v.routeId||'?'}`, ts);
-  addTermLine('tl-warn',
-    v.battery<20 ? `[BAT] ⚠ LOW ${v.battery}% | ${batV} | ${mA} — ชาร์จด่วน!`
-    : `[BAT] ${v.battery}% | ${batV} | ${mA}`,
-    ts
-  );
-  addTermLine(latency < 100 ? 'tl-ok' : latency < 300 ? 'tl-warn' : 'tl-err',
-    `[HTTP] POST /api/update-location → 200 OK (${latency}ms)`, ts);
+  addTermLine(fixLine,         `${prefix} ${fixTxt} | Sats:${sats} | HDOP:${hdop} | RSSI:${rssi}`, ts);
+  addTermLine('tl-highlight',  `${prefix} lat:${v.lat?.toFixed(6) ?? '--'} lng:${v.lng?.toFixed(6) ?? '--'}`, ts);
+  addTermLine('tl-data',       `${prefix} speed:${spd} km/h | dir:${v.direction||'?'} | route:${v.routeId||'?'}`, ts);
+  const batLine = (v.battery != null && v.battery < 20 && v.battery >= 0)
+    ? `[BAT] ⚠ LOW ${bat} | ${batV} | ${mA} — ชาร์จด่วน!`
+    : `[BAT] ${bat} | ${batV} | ${mA}`;
+  addTermLine(v.battery < 20 && v.battery >= 0 ? 'tl-err' : 'tl-warn', batLine, ts);
+  // [FIX] แสดง HTTP log เฉพาะเมื่อ latency > 0 (มี packet จริง)
+  if(latency > 0) {
+    addTermLine(latency < 100 ? 'tl-ok' : latency < 300 ? 'tl-warn' : 'tl-err',
+      `[HTTP] POST /api/update-location → 200 OK (${latency}ms)`, ts);
+  }
   addTermLine('tl-dim', '──────────────────────────────────────────', ts);
 
   termLastV = v;
@@ -572,6 +620,23 @@ function switchChart(mode){
   document.getElementById('tab-speed').classList.toggle('active',mode==='speed');
   document.getElementById('tab-activity').classList.toggle('active',mode==='activity');
   loadChart();
+}
+
+// ── Purge ghost vehicles (calls server API) ───────────────────
+async function purgeGhosts() {
+  if(!confirm('ลบรถทั้งหมดที่ Offline นานเกิน 1 ชั่วโมงหรือพิกัดผิดพลาด?')) return;
+  try {
+    const res  = await fetch('/api/admin/purge-ghosts', { method:'POST' });
+    const body = await res.json();
+    if(body.ok) {
+      alert(`✓ ล้างรถผีแล้ว ${body.removed} คัน\n${(body.ids||[]).join(', ')||'—'}`);
+      fetchData();
+    } else {
+      alert('ล้างไม่สำเร็จ: ' + (body.error || 'unknown'));
+    }
+  } catch(e) {
+    alert('Error: ' + e.message);
+  }
 }
 </script>
 </body>

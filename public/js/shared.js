@@ -5,31 +5,31 @@
 'use strict';
 
 // ── Route ─────────────────────────────────────────────────────────────────────
-// ── เส้นทาง: ถนนอังรีดูนังต์ Rama I ↔ Rama IV (~1.6 km) ─────
-// จากเหนือ (Siam Square) ลงใต้ (แยก Rama IV)
+// ── เส้นทาง: โรงเรียนเตรียมอุดมศึกษาภาคใต้ ↔ เซ็นทรัลนครศรีธรรมราช ─────
+// ต้นทาง: โรงเรียนเตรียมอุดมศึกษาภาคใต้ (พรหมคีรี) → ปลายทาง: เซ็นทรัลนครศรีธรรมราช
 const ROUTE_COORDS = [
-  [13.7451, 100.5358],   // 0: Siam Square / Rama I
-  [13.7428, 100.5356],   // 1: ร.ร.สาธิตปทุมวัน
-  [13.7407, 100.5350],   // 2: ประตูจุฬาฯ (อังรีดูนัง)
-  [13.7384, 100.5345],   // 3: คณะสัตวแพทย์ จุฬาฯ
-  [13.7360, 100.5340],   // 4: รพ.จุฬา / สภากาชาด
-  [13.7342, 100.5337],   // 5: สถานเสาวภา
-  [13.7311, 100.5336],   // 6: แยก Rama IV
+  [8.432450, 99.959129],   // 0: โรงเรียนเตรียมอุดมศึกษาภาคใต้
+  [8.435500, 99.960500],   // 1: ถนนปั้นน้ำ
+  [8.440000, 99.962000],   // 2: แยกพรหมคีรี
+  [8.445000, 99.965000],   // 3: ถนนราชดำเนิน
+  [8.452000, 99.968000],   // 4: วงเวียนนาคร
+  [8.460000, 99.971000],   // 5: ถนนมหาราช
+  [8.467100, 99.974300],   // 6: เซ็นทรัลนครศรีธรรมราช
 ];
-const DIR_NORTH       = 'Siam Square';   // ปลายทางเหนือ (Rama I)
-const DIR_SOUTH       = 'แยก Rama IV';  // ปลายทางใต้
-const DEST_NORTH      = ROUTE_COORDS[0]; // = Siam Square
-const DEST_SOUTH      = ROUTE_COORDS[6]; // = แยก Rama IV
+const DIR_NORTH       = 'โรงเรียนเตรียมอุดมศึกษาภาคใต้';   // ปลายทางต้นทาง (พรหมคีรี)
+const DIR_SOUTH       = 'เซ็นทรัลนครศรีธรรมราช';  // ปลายทางปลายทาง (ตัวเมือง)
+const DEST_NORTH      = ROUTE_COORDS[0]; // = โรงเรียนเตรียมอุดมศึกษาภาคใต้
+const DEST_SOUTH      = ROUTE_COORDS[6]; // = เซ็นทรัลนครศรีธรรมราช
 // backward-compat aliases
-const DEST_PHROMKHIRI = DEST_SOUTH;
-const DEST_NAKHON     = DEST_NORTH;
+const DEST_PHROMKHIRI = DEST_NORTH;
+const DEST_NAKHON     = DEST_SOUTH;
 const REAL_VEHICLE_ID = 'songthaew_01';
 
 // ── Global Config (อัปเดตจาก /api/config ทุก 5 วิ) ───────────────────────────
 window.SYS = {
   demoMode:       false,
   demoVehicles:   2,
-  routeName:      'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
+  routeName:      'โรงเรียนเตรียมอุดมศึกษาภาคใต้ ↔ เซ็นทรัลนครศรีธรรมราช',
   offlineTimeout: 30,   // วินาที — Arduino ส่งทุก 2s, เผื่อ network latency
   announcement:   '',
   updatedAt:      null,
@@ -95,7 +95,7 @@ function busMarkerIcon(speed=0, online=true, isDemo=false, isRecommended=false) 
 
   const tot = size + 16;
   return L.divIcon({
-    className: 'clean-icon',
+    className: 'clean-icon bus-marker',
     iconSize:  [tot, tot],
     iconAnchor:[tot/2, tot/2],
     html: `<div style="position:relative;width:${tot}px;height:${tot}px;display:flex;flex-direction:column;align-items:center;justify-content:center;">
@@ -128,4 +128,120 @@ function renderAnnouncement(text) {
     document.body.appendChild(el);
   }
   el.innerHTML = `<span style="font-size:1rem;">📢</span><span>${text}</span>`;
+}
+
+// ── JWT Auth Helpers ─────────────────────────────────────────────────────────
+function getAuthToken() {
+  return localStorage.getItem('adminToken');
+}
+
+function setAuthToken(token) {
+  localStorage.setItem('adminToken', token);
+}
+
+function clearAuth() {
+  localStorage.removeItem('adminToken');
+  localStorage.removeItem('adminUsername');
+}
+
+function isLoggedIn() {
+  return !!getAuthToken();
+}
+
+/** Get auth headers for fetch */
+function authHeaders() {
+  const token = getAuthToken();
+  return token ? { 'Authorization': 'Bearer ' + token } : {};
+}
+
+/** Fetch with auth */
+async function authFetch(url, options = {}) {
+  const headers = {
+    ...options.headers,
+    ...authHeaders()
+  };
+  const res = await fetch(url, { ...options, headers });
+  
+  if (res.status === 401) {
+    clearAuth();
+    window.location.href = '/login.html';
+    return null;
+  }
+  
+  return res;
+}
+
+/** Check auth and redirect if not logged in */
+async function requireAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    window.location.href = '/login.html';
+    return false;
+  }
+  
+  try {
+    const res = await fetch('/api/auth/verify', {
+      headers: { 'Authorization': 'Bearer ' + token }
+    });
+    const data = await res.json();
+    
+    if (!data.ok) {
+      clearAuth();
+      window.location.href = '/login.html';
+      return false;
+    }
+    
+    return true;
+  } catch (e) {
+    clearAuth();
+    window.location.href = '/login.html';
+    return false;
+  }
+}
+
+// ── Route Management Helpers ─────────────────────────────────────────────────
+async function fetchRoutes() {
+  try {
+    const res = await fetch('/api/routes');
+    return await res.json();
+  } catch (e) {
+    return {};
+  }
+}
+
+async function createRoute(routeData) {
+  return authFetch('/api/routes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(routeData)
+  });
+}
+
+async function deleteRoute(routeId) {
+  return authFetch(`/api/routes/${routeId}`, {
+    method: 'DELETE'
+  });
+}
+
+async function addVehicleToRoute(routeId, vehicleId, type = 'real') {
+  return authFetch(`/api/routes/${routeId}/vehicles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ vehicleId, type })
+  });
+}
+
+async function removeVehicleFromRoute(routeId, vehicleId) {
+  return authFetch(`/api/routes/${routeId}/vehicles/${vehicleId}`, {
+    method: 'DELETE'
+  });
+}
+
+async function fetchRouteVehicles(routeId) {
+  try {
+    const res = await fetch(`/api/routes/${routeId}/vehicles`);
+    return await res.json();
+  } catch (e) {
+    return {};
+  }
 }

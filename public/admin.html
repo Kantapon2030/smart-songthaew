@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Admin Control — สองแถวสมาร์ท</title>
   <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
   <style>
     :root{
       --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
@@ -141,6 +142,8 @@
   <span id="nc-time"></span>
   <a href="/dashboard.html" class="nav-link">📊 Dashboard</a>
   <a href="/" class="nav-link">🗺 User View</a>
+  <span id="user-info" style="font-size:.7rem;color:var(--slate-500);margin-left:10px;"></span>
+  <button onclick="logout()" class="nav-link" style="background:var(--red-50);color:var(--red);border-color:#FECACA;">🚪 ออกจากระบบ</button>
 </nav>
 
 <div id="page">
@@ -166,6 +169,17 @@
       <button class="vcc-btn" onclick="changeVehicleCount(-1)">−</button>
       <span class="vcc-num" id="vcc-num">2</span>
       <button class="vcc-btn" onclick="changeVehicleCount(1)">+</button>
+    </div>
+
+    <!-- Speed Control -->
+    <div class="form-row" style="padding:0 18px 10px;">
+      <label class="form-label" style="margin-bottom:4px;display:flex;justify-content:space-between;">
+        <span>ความเร็วรถจำลอง</span>
+        <span><span id="demo-speed-val">1.0</span>x</span>
+      </label>
+      <input class="form-input" type="range" id="demo-speed-range" min="0.5" max="5.0" step="0.5" value="1.0"
+        oninput="document.getElementById('demo-speed-val').textContent=parseFloat(this.value).toFixed(1)"
+        onchange="changeDemoSpeed(this.value)"/>
     </div>
 
     <div class="demo-grid">
@@ -210,6 +224,121 @@
     </div>
   </div>
 
+  <!-- ── ROUTE MANAGEMENT ── -->
+  <div class="card card-full">
+    <div class="card-head">
+      <div class="card-title">🗺️ จัดการเส้นทาง</div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button onclick="deleteAllRoutes()" title="ลบเส้นทางทั้งหมด"
+          style="padding:5px 12px;border:1px solid #FECACA;border-radius:8px;background:#FEF2F2;
+            color:#DC2626;font-size:.72rem;font-weight:700;cursor:pointer;">
+          🗑 ลบทั้งหมด</button>
+        <button onclick="purgeGhostVehicles()" title="ลบรถผีออกจาก Firebase"
+          style="padding:5px 12px;border:1px solid #FDE68A;border-radius:8px;background:#FFFBEB;
+            color:#D97706;font-size:.72rem;font-weight:700;cursor:pointer;">
+          👻 ล้างรถผี</button>
+        <button class="btn btn-primary" style="padding:5px 14px;font-size:.72rem;" onclick="openRouteEditor()">+ สร้างเส้นทางใหม่</button>
+      </div>
+    </div>
+    <div class="card-body">
+      <div id="routes-list" style="display:grid;gap:10px;">
+        <div style="padding:20px;text-align:center;color:var(--slate-400);">กำลังโหลด...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── FLEET MANAGEMENT ── -->
+  <div class="card card-full">
+    <div class="card-head">
+      <div class="card-title">🚐 จัดการรถ (Fleet)</div>
+      <button class="btn btn-green" style="padding:5px 14px;font-size:.72rem;" onclick="openRegisterVehicle()">+ เพิ่มรถใหม่</button>
+    </div>
+    <div class="card-body">
+      <div id="fleet-list" style="display:grid;gap:10px;">
+        <div style="padding:20px;text-align:center;color:var(--slate-400);">กำลังโหลด...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── ROUTE EDITOR MODAL ── -->
+  <div id="route-editor-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:white;border-radius:16px;width:90vw;max-width:900px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--slate-200);display:flex;align-items:center;justify-content:space-between;">
+        <div id="route-editor-title" style="font-size:1rem;font-weight:700;color:var(--slate-800);">🗺️ สร้างเส้นทางใหม่</div>
+        <button onclick="closeRouteEditor()" style="border:none;background:none;font-size:1.5rem;cursor:pointer;color:var(--slate-400);">&times;</button>
+      </div>
+      <div style="flex:1;overflow:hidden;">
+        <div id="route-editor-map" style="width:100%;height:400px;"></div>
+        <div style="padding:16px 20px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+            <div>
+              <label style="display:block;font-size:.75rem;font-weight:600;color:var(--slate-600);margin-bottom:6px;">ชื่อเส้นทาง *</label>
+              <input type="text" id="route-name-input" placeholder="เช่น: โรงเรียนเตรียมอุดมฯ ↔ เซ็นทรัลนคร" style="width:100%;padding:10px 12px;border:1px solid var(--slate-200);border-radius:8px;font-family:'Sarabun',sans-serif;">
+            </div>
+            <div>
+              <label style="display:block;font-size:.75rem;font-weight:600;color:var(--slate-600);margin-bottom:6px;">รายละเอียด (optional)</label>
+              <input type="text" id="route-desc-input" placeholder="รายละเอียดเส้นทาง" style="width:100%;padding:10px 12px;border:1px solid var(--slate-200);border-radius:8px;font-family:'Sarabun',sans-serif;">
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--slate-50);border-radius:8px;">
+            <span style="font-size:.75rem;color:var(--slate-600);">📍 จุดที่เลือก:</span>
+            <span id="waypoint-count" style="font-weight:700;color:var(--blue);">0</span>
+            <span style="font-size:.75rem;color:var(--slate-600);">จุด</span>
+            <span style="margin-left:auto;font-size:.75rem;color:var(--slate-600);">ระยะทาง:</span>
+            <span id="route-distance" style="font-weight:700;color:var(--green);">0</span>
+            <span style="font-size:.75rem;color:var(--slate-600);">กม.</span>
+            <button onclick="clearWaypoints()" style="margin-left:8px;padding:4px 10px;border:1px solid #FECACA;border-radius:6px;background:#FEF2F2;color:#DC2626;font-size:.68rem;font-weight:600;cursor:pointer;">🗑 ล้างจุด</button>
+          </div>
+          <div style="margin-top:8px;font-size:.7rem;color:var(--slate-500);">
+            💡 คลิกบนแผนที่เพื่อเพิ่มจุด waypoint · คลิกขวาที่หมุดเพื่อลบ · ลากหมุดเพื่อย้าย
+          </div>
+        </div>
+      </div>
+      <div style="padding:16px 20px;border-top:1px solid var(--slate-200);display:flex;gap:10px;justify-content:flex-end;">
+        <button onclick="closeRouteEditor()" style="padding:10px 20px;border:1px solid var(--slate-200);border-radius:8px;background:white;font-family:'Sarabun',sans-serif;font-weight:600;cursor:pointer;color:var(--slate-600);">ยกเลิก</button>
+        <button onclick="saveRoute()" style="padding:10px 20px;border:none;border-radius:8px;background:var(--blue);color:white;font-family:'Sarabun',sans-serif;font-weight:600;cursor:pointer;">💾 บันทึกเส้นทาง</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── REGISTER VEHICLE MODAL ── -->
+  <div id="register-vehicle-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:white;border-radius:16px;width:90vw;max-width:480px;overflow:hidden;">
+      <div style="padding:16px 20px;border-bottom:1px solid var(--slate-200);display:flex;align-items:center;justify-content:space-between;">
+        <div style="font-size:1rem;font-weight:700;color:var(--slate-800);">🚐 ลงทะเบียนรถใหม่</div>
+        <button onclick="closeRegisterVehicle()" style="border:none;background:none;font-size:1.5rem;cursor:pointer;color:var(--slate-400);">&times;</button>
+      </div>
+      <div style="padding:20px;">
+        <div class="form-row">
+          <label class="form-label">Vehicle ID *</label>
+          <input class="form-input" id="reg-vehicle-id" placeholder="เช่น: songthaew_01 หรือ ST-01">
+          <div style="font-size:.65rem;color:var(--slate-400);margin-top:4px;">ใช้ตัวอักษร a-z, 0-9, _ หรือ - เท่านั้น (ต้องตรงกับ ESP8266)</div>
+        </div>
+        <div class="form-row">
+          <label class="form-label">เส้นทาง</label>
+          <select class="form-input" id="reg-route-id">
+            <option value="unassigned">ยังไม่กำหนดเส้นทาง</option>
+          </select>
+        </div>
+        <div class="form-row">
+          <label class="form-label">ชื่อ / รายละเอียด (optional)</label>
+          <input class="form-input" id="reg-description" placeholder="เช่น: รถสองแถวคันที่ 1">
+        </div>
+        <div class="form-row">
+          <label class="form-label">ประเภท</label>
+          <select class="form-input" id="reg-type">
+            <option value="real">real — รถจริง (ESP8266)</option>
+            <option value="manual">manual — เพิ่มด้วยมือ</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:16px;">
+          <button onclick="closeRegisterVehicle()" class="btn btn-outline btn-full">ยกเลิก</button>
+          <button onclick="registerVehicle()" class="btn btn-green btn-full">✓ ลงทะเบียน</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── LIVE STATUS ── -->
   <div class="card card-full">
     <div class="card-head">
@@ -229,164 +358,9 @@
 
 </div>
 
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/js/shared.js"></script>
-<script>
-'use strict';
-
-let _demoVehicleCount = 2;
-let _demoRunning      = false;
-
-// ── Clock ────────────────────────────────────────────────────
-setInterval(() => {
-  const el = document.getElementById('nc-time');
-  if (el) el.textContent = new Date().toLocaleTimeString('th-TH', { hour12:false });
-}, 1000);
-
-// ── On config change ─────────────────────────────────────────
-function onConfigChanged(cfg) {
-  applyConfigToUI(cfg);
-}
-
-function applyConfigToUI(cfg) {
-  _demoRunning        = cfg.demoMode;
-  _demoVehicleCount   = cfg.demoVehicles ?? 2;
-
-  document.getElementById('vcc-num').textContent    = _demoVehicleCount;
-  document.getElementById('cfg-route').value        = cfg.routeName       ?? '';
-  document.getElementById('cfg-timeout').value      = cfg.offlineTimeout  ?? 15;
-  document.getElementById('cfg-timeout-val').textContent = cfg.offlineTimeout ?? 15;
-  document.getElementById('cfg-announcement').value = cfg.announcement    ?? '';
-
-  const light  = document.getElementById('demo-light');
-  const title  = document.getElementById('demo-state-title');
-  const sub    = document.getElementById('demo-state-sub');
-  const badge  = document.getElementById('nav-mode-badge');
-  const statusSub = document.getElementById('demo-status-sub');
-
-  if (_demoRunning) {
-    light.classList.add('on');
-    title.textContent   = `Demo Mode เปิดอยู่ — ${_demoVehicleCount} คัน`;
-    sub.textContent     = 'รถจำลองกำลังวิ่งอยู่ ข้อมูล ESP8266 จริงถูกซ่อน';
-    badge.textContent   = 'DEMO';
-    badge.className     = 'nav-badge';
-    statusSub.textContent = `${_demoVehicleCount} คันกำลังวิ่ง`;
-  } else {
-    light.classList.remove('on');
-    title.textContent   = 'Demo Mode ปิดอยู่';
-    sub.textContent     = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
-    badge.textContent   = 'REAL';
-    badge.className     = 'nav-badge safe';
-    statusSub.textContent = 'ปิดอยู่';
-  }
-
-  renderAnnouncement(cfg.announcement);
-  refreshStatus();
-}
-
-// ── Demo Controls ─────────────────────────────────────────────
-function changeVehicleCount(d) {
-  _demoVehicleCount = Math.max(1, Math.min(8, _demoVehicleCount + d));
-  document.getElementById('vcc-num').textContent = _demoVehicleCount;
-}
-
-async function startDemo() {
-  addLog('info', `เริ่ม Demo Mode (${_demoVehicleCount} คัน)...`);
-  try {
-    const r = await fetch('/api/demo/start', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vehicles: _demoVehicleCount }),
-    }).then(r => r.json());
-    addLog('ok', `Demo started: ${r.ids?.join(', ')}`);
-    syncConfig();
-  } catch (e) { addLog('err', e.message); }
-}
-
-async function stopDemo() {
-  addLog('warn', 'หยุด Demo Mode...');
-  try {
-    await fetch('/api/demo/stop', { method: 'POST' });
-    addLog('ok', 'Demo stopped — กลับเป็นโหมด Real');
-    syncConfig();
-  } catch (e) { addLog('err', e.message); }
-}
-
-// ── Save Config ───────────────────────────────────────────────
-async function saveConfig() {
-  const cfg = {
-    routeName:      document.getElementById('cfg-route').value.trim(),
-    offlineTimeout: parseInt(document.getElementById('cfg-timeout').value),
-    announcement:   document.getElementById('cfg-announcement').value.trim(),
-  };
-  try {
-    await fetch('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
-    addLog('ok', `บันทึกค่า: ${JSON.stringify(cfg)}`);
-    showToast();
-    syncConfig();
-  } catch (e) { addLog('err', e.message); }
-}
-
-// ── Status ────────────────────────────────────────────────────
-async function refreshStatus() {
-  const row = document.getElementById('status-row');
-  try {
-    const [loc, demo] = await Promise.all([
-      fetch('/api/locations').then(r => r.json()),
-      fetch('/api/demo/status').then(r => r.json()),
-    ]);
-
-    const pills = [];
-    const realEntry = loc[REAL_VEHICLE_ID]?.current;
-    const realOnline = isVehicleOnline(realEntry);
-
-    pills.push(realOnline
-      ? `<span class="status-pill pill-online"><span class="pill-dot"></span>ESP8266 Online — ${realEntry?.speed ?? '?'} km/h</span>`
-      : `<span class="status-pill pill-offline"><span class="pill-dot"></span>ESP8266 Offline</span>`
-    );
-
-    if (demo.running) {
-      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Demo: ${demo.vehicles} คันวิ่งอยู่</span>`);
-    }
-
-    // demo vehicles
-    for (const id of (demo.ids || [])) {
-      const v = loc[id]?.current;
-      if (v) pills.push(`<span class="status-pill" style="background:#F5F3FF;color:#7C3AED;border:1px solid #DDD6FE;">
-        <span class="pill-dot"></span>${id} ${v.speed}km/h</span>`);
-    }
-
-    row.innerHTML = pills.join('') || `<span class="status-pill pill-offline"><span class="pill-dot"></span>ไม่มีข้อมูล</span>`;
-  } catch (e) {
-    row.innerHTML = `<span class="status-pill pill-offline"><span class="pill-dot"></span>ไม่สามารถเชื่อมต่อ server</span>`;
-  }
-}
-
-setInterval(refreshStatus, 5000);
-refreshStatus();
-
-// ── Action Log ────────────────────────────────────────────────
-function addLog(type, text) {
-  const log = document.getElementById('action-log');
-  const ts  = new Date().toLocaleTimeString('th-TH', { hour12:false });
-  const cls = type === 'ok' ? 'log-ok' : type === 'warn' ? 'log-warn' : type === 'err' ? 'log-err' : '';
-  const div = document.createElement('div');
-  div.className = 'log-line';
-  div.innerHTML = `<span class="log-ts">${ts}</span><span class="${cls}">${text}</span>`;
-  log.appendChild(div);
-  while (log.children.length > 50) log.removeChild(log.firstChild);
-  log.scrollTop = log.scrollHeight;
-}
-
-// ── Toast ─────────────────────────────────────────────────────
-function showToast() {
-  const t = document.getElementById('save-toast');
-  t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2000);
-}
-</script>
+<script src="/js/admin.js"></script>
 </body>
 </html>
