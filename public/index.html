@@ -4,423 +4,196 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
   <title>สองแถวสมาร์ท — ติดตามสด</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <meta name="description" content="ติดตามรถสองแถวสมาร์ทแบบเรียลไทม์ด้วย Google Maps"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
   <style>
     :root{
-      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
-      --green:#059669;--green-50:#ECFDF5;
-      --amber:#D97706;--amber-50:#FFFBEB;
-      --red:#DC2626;--red-50:#FEF2F2;
-      --purple:#7C3AED;--purple-50:#F5F3FF;
-      --sl50:#F8FAFC;--sl100:#F1F5F9;--sl200:#E2E8F0;
-      --sl400:#94A3B8;--sl500:#64748B;--sl600:#475569;--sl800:#1E293B;
-      --sh-sm:0 1px 3px rgba(0,0,0,.08);--sh-md:0 4px 20px rgba(0,0,0,.12);
-      --sh-lg:0 8px 32px rgba(0,0,0,.14);
+      --g-blue:#4285F4;--g-blue-light:#E8F0FE;--g-blue-dark:#1A73E8;
+      --g-green:#34A853;--g-green-light:#E6F4EA;
+      --g-yellow:#FBBC04;--g-yellow-light:#FEF7E0;
+      --g-red:#EA4335;--g-red-light:#FCE8E6;
+      --g-purple:#7C3AED;--g-purple-light:#F3E8FD;
+      --text:#202124;--text-2:#5F6368;--text-3:#9AA0A6;
+      --bg:#FFFFFF;--bg-2:#F8F9FA;--border:#DADCE0;
+      --shadow-sm:0 1px 3px rgba(60,64,67,.15);--shadow-md:0 4px 16px rgba(60,64,67,.12);--shadow-lg:0 8px 32px rgba(60,64,67,.15);
     }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    html,body{height:100dvh;overflow:hidden;font-family:'Sarabun',sans-serif;}
+    html,body{height:100dvh;overflow:hidden;font-family:Inter,Sarabun,sans-serif;color:var(--text);}
+    #map{position:absolute;inset:0;z-index:1;background:var(--bg-2);}
 
-    #map{position:absolute;inset:0;z-index:1;}
-    .clean-icon{background:transparent!important;border:none!important;box-shadow:none!important;}
-
-    @keyframes ping  {0%{transform:scale(1);opacity:.5}70%{transform:scale(2);opacity:0}100%{opacity:0}}
     @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-    @keyframes blink {0%,100%{opacity:1}50%{opacity:.2}}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 
-    /* ══════════════════════════════════════
-       TOP BAR — compact, single line
-    ══════════════════════════════════════ */
+    /* ═══ TOP BAR ═══ */
     #topbar{
-      position:absolute;top:0;left:0;right:0;z-index:500;
-      height:46px;
-      background:rgba(255,255,255,.96);
-      backdrop-filter:blur(8px);
-      border-bottom:1px solid var(--sl200);
-      display:flex;align-items:center;
-      padding:0 12px;gap:8px;
-      box-shadow:var(--sh-sm);
+      position:absolute;top:0;left:0;right:0;z-index:500;height:48px;
+      background:var(--bg);border-bottom:1px solid var(--border);
+      display:flex;align-items:center;padding:0 14px;gap:8px;box-shadow:var(--shadow-sm);
     }
-    .brand{display:flex;align-items:center;gap:7px;}
-    .brand-icon{width:28px;height:28px;border-radius:7px;background:var(--blue);color:white;
-      display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
-    .brand-name{font-size:.8rem;font-weight:800;color:var(--sl800);}
-    .brand-count{font-size:.62rem;color:var(--sl400);}
-    .brand-count b{color:var(--blue);font-weight:700;}
+    .brand{display:flex;align-items:center;gap:8px;}
+    .brand-icon{width:30px;height:30px;border-radius:8px;background:var(--g-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
+    .brand-name{font-size:.82rem;font-weight:700;color:var(--text);}
+    .brand-sub{font-size:.55rem;color:var(--text-3);font-weight:500;}
+    .brand-count{font-size:.62rem;color:var(--text-3);}
+    .brand-count b{color:var(--g-blue);font-weight:700;}
     .top-sep{flex:1;}
 
-    /* top bar chips */
-    .tb-chip{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:8px;
-      background:var(--sl100);border:1px solid var(--sl200);
-      font-size:.65rem;font-weight:600;color:var(--sl500);white-space:nowrap;}
-    .tb-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--green);animation:blink 1.5s infinite;}
-    .tb-chip.demo{background:var(--purple-50);border-color:#DDD6FE;color:var(--purple);}
-    .tb-chip.offline-chip{background:var(--red-50);border-color:#FECACA;color:var(--red);}
-    .tb-chip.demo .dot{background:var(--purple);}
+    .tb-chip{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;
+      background:var(--bg-2);border:1px solid var(--border);font-size:.65rem;font-weight:600;color:var(--text-2);white-space:nowrap;}
+    .tb-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--g-green);animation:pulse 1.5s infinite;}
+    .tb-chip.demo{background:var(--g-purple-light);border-color:#D1B3FF;color:var(--g-purple);}
+    .tb-chip.demo .dot{background:var(--g-purple);}
+    .tb-link{text-decoration:none;padding:4px 12px;border-radius:20px;background:var(--bg-2);border:1px solid var(--border);font-size:.65rem;font-weight:600;color:var(--text-2);transition:.15s;white-space:nowrap;}
+    .tb-link:hover{background:var(--g-blue-light);color:var(--g-blue);border-color:var(--g-blue);}
+    .tb-link.dash{background:var(--g-blue-light);color:var(--g-blue);border-color:#C6D9F7;}
+    .tb-link.admin{background:var(--g-red-light);color:var(--g-red);border-color:#F5C6C0;}
 
-    /* top bar nav links */
-    .tb-link{text-decoration:none;padding:4px 10px;border-radius:8px;
-      background:var(--sl100);border:1px solid var(--sl200);
-      font-size:.65rem;font-weight:700;color:var(--sl600);transition:.12s;white-space:nowrap;}
-    .tb-link:hover{background:var(--sl200);}
-    .tb-link.dash{background:var(--blue-50);border-color:var(--blue-100);color:var(--blue);}
-    .tb-link.admin{background:var(--red-50);border-color:#FECACA;color:var(--red);}
-
-    /* ══════════════════════════════════════
-       LEFT PANEL — compact sidebar
-    ══════════════════════════════════════ */
-    #left-panel{
-      position:absolute;top:54px;left:10px;z-index:500;
-      display:flex;flex-direction:column;gap:8px;
-      width:200px;  /* แคบลงจาก 228px */
-    }
-
-    /* Direction section */
-    .panel-card{
-      background:rgba(255,255,255,.95);
-      backdrop-filter:blur(8px);
-      border:1px solid var(--sl200);
-      border-radius:12px;
-      padding:10px 12px;
-      box-shadow:var(--sh-sm);
-    }
-    .pc-label{font-size:.58rem;font-weight:700;color:var(--sl400);letter-spacing:.07em;
-      text-transform:uppercase;margin-bottom:7px;}
-    .dir-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;}
-    .dir-btn{display:flex;align-items:center;justify-content:center;gap:5px;
-      padding:7px 4px;border-radius:9px;border:1.5px solid transparent;cursor:pointer;
-      font-size:.7rem;font-weight:700;transition:all .15s;font-family:'Sarabun',sans-serif;}
-    .dir-btn.active{background:var(--blue);border-color:var(--blue);color:white;}
-    .dir-btn.inactive{background:var(--sl50);border-color:var(--sl200);color:var(--sl600);}
-    .dir-btn.inactive:hover{border-color:var(--blue);color:var(--blue);}
-
-    /* Location buttons */
+    /* ═══ LEFT PANEL ═══ */
+    #left-panel{position:absolute;top:56px;left:10px;z-index:500;display:flex;flex-direction:column;gap:8px;width:200px;}
+    .panel-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow-sm);}
+    .pc-label{font-size:.58rem;font-weight:700;color:var(--text-3);letter-spacing:.07em;text-transform:uppercase;margin-bottom:7px;}
     .loc-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px;}
-    .loc-btn{display:flex;align-items:center;justify-content:center;gap:4px;
-      padding:6px 4px;border-radius:9px;border:1px solid var(--sl200);
-      background:var(--sl50);color:var(--sl600);font-family:'Sarabun',sans-serif;
-      font-size:.68rem;font-weight:700;cursor:pointer;transition:.12s;}
-    .loc-btn:hover{border-color:var(--blue);background:var(--blue-50);color:var(--blue);}
-    .loc-btn.active{background:var(--green-50);border-color:#A7F3D0;color:var(--green);}
+    .loc-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 4px;border-radius:20px;border:1px solid var(--border);
+      background:var(--bg);color:var(--text-2);font-family:Inter,Sarabun,sans-serif;font-size:.68rem;font-weight:600;cursor:pointer;transition:.15s;}
+    .loc-btn:hover{border-color:var(--g-blue);background:var(--g-blue-light);color:var(--g-blue);}
+    .loc-btn.active{background:var(--g-green-light);border-color:#A8DAB5;color:var(--g-green);}
 
-    /* ══════════════════════════════════════
-       BOTTOM INFO PANEL — desktop compact
-       Mobile: full width bottom sheet
-       Desktop: right-aligned narrow panel
-    ══════════════════════════════════════ */
-    #info-panel{
-      position:absolute;
-      bottom:10px;
-      right:10px;
-      z-index:500;
-      width:300px;  /* fixed width บน desktop */
-    }
-    .ip-inner{
-      background:#FFFFFF;
-      border:1px solid var(--sl200);
-      border-radius:16px;
-      padding:14px 15px 12px;
-      box-shadow:var(--sh-lg);
-    }
+    /* ═══ BOTTOM PANEL ═══ */
+    #info-panel{position:absolute;bottom:10px;right:10px;z-index:500;width:320px;cursor:pointer;transition:all .3s ease;}
+    .ip-collapsed{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--bg);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);}
+    .ip-expanded{padding:16px;background:var(--bg);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);}
+    #info-panel.expanded{cursor:default;max-height:80vh;overflow-y:auto;}
+    #info-panel.expanded .ip-collapsed{display:none;}
+    #info-panel.expanded .ip-expanded{display:block!important;}
+    #info-panel:not(.expanded) .ip-expanded{display:none!important;}
 
-    /* Header row */
     .ip-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-    .ip-vid{font-size:.88rem;font-weight:800;color:var(--sl800);}
-    .ip-dir{font-size:.62rem;color:var(--sl400);}
+    .ip-vid{font-size:.88rem;font-weight:700;color:var(--text);}
+    .ip-dir{font-size:.62rem;color:var(--text-3);}
     .status-pill{display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:.6rem;font-weight:700;}
-    .status-pill.online{background:var(--green-50);border:1px solid #A7F3D0;color:var(--green);}
-    .status-pill.offline{background:var(--red-50);border:1px solid #FECACA;color:var(--red);}
+    .status-pill.online{background:var(--g-green-light);border:1px solid #A8DAB5;color:var(--g-green);}
+    .status-pill.offline{background:var(--g-red-light);border:1px solid #F5C6C0;color:var(--g-red);}
 
-    /* Stats — 4 items in a row (เพิ่ม GPS fix) */
-    .stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;}
-    .stat-b{background:var(--sl50);border:1px solid var(--sl200);border-radius:9px;
-      padding:7px 4px;text-align:center;}
+    .stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;}
+    .stat-b{background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:8px 4px;text-align:center;}
     .stat-ic{font-size:.95rem;margin-bottom:2px;}
-    .stat-v{font-family:'IBM Plex Mono',monospace;font-size:.92rem;font-weight:600;color:var(--amber);line-height:1;}
-    .stat-u{font-size:.52rem;color:var(--sl400);}
-    .stat-l{font-size:.55rem;color:var(--sl500);margin-top:1px;}
-    .mini-bar{height:3px;background:var(--sl200);border-radius:2px;overflow:hidden;margin-top:3px;}
+    .stat-v{font-family:'IBM Plex Mono',monospace;font-size:.92rem;font-weight:600;color:var(--g-blue);line-height:1;}
+    .stat-u{font-size:.52rem;color:var(--text-3);}
+    .stat-l{font-size:.55rem;color:var(--text-2);margin-top:1px;}
+    .mini-bar{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:3px;}
     .mini-fill{height:100%;border-radius:2px;transition:width .5s;}
 
-    /* ETA strip — compact */
-    .eta-strip{
-      display:flex;align-items:center;gap:8px;
-      background:var(--blue-50);border:1px solid var(--blue-100);
-      border-radius:10px;padding:9px 12px;margin-bottom:8px;
-    }
+    .eta-strip{display:flex;align-items:center;gap:8px;background:var(--g-blue-light);border:1px solid #C6D9F7;border-radius:12px;padding:9px 12px;margin-bottom:8px;}
     .eta-icon{font-size:1rem;flex-shrink:0;}
-    .eta-val{font-size:.95rem;font-weight:800;color:var(--blue);}
-    .eta-note{font-size:.58rem;color:var(--sl400);line-height:1.3;}
-    .eta-dist{font-size:.62rem;font-weight:700;color:var(--sl600);
-      background:white;border:1px solid var(--sl200);border-radius:5px;
-      padding:2px 7px;margin-left:auto;white-space:nowrap;flex-shrink:0;}
+    .eta-val{font-size:.95rem;font-weight:800;color:var(--g-blue);}
+    .eta-note{font-size:.58rem;color:var(--text-3);line-height:1.3;}
+    .eta-dist{font-size:.62rem;font-weight:700;color:var(--text-2);background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:2px 8px;margin-left:auto;white-space:nowrap;flex-shrink:0;}
 
-    /* Footer */
     .ip-footer{display:flex;align-items:center;justify-content:space-between;}
-    .ip-ts{font-family:'IBM Plex Mono',monospace;font-size:.57rem;color:var(--sl400);}
+    .ip-ts{font-family:'IBM Plex Mono',monospace;font-size:.57rem;color:var(--text-3);}
 
-    /* ── Offline banner ── */
-    #offline-banner{
-      display:none;position:absolute;
-      top:54px;left:50%;transform:translateX(-50%);
-      z-index:600;background:var(--red-50);border:1px solid #FECACA;
-      border-radius:10px;padding:7px 14px;
-      align-items:center;gap:7px;
-      font-size:.75rem;font-weight:700;color:var(--red);
-      box-shadow:0 4px 16px rgba(220,38,38,.15);white-space:nowrap;
-    }
+    #offline-banner{display:none;position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:600;background:var(--g-red-light);border:1px solid #F5C6C0;border-radius:20px;padding:7px 14px;align-items:center;gap:7px;font-size:.75rem;font-weight:700;color:var(--g-red);box-shadow:var(--shadow-md);white-space:nowrap;}
     #offline-banner.show{display:flex;animation:fadeIn .3s ease;}
 
-    /* ── Mobile responsive ── */
     @media(max-width:640px){
       #topbar{height:52px;padding:0 8px;}
-      .brand-name{font-size:.75rem;}
-      .brand-count{font-size:.58rem;}
-      .tb-chip{padding:3px 8px;font-size:.6rem;}
-      .tb-link{padding:3px 8px;font-size:.6rem;}
-      
-      #left-panel{
-        top:58px;left:8px;width:calc(50% - 12px);max-width:160px;
-      }
-      .panel-card{padding:8px 10px;}
-      .dir-btn{padding:6px 3px;font-size:.65rem;}
-      .loc-btn{padding:5px 3px;font-size:.62rem;}
-      .pc-label{font-size:.55rem;}
-      
-      #info-panel{
-        right:0;left:0;bottom:0;width:auto;padding:0 10px 10px;
-        max-height:50vh;
-      }
-      .ip-inner{
-        border-radius:16px 16px 8px 8px;
-        padding:12px 13px 10px;
-      }
-      .stats-row{grid-template-columns:repeat(4,1fr);gap:4px;}
-      .stat-b{padding:6px 3px;}
-      .stat-ic{font-size:.85rem;}
-      .stat-v{font-size:.82rem;}
-      .stat-l{font-size:.5rem;}
-      
-      .ip-vid{font-size:.8rem;}
-      .ip-dir{font-size:.58rem;}
-      .eta-strip{padding:7px 10px;margin-bottom:6px;}
-      .eta-val{font-size:.85rem;}
-      .eta-note{font-size:.55rem;}
-      
-      .ip-collapsed{padding:10px 12px;}
-      #collapsed-title{font-size:.8rem;}
-      #collapsed-eta{font-size:.7rem;}
+      #left-panel{top:58px;left:8px;width:calc(50% - 12px);max-width:160px;}
+      #info-panel{right:0;left:0;bottom:0;width:auto;padding:0 10px 10px;}
     }
-    @media(min-width:641px) and (max-width:900px){
-      #info-panel{width:280px;}
-      #left-panel{width:180px;}
-    }
-
-    /* Leaflet overrides */
-    .leaflet-popup-content-wrapper{background:white!important;border-radius:12px!important;
-      box-shadow:var(--sh-lg)!important;font-family:'Sarabun',sans-serif!important;color:var(--sl800)!important;}
-    .leaflet-popup-tip{background:white!important;}
-    .leaflet-control-zoom a{background:white!important;color:var(--sl600)!important;
-      border-color:var(--sl200)!important;font-weight:700!important;}
-    .leaflet-control-zoom a:hover{color:var(--blue)!important;}
-    /* [FIX] Smooth marker movement for buses only, matching 3s fetch interval */
-    .bus-marker { transition: transform 3s linear; }
   </style>
 </head>
 <body>
 
 <div id="map"></div>
-
-<!-- Offline banner -->
 <div id="offline-banner">📡 รถ Offline <span id="offline-secs"></span></div>
 
-<!-- ══ TOP BAR ══ -->
+<!-- TOP BAR -->
 <div id="topbar">
   <div class="brand">
     <div class="brand-icon">🚐</div>
     <div>
       <div class="brand-name">สองแถวสมาร์ท</div>
-      <div style="font-size:.55rem;color:#94A3B8;font-weight:500;">นครศรีธรรมราช • เตรียมอุดมฯ ↔ Central</div>
+      <div class="brand-sub">นครศรีธรรมราช • เตรียมอุดมฯ ↔ Central</div>
       <div class="brand-count">ออนไลน์ <b id="total-active">0</b> คัน</div>
     </div>
   </div>
-
   <div class="top-sep"></div>
-  
-  <!-- Route Selector -->
-  <div class="route-selector" style="display:flex;align-items:center;gap:8px;margin-right:10px;">
-    <span style="font-size:.65rem;color:#94A3B8;">เส้นทาง:</span>
-    <select id="route-select" onchange="changeRoute(this.value)" style="padding:4px 10px;border-radius:8px;border:1px solid #E2E8F0;background:white;font-family:'Sarabun',sans-serif;font-size:.75rem;cursor:pointer;">
+  <div style="display:flex;align-items:center;gap:8px;margin-right:10px;">
+    <span style="font-size:.65rem;color:var(--text-3);">เส้นทาง:</span>
+    <select id="route-select" onchange="changeRoute(this.value)" style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-family:Inter,Sarabun,sans-serif;font-size:.75rem;cursor:pointer;">
       <option value="">กำลังโหลด...</option>
     </select>
   </div>
-
-  <!-- Status chips -->
-  <div class="tb-chip" id="live-chip">
-    <span class="dot"></span> LIVE
-  </div>
-  <div class="tb-chip demo" id="demo-chip" style="display:none;">
-    🎬 Demo
-  </div>
-
-  <!-- Nav links -->
+  <div class="tb-chip" id="live-chip"><span class="dot"></span> LIVE</div>
+  <div class="tb-chip demo" id="demo-chip" style="display:none;">🎬 Digital Twin</div>
   <a href="/dashboard.html" class="tb-link dash">📊 Dashboard</a>
-  <a href="/admin.html"     class="tb-link admin">⚙ Admin</a>
+  <a href="/admin.html" class="tb-link admin">⚙ Admin</a>
 </div>
 
-<!-- ══ LEFT PANEL ══ -->
+<!-- LEFT PANEL -->
 <div id="left-panel">
-
-  <!-- Direction -->
   <div class="panel-card">
     <div class="pc-label">📍 เส้นทางการเดินทาง</div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;">
       <div style="display:flex;align-items:center;gap:6px;">
         <span style="font-size:12px;">จุดขึ้น:</span>
-        <select id="origin-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:6px;border:1px solid var(--sl200);font-family:'Sarabun',sans-serif;font-size:11px;"></select>
+        <select id="origin-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;"></select>
       </div>
       <div style="display:flex;align-items:center;gap:6px;">
         <span style="font-size:12px;">จุดลง:</span>
-        <select id="dest-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:6px;border:1px solid var(--sl200);font-family:'Sarabun',sans-serif;font-size:11px;"></select>
+        <select id="dest-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;"></select>
       </div>
     </div>
-
     <div class="pc-label" style="margin-top:9px;margin-bottom:0;">📍 ตำแหน่ง</div>
     <div class="loc-row">
-      <button class="loc-btn" id="btn-gps" onclick="useMyLocation()">
-        🎯 ตำแหน่งฉัน
-      </button>
-      <button class="loc-btn" id="btn-pin" onclick="togglePinMode()">
-        📌 วางหมุด
-      </button>
+      <button class="loc-btn" id="btn-gps" onclick="useMyLocation()">🎯 ตำแหน่งฉัน</button>
+      <button class="loc-btn" id="btn-pin" onclick="togglePinMode()">📌 วางหมุด</button>
     </div>
   </div>
+</div>
 
-</div><!-- /#left-panel -->
-
-<!-- ══ BOTTOM INFO PANEL (Collapsible) ══ -->
+<!-- BOTTOM PANEL -->
 <div id="info-panel" onclick="toggleBottomPanel()">
-  <!-- Collapsed State - แสดงแค่ข้อมูลสำคัญ -->
   <div id="ip-collapsed" class="ip-collapsed">
     <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
       <div style="font-size:1.2rem;">🚐</div>
       <div style="flex:1;min-width:0;">
-        <div id="collapsed-title" style="font-weight:600;font-size:.85rem;color:var(--slate-700);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">รอข้อมูล...</div>
-        <div id="collapsed-eta" style="font-size:.75rem;color:var(--green);font-weight:500;">กำลังคำนวณ ETA...</div>
+        <div id="collapsed-title" style="font-weight:600;font-size:.85rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">รอข้อมูล...</div>
+        <div id="collapsed-eta" style="font-size:.75rem;color:var(--g-green);font-weight:500;">กำลังคำนวณ ETA...</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--slate-400);">
-      <span>↑ กดเพื่อดูรายละเอียด</span>
-      <span style="font-size:1rem;">⌄</span>
+    <div style="display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--text-3);">
+      <span>↑ ดูรายละเอียด</span><span style="font-size:1rem;">⌄</span>
     </div>
   </div>
-  
-  <!-- Expanded State - แสดงข้อมูลเต็ม -->
+
   <div id="ip-expanded" class="ip-expanded" style="display:none;" onclick="event.stopPropagation();">
-
-    <!-- Header -->
     <div class="ip-head">
-      <div>
-        <div class="ip-vid" id="card-vid">สองแถว</div>
-        <div class="ip-dir" id="card-dir">มุ่งหน้า: —</div>
-      </div>
-      <div class="status-pill online" id="status-pill">
-        <span>●</span><span id="status-tx">Online</span>
-      </div>
+      <div><div class="ip-vid" id="card-vid">สองแถว</div><div class="ip-dir" id="card-dir">มุ่งหน้า: —</div></div>
+      <div class="status-pill online" id="status-pill"><span>●</span><span id="status-tx">Online</span></div>
     </div>
-
-    <!-- Stats: Speed / Battery / GPS Fix / Satellites -->
     <div class="stats-row">
-      <div class="stat-b">
-        <div class="stat-ic">🚀</div>
-        <div class="stat-v"><span id="v-speed">--</span><span class="stat-u">km/h</span></div>
-        <div class="stat-l">ความเร็ว</div>
-      </div>
-      <div class="stat-b">
-        <div class="stat-ic">🔋</div>
-        <div class="stat-v"><span id="v-battery">--</span><span class="stat-u">%</span></div>
-        <div class="stat-l">แบต</div>
-        <div class="mini-bar"><div class="mini-fill" id="bat-bar" style="width:0%"></div></div>
-      </div>
-      <div class="stat-b" id="gps-fix-box">
-        <div class="stat-ic">📡</div>
-        <!-- สถานะ GPS fix แทนดาวเทียม (ESP8266 จำลองไม่ส่งค่า sats) -->
-        <div class="stat-v" id="v-gpsfix" style="font-size:.72rem;color:var(--green)">FIX</div>
-        <div class="stat-l">GPS Fix</div>
-      </div>
-      <div class="stat-b">
-        <div class="stat-ic">⚡</div>
-        <div class="stat-v"><span id="v-power">--</span><span class="stat-u">mA</span></div>
-        <div class="stat-l">กระแส</div>
-      </div>
+      <div class="stat-b"><div class="stat-ic">🚀</div><div class="stat-v"><span id="v-speed">--</span><span class="stat-u">km/h</span></div><div class="stat-l">ความเร็ว</div></div>
+      <div class="stat-b"><div class="stat-ic">🔋</div><div class="stat-v"><span id="v-battery">--</span><span class="stat-u">%</span></div><div class="stat-l">แบต</div><div class="mini-bar"><div class="mini-fill" id="bat-bar" style="width:0%"></div></div></div>
+      <div class="stat-b"><div class="stat-ic">📡</div><div class="stat-v" id="v-gpsfix" style="font-size:.72rem;color:var(--g-green)">FIX</div><div class="stat-l">GPS Fix</div></div>
     </div>
-
-    <!-- ETA -->
     <div class="eta-strip">
       <div class="eta-icon">🕐</div>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:.58rem;color:var(--sl400);">AI ประเมินเวลาถึงคุณ</div>
+        <div style="font-size:.58rem;color:var(--text-3);">Google Maps Traffic ETA</div>
         <div class="eta-val" id="eta-val">กำลังคำนวณ…</div>
-        <div class="eta-note" id="eta-note">อ้างอิงจากความเร็วและระยะทาง</div>
+        <div class="eta-note" id="eta-note">อ้างอิงจาก Google Distance Matrix</div>
       </div>
       <div class="eta-dist" id="eta-dist">-- กม.</div>
     </div>
-
-    <!-- Footer -->
     <div class="ip-footer">
-      <div class="status-pill online" id="status-pill2">
-        <span>●</span><span id="status-tx2">Online</span>
-      </div>
+      <div class="status-pill online" id="status-pill2"><span>●</span><span id="status-tx2">Online</span></div>
       <span class="ip-ts" id="last-ts">อัปเดต: --</span>
-      <button onclick="toggleBottomPanel()" style="margin-left:auto;padding:5px 12px;border:1px solid #E2E8F0;border-radius:8px;background:white;font-family:'Sarabun',sans-serif;font-size:.7rem;cursor:pointer;color:var(--slate-500);">
-        ↓ ปิด
-      </button>
+      <button onclick="toggleBottomPanel()" style="margin-left:auto;padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:var(--bg);font-family:Inter,Sarabun,sans-serif;font-size:.7rem;cursor:pointer;color:var(--text-2);">↓ ปิด</button>
     </div>
-
   </div>
-</div><!-- /#info-panel -->
+</div>
 
-<style>
-  /* ── Info Panel (Bottom Right) ── */
-  #info-panel {
-    cursor: pointer;
-    transition: all 0.3s ease;
-  }
-  /* [FIX] พื้นหลังขาว 100% ไม่โปร่งใส */
-  .ip-collapsed {
-    display: flex;
-    align-items: center;
-    padding: 12px 16px;
-    gap: 12px;
-    background: #FFFFFF;
-    border: 1px solid var(--sl200);
-    border-radius: 16px;
-    box-shadow: var(--sh-lg);
-  }
-  .ip-expanded {
-    padding: 16px;
-    background: #FFFFFF;
-    border: 1px solid var(--sl200);
-    border-radius: 16px;
-    box-shadow: var(--sh-lg);
-  }
-  #info-panel.expanded {
-    cursor: default;
-    max-height: 80vh;
-    overflow-y: auto;
-  }
-  #info-panel.expanded .ip-collapsed {
-    display: none;
-  }
-  #info-panel.expanded .ip-expanded {
-    display: block !important;
-  }
-  #info-panel:not(.expanded) .ip-expanded {
-    display: none !important;
-  }
-</style>
-
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/js/shared.js"></script>
 <script src="/js/app.js"></script>
 </body>

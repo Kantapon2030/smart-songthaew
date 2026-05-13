@@ -61,7 +61,7 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 
 admin.initializeApp({
   credential:  admin.credential.cert(serviceAccount),
-  databaseURL: 'https://smart-songthaew-50aff-default-rtdb.asia-southeast1.firebasedatabase.app',
+  databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://smart-songthaew-50aff-default-rtdb.asia-southeast1.firebasedatabase.app',
 });
 
 const db = admin.database();
@@ -413,63 +413,71 @@ app.get('/api/analytics/peak-hours', async (req, res) => {
 });
 
 // ============================================================
-//  GET /api/simulate
-//  ── DEV ONLY: inject mock GPS สำหรับทดสอบ ──
-//  Simulate vehicles เส้นทางนครศรีธรรมราช
+//  GOOGLE MAPS PROXY APIs — ซ่อน API Key + Memory Cache 5 นาที
 // ============================================================
-const SIM_ROUTE = [
-  [8.432450, 99.959129],[8.435500, 99.960500],[8.440000, 99.962000],
-  [8.445000, 99.965000],[8.452000, 99.968000],[8.460000, 99.971000],[8.467100, 99.974300],
-];
-const SIM_FLEET = {
-  'ST-01': { routeId: 'nakhon_central_route', step: 0, dir: 1 },
-  'ST-02': { routeId: 'nakhon_central_route', step: 3, dir: -1 },
-};
+const GMAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
+const _mapsCache = new Map(); // key → { data, ts }
+const CACHE_TTL = 5 * 60 * 1000; // 5 min
 
-app.get('/api/simulate', async (req, res) => {
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: 'Disabled in production' });
+function getCached(key) {
+  const c = _mapsCache.get(key);
+  if (c && (Date.now() - c.ts) < CACHE_TTL) return c.data;
+  _mapsCache.delete(key);
+  return null;
+}
+
+// GET /api/maps/key — ส่ง API Key ไป frontend (ใช้โหลด Google Maps JS)
+app.get('/api/maps/key', (req, res) => {
+  res.json({ key: GMAPS_KEY || '' });
+});
+
+// GET /api/maps/directions?origin=lat,lng&destination=lat,lng
+app.get('/api/maps/directions', async (req, res) => {
+  const { origin, destination } = req.query;
+  if (!origin || !destination) return res.status(400).json({ error: 'origin & destination required' });
+  if (!GMAPS_KEY) return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY not set' });
+
+  const cacheKey = `dir:${origin}:${destination}`;
+  const cached = getCached(cacheKey);
+  if (cached) return res.json(cached);
+
+  try {
+    const url = `https://maps.googleapis.com/maps/api/directions/json?origin=${origin}&destination=${destination}&mode=driving&language=th&key=${GMAPS_KEY}`;
+    const r = await fetch(url).then(r => r.json());
+    _mapsCache.set(cacheKey, { data: r, ts: Date.now() });
+    res.json(r);
+  } catch (e) {
+    console.error('[MAPS/directions]', e.message);
+    res.status(500).json({ error: e.message });
   }
+});
 
-  const today = todayStr();
-  const hour  = new Date().getHours();
-  const results = {};
+// GET /api/maps/eta?origin=lat,lng&destination=lat,lng — Traffic-aware ETA
+app.get('/api/maps/eta', async (req, res) => {
+  const { origin, destination } = req.query;
+  if (!origin || !destination) return res.status(400).json({ error: 'origin & destination required' });
+  if (!GMAPS_KEY) return res.status(500).json({ error: 'GOOGLE_MAPS_API_KEY not set' });
 
-  for (const [vehicleId, state] of Object.entries(SIM_FLEET)) {
-    const idx  = Math.max(0, Math.min(SIM_ROUTE.length - 1, state.step));
-    const pt   = SIM_ROUTE[idx];
+  const cacheKey = `eta:${origin}:${destination}`;
+  const cached = getCached(cacheKey);
+  if (cached) return res.json(cached);
 
-    const lat  = pt[0] + (Math.random() - 0.5) * 0.001;
-    const lng  = pt[1] + (Math.random() - 0.5) * 0.001;
-    const ts   = Date.now();
-    const dir  = state.dir > 0 ? DIR_SOUTH : DIR_NORTH;
-
-    // advance step
-    state.step += state.dir;
-    if (state.step >= SIM_ROUTE.length) { state.step = SIM_ROUTE.length - 2; state.dir = -1; }
-    if (state.step < 0)                    { state.step = 1;                        state.dir = 1;  }
-
-    const data = {
-      lat, lng,
-      speed:     Math.round(15 + Math.random() * 35),
-      battery:   Math.round(60 + Math.random() * 35),
-      timestamp: ts,
-      routeId:   'route_henri_dunant',
-      direction: dir,
+  try {
+    const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&mode=driving&departure_time=now&traffic_model=best_guess&language=th&key=${GMAPS_KEY}`;
+    const r = await fetch(url).then(r => r.json());
+    const elem = r.rows?.[0]?.elements?.[0];
+    const result = {
+      distance: elem?.distance || null,
+      duration: elem?.duration || null,
+      duration_in_traffic: elem?.duration_in_traffic || null,
+      status: elem?.status || 'UNKNOWN',
     };
-
-    const updates = {};
-    updates[`fleet/${vehicleId}/current`]                              = data;
-    updates[`history/${today}/${vehicleId}/${ts}`]                     = data;
-    updates[`routes_active/${today}/${state.routeId}/${vehicleId}`]    = { lastActive: ts, lat, lng };
-    updates[`analytics/peak_hours/${today}/${vehicleId}/${hour}`]      = admin.database.ServerValue.increment(1);
-    await db.ref().update(updates);
-
-    results[vehicleId] = data;
+    _mapsCache.set(cacheKey, { data: result, ts: Date.now() });
+    res.json(result);
+  } catch (e) {
+    console.error('[MAPS/eta]', e.message);
+    res.status(500).json({ error: e.message });
   }
-
-  console.log('[SIM] Injected:', Object.keys(results).join(', '));
-  return res.status(200).json({ success: true, data: results });
 });
 
 // ============================================================
@@ -509,199 +517,149 @@ app.post('/api/config', async (req, res) => {
 });
 
 // ============================================================
-//  DEMO VEHICLES — server-side simulator ที่ Admin ควบคุม
-//  POST /api/demo/start  { vehicles: N }
-//  POST /api/demo/stop
-//  GET  /api/demo/status
+//  DIGITAL TWIN — Single Vehicle (TWIN_01) Simulation
+//  POST /api/demo/start   ← เริ่ม Twin
+//  POST /api/demo/stop    ← หยุด Twin
+//  POST /api/demo/speed   ← ปรับความเร็ว
+//  GET  /api/demo/status  ← สถานะ
 // ============================================================
-let _demoTimer    = null;
-let _demoVehicles = 2;
-let _demoSpeedMultiplier = 1; // ตัวคูณความเร็ว Demo
-
-// [FIX] _demoRoute: ค่า default — จะถูกแทนด้วย coords จาก Firebase เมื่อ demo/start
-let _demoRoute = [
-  [8.432450, 99.959129],
-  [8.435500, 99.960500],
-  [8.440000, 99.962000],
-  [8.445000, 99.965000],
-  [8.452000, 99.968000],
-  [8.460000, 99.971000],
-  [8.467100, 99.974300],
+let _twinTimer = null;
+let _twinSpeedMultiplier = 1;
+let _twinRouteId = 'unassigned';
+let _twinRoute = [
+  [8.432450,99.959129],[8.435500,99.960500],[8.440000,99.962000],
+  [8.445000,99.965000],[8.452000,99.968000],[8.460000,99.971000],[8.467100,99.974300],
 ];
-let _demoRouteId = 'unassigned';
-const _demoState = {}; // { id: { lat,lng,targetIdx,dir,speed,targetSpeed,stopTicks,battery } }
+const _twin = {
+  lat:0, lng:0, speed:0, targetSpeed:35, bearing:0,
+  segIdx:0, segProgress:0, dir:'south', battery:85, stopTicks:0,
+};
+let _twinActive = false;
 
-function initDemoVehicle(id, startIdx, route) {
-  const R = route || _demoRoute;
-  const safeIdx = Math.min(startIdx, R.length - 2);
-  const t  = 0.3 + Math.random() * 0.4;
-  const p0 = R[safeIdx], p1 = R[safeIdx + 1];
-  const midLat = p0[0] + (p1[0]-p0[0])*t;
-  const midLng = p0[1] + (p1[1]-p0[1])*t;
-  const DIR_S = R[R.length-1].toString();
-  const DIR_N = R[0].toString();
-  _demoState[id] = {
-    lat: midLat, lng: midLng,
-    targetIdx:   safeIdx + 1,
-    dir:         safeIdx < Math.floor(R.length/2) ? 'south' : 'north',
-    speed:       30, targetSpeed: 35, stopTicks: 0,
-    battery:     Math.floor(70 + Math.random()*25),
-  };
+function bearingCalc(la1,lo1,la2,lo2){
+  const dO=(lo2-lo1)*Math.PI/180;
+  const y=Math.sin(dO)*Math.cos(la2*Math.PI/180);
+  const x=Math.cos(la1*Math.PI/180)*Math.sin(la2*Math.PI/180)-Math.sin(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.cos(dO);
+  return((Math.atan2(y,x)*180/Math.PI)+360)%360;
 }
 
-async function demoTick() {
-  const today = todayStr();
-  const hour  = new Date().getHours();
-  const ids   = Object.keys(_demoState);
-  if (!ids.length) return;
+function initTwin(){
+  const R=_twinRoute;
+  _twin.lat=R[0][0]; _twin.lng=R[0][1];
+  _twin.segIdx=0; _twin.segProgress=0;
+  _twin.dir='south'; _twin.speed=0; _twin.targetSpeed=35;
+  _twin.battery=85; _twin.stopTicks=0;
+  _twin.bearing=bearingCalc(R[0][0],R[0][1],R[1][0],R[1][1]);
+  _twinActive=true;
+}
 
-  const R = _demoRoute;  // ใช้ route ที่ดึงจาก Firebase
+async function twinTick(){
+  if(!_twinActive) return;
+  const R=_twinRoute;
+  const v=_twin;
+  const today=todayStr(), hour=new Date().getHours();
 
-  const updates = {};
-  for (const id of ids) {
-    const v = _demoState[id];
+  // Speed ramp
+  if(v.stopTicks>0){v.stopTicks--;v.speed=0;}
+  else{
+    if(Math.random()<0.008){v.stopTicks=2+Math.floor(Math.random()*3);v.targetSpeed=0;}
+    else if(Math.random()<0.05) v.targetSpeed=20+Math.floor(Math.random()*30);
+    if(v.speed<v.targetSpeed) v.speed=Math.min(v.speed+2,v.targetSpeed);
+    else if(v.speed>v.targetSpeed) v.speed=Math.max(v.speed-2,v.targetSpeed);
+  }
 
-    if (v.stopTicks > 0) {
-      v.stopTicks--; v.speed = 0;
-    } else {
-      // โอกาสหยุดจอดแบบสุ่ม (น้อยมาก)
-      if (Math.random() < 0.01) {
-        const r = Math.random();
-        if (r < 0.1) { v.stopTicks = 2 + Math.floor(Math.random()*3); v.targetSpeed = 0; } // จอดสั้นๆ 4-10 วิ
-        else if (r < 0.3) v.targetSpeed = 15 + Math.floor(Math.random()*10);
-        else v.targetSpeed = 30 + Math.floor(Math.random()*20);
-      }
-      if (v.speed < v.targetSpeed) v.speed = Math.min(v.speed+3, v.targetSpeed);
-      else if (v.speed > v.targetSpeed) v.speed = Math.max(v.speed-3, v.targetSpeed);
-
-      if (v.speed > 0) {
-        const tgt = R[v.targetIdx];
-        if (!tgt) { v.targetIdx = 1; v.dir = 'south'; continue; }
-        const dLat = tgt[0]-v.lat, dLng = tgt[1]-v.lng;
-        const dist = Math.sqrt(dLat*dLat+dLng*dLng);
-        const step = (v.speed/3600)/111 * 2 * _demoSpeedMultiplier;
-        if (dist <= step) {
-          v.lat = tgt[0]; v.lng = tgt[1];
-          // ไม่ต้องจอดทุกจุดของเส้น (เพราะเป็นแค่จุดวาดโค้ง) ข้ามไปจุดต่อไปได้เลย
-          if (v.dir === 'south') {
-            v.targetIdx++;
-            if (v.targetIdx >= R.length) { v.targetIdx = R.length-2; v.dir = 'north'; }
-          } else {
-            v.targetIdx--;
-            if (v.targetIdx < 0) { v.targetIdx = 1; v.dir = 'south'; }
-          }
-        } else {
-          v.lat += (dLat/dist)*step; v.lng += (dLng/dist)*step;
-        }
+  // Move along segments
+  if(v.speed>0 && R.length>=2){
+    const stepDeg=(v.speed/3600)/111*2*_twinSpeedMultiplier;
+    let remaining=stepDeg;
+    while(remaining>0 && v.segIdx<R.length-1){
+      const s=v.dir==='south'?v.segIdx:R.length-1-v.segIdx;
+      const e=v.dir==='south'?v.segIdx+1:R.length-2-v.segIdx;
+      if(s<0||s>=R.length||e<0||e>=R.length){v.segIdx=0;break;}
+      const p0=R[s],p1=R[e];
+      const dLat=p1[0]-p0[0],dLng=p1[1]-p0[1];
+      const segLen=Math.sqrt(dLat*dLat+dLng*dLng);
+      if(segLen<1e-9){v.segIdx++;continue;}
+      const left=segLen*(1-v.segProgress);
+      if(remaining>=left){
+        remaining-=left; v.segIdx++; v.segProgress=0;
+        if(v.segIdx>=R.length-1){v.segIdx=0;v.dir=v.dir==='south'?'north':'south';}
+      }else{
+        v.segProgress+=remaining/segLen; remaining=0;
       }
     }
-    if (Math.random() < 0.02) v.battery--;
-    if (v.battery < 10) v.battery = 92;
-
-    const ts = Date.now();
-    // ทิศทาง: ใช้ชื่อ stop จาก route จริง ถ้ามี
-    const routeData = await db.ref(`routes/${_demoRouteId}`).once('value');
-    const rInfo = routeData.val();
-    const stopNames = rInfo?.stops || [];
-    const dir = v.dir === 'south'
-      ? (stopNames[stopNames.length-1]?.name || 'ปลายทาง')
-      : (stopNames[0]?.name || 'ต้นทาง');
-
-    const data = {
-      lat: v.lat, lng: v.lng, speed: v.speed, battery: v.battery,
-      timestamp: ts, routeId: _demoRouteId, direction: dir,
-    };
-
-    updates[`fleet/${id}/current`]                         = data;
-    updates[`history/${today}/${id}/${ts}`]                = data;
-    updates[`analytics/peak_hours/${today}/${id}/${hour}`] = admin.database.ServerValue.increment(1);
+    // Interpolate position
+    const si=v.dir==='south'?v.segIdx:R.length-1-v.segIdx;
+    const ei=v.dir==='south'?Math.min(v.segIdx+1,R.length-1):Math.max(R.length-2-v.segIdx,0);
+    const t=v.segProgress;
+    v.lat=R[si][0]+(R[ei][0]-R[si][0])*t;
+    v.lng=R[si][1]+(R[ei][1]-R[si][1])*t;
+    v.bearing=bearingCalc(R[si][0],R[si][1],R[ei][0],R[ei][1]);
   }
+
+  if(Math.random()<0.02)v.battery--;
+  if(v.battery<10)v.battery=92;
+
+  // Direction label
+  let dirLabel='ปลายทาง';
+  try{
+    const rSnap=await db.ref(`routes/${_twinRouteId}`).once('value');
+    const rInfo=rSnap.val();
+    const stops=rInfo?.stops||[];
+    dirLabel=v.dir==='south'?(stops[stops.length-1]?.name||'ปลายทาง'):(stops[0]?.name||'ต้นทาง');
+  }catch(_){}
+
+  const ts=Date.now();
+  const data={lat:v.lat,lng:v.lng,speed:v.speed,bearing:v.bearing,battery:v.battery,timestamp:ts,routeId:_twinRouteId,direction:dirLabel};
+  const updates={};
+  updates['fleet/TWIN_01/current']=data;
+  updates[`history/${today}/TWIN_01/${ts}`]=data;
+  updates[`analytics/peak_hours/${today}/TWIN_01/${hour}`]=admin.database.ServerValue.increment(1);
   await db.ref().update(updates);
 }
 
-app.post('/api/demo/start', async (req, res) => {
-  const n       = Math.min(Math.max(parseInt(req.body.vehicles ?? 2), 1), 8);
-  const routeId = req.body.routeId || null;
-  _demoVehicles = n;
-
-  // ดึง route จาก Firebase ถ้ามี routeId
-  let chosenRouteId = routeId;
-  try {
-    if (routeId) {
-      const snap = await db.ref(`routes/${routeId}`).once('value');
-      const r = snap.val();
-      if (r?.coords?.length >= 2) {
-        _demoRoute   = r.coords;
-        _demoRouteId = routeId;
-        console.log(`[DEMO] Using route ${routeId} (${r.coords.length} waypoints)`);
-      }
-    } else {
-      // ไม่ระบุ route → ดึง route แรกจาก Firebase
-      const snap = await db.ref('routes').limitToFirst(1).once('value');
-      const routes = snap.val() || {};
-      const firstId = Object.keys(routes)[0];
-      if (firstId && routes[firstId]?.coords?.length >= 2) {
-        _demoRoute   = routes[firstId].coords;
-        _demoRouteId = firstId;
-        chosenRouteId = firstId;
-        console.log(`[DEMO] Auto-selected route ${firstId}`);
-      }
+app.post('/api/demo/start', async (req,res)=>{
+  const routeId=req.body.routeId||null;
+  try{
+    if(routeId){
+      const snap=await db.ref(`routes/${routeId}`).once('value');
+      const r=snap.val();
+      if(r?.coords?.length>=2){_twinRoute=r.coords;_twinRouteId=routeId;}
+    }else{
+      const snap=await db.ref('routes').limitToFirst(1).once('value');
+      const routes=snap.val()||{};
+      const fid=Object.keys(routes)[0];
+      if(fid&&routes[fid]?.coords?.length>=2){_twinRoute=routes[fid].coords;_twinRouteId=fid;}
     }
-  } catch (e) {
-    console.warn('[DEMO] Could not fetch route from Firebase, using default coords:', e.message);
-  }
+  }catch(e){console.warn('[TWIN]',e.message);}
 
-  // ล้าง state เดิม
-  Object.keys(_demoState).forEach(k => delete _demoState[k]);
-  for (let i = 0; i < n; i++) {
-    initDemoVehicle(`DEMO_${i+1}`, i % (_demoRoute.length-1), _demoRoute);
-  }
-
-  clearInterval(_demoTimer);
-  _demoTimer = setInterval(demoTick, 2000);
-
-  await db.ref('system/config').update({
-    demoMode: true, demoVehicles: n,
-    demoRouteId: _demoRouteId,
-    demoSpeed: _demoSpeedMultiplier,
-    updatedAt: Date.now(),
-  });
-  console.log(`[DEMO] started ${n} vehicles on route ${_demoRouteId}`);
-  res.json({ ok:true, vehicles:n, routeId: _demoRouteId, ids:Object.keys(_demoState) });
+  initTwin();
+  clearInterval(_twinTimer);
+  _twinTimer=setInterval(twinTick,2000);
+  await db.ref('system/config').update({demoMode:true,demoVehicles:1,demoRouteId:_twinRouteId,demoSpeed:_twinSpeedMultiplier,updatedAt:Date.now()});
+  console.log(`[TWIN] started on route ${_twinRouteId}`);
+  res.json({ok:true,vehicles:1,routeId:_twinRouteId,ids:['TWIN_01']});
 });
 
-app.post('/api/demo/speed', async (req, res) => {
-  const speed = parseFloat(req.body.speed);
-  if (!isNaN(speed) && speed > 0 && speed <= 10) {
-    _demoSpeedMultiplier = speed;
-    await db.ref('system/config').update({ demoSpeed: speed, updatedAt: Date.now() });
-    console.log(`[DEMO] Speed multiplier set to ${speed}x`);
-    res.json({ ok: true, speed });
-  } else {
-    res.status(400).json({ error: 'Invalid speed multiplier' });
-  }
+app.post('/api/demo/speed', async (req,res)=>{
+  const speed=parseFloat(req.body.speed);
+  if(!isNaN(speed)&&speed>0&&speed<=10){
+    _twinSpeedMultiplier=speed;
+    await db.ref('system/config').update({demoSpeed:speed,updatedAt:Date.now()});
+    res.json({ok:true,speed});
+  }else res.status(400).json({error:'Invalid speed'});
 });
 
-app.post('/api/demo/stop', async (req, res) => {
-  clearInterval(_demoTimer); _demoTimer = null;
-
-  // ลบ marker demo ออกจาก Firebase
-  const updates = {};
-  Object.keys(_demoState).forEach(id => { updates[`fleet/${id}`] = null; });
-  if (Object.keys(updates).length) await db.ref().update(updates);
-  Object.keys(_demoState).forEach(k => delete _demoState[k]);
-
-  await db.ref('system/config').update({ demoMode:false, updatedAt:Date.now() });
-  console.log('[DEMO] stopped');
-  res.json({ ok:true });
+app.post('/api/demo/stop', async (req,res)=>{
+  clearInterval(_twinTimer);_twinTimer=null;_twinActive=false;
+  await db.ref('fleet/TWIN_01').remove();
+  await db.ref('system/config').update({demoMode:false,updatedAt:Date.now()});
+  console.log('[TWIN] stopped');
+  res.json({ok:true});
 });
 
-app.get('/api/demo/status', (req, res) => {
-  res.json({
-    running: _demoTimer !== null,
-    vehicles: Object.keys(_demoState).length,
-    ids: Object.keys(_demoState),
-  });
+app.get('/api/demo/status', (req,res)=>{
+  res.json({running:_twinTimer!==null,vehicles:_twinActive?1:0,ids:_twinActive?['TWIN_01']:[]});
 });
 
 // ============================================================

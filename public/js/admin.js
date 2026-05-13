@@ -12,7 +12,7 @@ let routeWaypoints = [];
 let routePolyline  = null;
 let routeMarkers   = [];
 
-let _demoVehicleCount = 2;
+let _demoVehicleCount = 1;
 let _demoRunning      = false;
 
 // ── Clock ────────────────────────────────────────────────────
@@ -44,14 +44,14 @@ function applyConfigToUI(cfg) {
 
   if (cfg.demoMode) {
     light.classList.add('on');
-    title.textContent     = 'Demo Mode กำลังทำงาน';
-    sub.textContent       = `รถจำลอง ${_demoVehicleCount} คัน (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
-    badge.textContent     = 'DEMO';
+    title.textContent     = 'Digital Twin กำลังทำงาน';
+    sub.textContent       = `TWIN_01 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
+    badge.textContent     = 'TWIN';
     badge.className       = 'nav-badge';
-    statusSub.textContent = `${_demoVehicleCount} คันกำลังวิ่ง`;
+    statusSub.textContent = 'TWIN_01 กำลังวิ่ง';
   } else {
     light.classList.remove('on');
-    title.textContent     = 'Demo Mode ปิดอยู่';
+    title.textContent     = 'Digital Twin ปิดอยู่';
     sub.textContent       = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
     badge.textContent     = 'REAL';
     badge.className       = 'nav-badge safe';
@@ -69,23 +69,23 @@ function changeVehicleCount(d) {
 }
 
 async function startDemo() {
-  addLog('info', `เริ่ม Demo Mode (${_demoVehicleCount} คัน)...`);
+  addLog('info', 'เริ่ม Digital Twin (TWIN_01)...');
   try {
     const r = await fetch('/api/demo/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vehicles: _demoVehicleCount }),
+      body: JSON.stringify({ vehicles: 1 }),
     }).then(r => r.json());
-    addLog('ok', `Demo started: ${r.ids?.join(', ')}`);
+    addLog('ok', `Twin started: ${r.ids?.join(', ')}`);
     syncConfig();
   } catch (e) { addLog('err', e.message); }
 }
 
 async function stopDemo() {
-  addLog('warn', 'หยุด Demo Mode...');
+  addLog('warn', 'หยุด Digital Twin...');
   try {
     await fetch('/api/demo/stop', { method: 'POST' });
-    addLog('ok', 'Demo stopped — กลับเป็นโหมด Real');
+    addLog('ok', 'Twin stopped — กลับเป็นโหมด Real');
     syncConfig();
   } catch (e) { addLog('err', e.message); }
 }
@@ -143,7 +143,7 @@ async function refreshStatus() {
     );
 
     if (demo.running) {
-      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Demo: ${demo.vehicles} คันวิ่งอยู่</span>`);
+      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Twin: TWIN_01 วิ่งอยู่</span>`);
     }
 
     for (const id of (demo.ids || [])) {

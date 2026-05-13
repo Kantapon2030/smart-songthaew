@@ -4,7 +4,7 @@
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Admin Control — สองแถวสมาร์ท</title>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
   <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
   <style>
     :root{
@@ -19,7 +19,7 @@
       --sh-sm:0 1px 3px rgba(0,0,0,.07);--sh-md:0 4px 16px rgba(0,0,0,.08);
     }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    html,body{font-family:'Sarabun',sans-serif;background:var(--slate-50);color:var(--slate-800);}
+    html,body{font-family:Inter,'Sarabun',sans-serif;background:var(--slate-50);color:var(--slate-800);}
 
     /* Nav */
     #nav{height:52px;position:sticky;top:0;z-index:100;background:white;
@@ -151,24 +151,22 @@
   <!-- ── DEMO MODE CONTROL ── -->
   <div class="card">
     <div class="card-head">
-      <div class="card-title">🎬 Demo Mode Control</div>
+      <div class="card-title">🧬 Digital Twin Control</div>
       <div class="card-sub" id="demo-status-sub">ปิดอยู่</div>
     </div>
 
     <div class="demo-state">
       <div class="demo-light" id="demo-light"></div>
       <div class="demo-info">
-        <div class="demo-info-title" id="demo-state-title">Demo Mode ปิดอยู่</div>
+        <div class="demo-info-title" id="demo-state-title">Digital Twin ปิดอยู่</div>
         <div class="demo-info-sub" id="demo-state-sub">ระบบใช้ข้อมูลจาก ESP8266 จริง</div>
       </div>
     </div>
 
-    <!-- Vehicle count -->
+    <!-- Twin info -->
     <div class="vehicle-count-ctrl">
-      <span class="vcc-label">จำนวนรถจำลอง</span>
-      <button class="vcc-btn" onclick="changeVehicleCount(-1)">−</button>
-      <span class="vcc-num" id="vcc-num">2</span>
-      <button class="vcc-btn" onclick="changeVehicleCount(1)">+</button>
+      <span class="vcc-label">Digital Twin Vehicle</span>
+      <span class="vcc-num" id="vcc-num">TWIN_01</span>
     </div>
 
     <!-- Speed Control -->
@@ -194,8 +192,8 @@
     <div style="padding:0 18px 16px;">
       <div style="font-size:.68rem;color:var(--slate-400);padding:10px 12px;
         background:var(--amber-50);border:1px solid #FDE68A;border-radius:9px;">
-        ⚠️ เมื่อเปิด Demo Mode: รถ Arduino จะถูกซ่อน ระบบจะสร้างรถจำลองแทน<br/>
-        ทุกหน้า (User + Dashboard) จะอัปเดตอัตโนมัติภายใน 5 วินาที
+        ⚠️ เมื่อเปิด Digital Twin: รถ TWIN_01 จะวิ่งตามเส้นทางจริงด้วย GPS จำลอง<br/>
+        ทุกหน้าจะอัปเดตอัตโนมัติ • ETA คำนวณจาก Google Maps Traffic
       </div>
     </div>
   </div>

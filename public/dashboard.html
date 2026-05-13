@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title>Dashboard — สองแถวสมาร์ท</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
-  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
   <style>
     :root{
       --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
@@ -20,7 +20,7 @@
       --sh-sm:0 1px 3px rgba(0,0,0,.07);--sh-md:0 4px 16px rgba(0,0,0,.08);
     }
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    html,body{font-family:'Sarabun',sans-serif;background:var(--sl50);color:var(--sl800);}
+    html,body{font-family:Inter,'Sarabun',sans-serif;background:var(--sl50);color:var(--sl800);}
 
     /* Nav */
     #nav{height:52px;position:sticky;top:0;z-index:100;background:white;
@@ -175,8 +175,8 @@
 </nav>
 
 <div id="demo-banner">
-  <span>🎬</span>
-  <span>Demo Mode กำลังทำงาน — แสดงรถจำลอง <span id="demo-vehicle-count">?</span> คัน</span>
+  <span>🧬</span>
+  <span>DIGITAL TWIN MODE — รถจำลอง TWIN_01 กำลังวิ่ง</span>
 </div>
 
 <div id="page">
@@ -291,6 +291,7 @@
 </div>
 
 <script src="/js/shared.js"></script>
+<script>/* Leaflet not needed on dashboard */</script>
 <script>
 'use strict';
 let chartObj=null, chartMode='speed';
@@ -309,10 +310,8 @@ setInterval(()=>{
 // Config change
 function onConfigChanged(cfg) {
   const banner=document.getElementById('demo-banner');
-  if(cfg.demoMode){
-    banner.classList.add('show');
-    document.getElementById('demo-vehicle-count').textContent=cfg.demoVehicles??'?';
-  } else banner.classList.remove('show');
+  if(cfg.demoMode) banner.classList.add('show');
+  else banner.classList.remove('show');
   renderAnnouncement(cfg.announcement);
 }
 
@@ -332,8 +331,8 @@ setInterval(loadChart,20000); loadChart();
 function updateAll(data) {
   // รวมรถจริงเท่านั้น - ไม่แสดง demo vehicles บน admin dashboard
   const vehicles=Object.entries(data)
-    .map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('DEMO_')}))
-    .filter(v=>!v.isDemo); // Filter out demo vehicles
+    .map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('TWIN_')||id.startsWith('DEMO_')}))
+    .filter(v=>!v.isDemo);
   
   const online=vehicles.filter(v=>isVehicleOnline(v.data));
 
