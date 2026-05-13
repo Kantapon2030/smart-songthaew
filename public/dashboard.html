@@ -107,8 +107,21 @@
     .no-data{text-align:center;padding:24px;color:var(--sl400);font-size:.8rem;}
     .no-data .icon{font-size:1.8rem;margin-bottom:5px;}
 
-    @media(max-width:1000px){#kpi-strip{grid-template-columns:repeat(3,1fr);}}
-
+    @media(max-width:1000px){
+      #kpi-strip{grid-template-columns:repeat(3,1fr);}
+    }
+    @media(max-width:768px){
+      #kpi-strip{grid-template-columns:repeat(2,1fr);}
+      .grid-2,.grid-3{grid-template-columns:1fr;}
+      .iot-grid{grid-template-columns:1fr;}
+      .nav-logo span {display:none;}
+      #demo-banner {font-size:.7rem; padding:6px 12px;}
+    }
+    @media(max-width:480px){
+      #kpi-strip{grid-template-columns:1fr;}
+      #nav {padding:0 10px;}
+      .nav-link {padding:4px 8px; font-size:.7rem;}
+    }
     /* ── TERMINAL PANEL ── */
     .term-wrap{background:#0D1117;border-radius:12px;overflow:hidden;border:1px solid #30363D;}
     .term-bar{background:#161B22;border-bottom:1px solid #30363D;padding:8px 14px;

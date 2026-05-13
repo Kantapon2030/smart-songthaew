@@ -32,7 +32,7 @@
     }
     .brand{display:flex;align-items:center;gap:8px;}
     .brand-icon{width:30px;height:30px;border-radius:8px;background:var(--g-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
-    .brand-name{font-size:.82rem;font-weight:700;color:var(--text);}
+    .brand-name{font-size:.82rem;font-weight:700;color:var(--text);white-space:nowrap;}
     .brand-sub{font-size:.55rem;color:var(--text-3);font-weight:500;}
     .brand-count{font-size:.62rem;color:var(--text-3);}
     .brand-count b{color:var(--g-blue);font-weight:700;}
@@ -95,10 +95,22 @@
     #offline-banner{display:none;position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:600;background:var(--g-red-light);border:1px solid #F5C6C0;border-radius:20px;padding:7px 14px;align-items:center;gap:7px;font-size:.75rem;font-weight:700;color:var(--g-red);box-shadow:var(--shadow-md);white-space:nowrap;}
     #offline-banner.show{display:flex;animation:fadeIn .3s ease;}
 
-    @media(max-width:640px){
-      #topbar{height:52px;padding:0 8px;}
-      #left-panel{top:58px;left:8px;width:calc(50% - 12px);max-width:160px;}
-      #info-panel{right:0;left:0;bottom:0;width:auto;padding:0 10px 10px;}
+    @media(max-width:768px){
+      #topbar{height:52px;padding:0 8px;gap:6px;overflow-x:auto;overflow-y:hidden;white-space:nowrap;}
+      #topbar::-webkit-scrollbar {display:none;}
+      .brand-sub, .brand-count, .top-sep {display:none;}
+      .route-label {display:none;}
+      .tb-link span {display:none;} 
+      .tb-link {font-size:14px;padding:4px 8px;}
+      .brand {flex-shrink:0;}
+      #route-select {max-width:130px;text-overflow:ellipsis;}
+      #left-panel{top:58px;left:8px;width:180px;}
+    }
+    @media(max-width:480px){
+      #left-panel{top:58px;left:8px;width:calc(100% - 16px);max-width:none;}
+      .loc-row {grid-template-columns:1fr 1fr;}
+      .tb-link {display:none;}
+      #info-panel{right:0;left:0;bottom:0;width:auto;padding:0 8px 8px;}
     }
   </style>
 </head>
@@ -118,8 +130,8 @@
     </div>
   </div>
   <div class="top-sep"></div>
-  <div style="display:flex;align-items:center;gap:8px;margin-right:10px;">
-    <span style="font-size:.65rem;color:var(--text-3);">เส้นทาง:</span>
+  <div style="display:flex;align-items:center;gap:4px;margin-right:10px;">
+    <span class="route-label" style="font-size:.65rem;color:var(--text-3);">เส้นทาง:</span>
     <select id="route-select" onchange="changeRoute(this.value)" style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-family:Inter,Sarabun,sans-serif;font-size:.75rem;cursor:pointer;">
       <option value="">กำลังโหลด...</option>
     </select>
@@ -135,13 +147,13 @@
   <div class="panel-card">
     <div class="pc-label">📍 เส้นทางการเดินทาง</div>
     <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span style="font-size:12px;">จุดขึ้น:</span>
-        <select id="origin-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;"></select>
+      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+        <span style="font-size:12px;flex-shrink:0;">จุดขึ้น:</span>
+        <select id="origin-select" onchange="updateOdSelection()" style="flex:1;min-width:0;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;"></select>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span style="font-size:12px;">จุดลง:</span>
-        <select id="dest-select" onchange="updateOdSelection()" style="flex:1;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;"></select>
+      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
+        <span style="font-size:12px;flex-shrink:0;">จุดลง:</span>
+        <select id="dest-select" onchange="updateOdSelection()" style="flex:1;min-width:0;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;"></select>
       </div>
     </div>
     <div class="pc-label" style="margin-top:9px;margin-bottom:0;">📍 ตำแหน่ง</div>

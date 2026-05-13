@@ -122,9 +122,21 @@ function updateOdSelection(refresh=true){
   const oIdx=parseInt(os.value),dIdx=parseInt(ds.value);
   const route=allRoutes[currentRouteId];
   userOriginIdx=oIdx;userDestIdx=dIdx;
+  
+  // Update user map pin and ETA location to the selected "Origin" (จุดขึ้น)
+  const originStop = route.stops[userOriginIdx];
+  if (originStop) {
+    userLocation = [originStop.lat, originStop.lng];
+    if (userMarker) userMarker.position = { lat: userLocation[0], lng: userLocation[1] };
+    saveUserLocation();
+  }
+
   if(oIdx===dIdx)userDesiredDirection=null;
   else userDesiredDirection=dIdx>oIdx?route.stops[route.stops.length-1].name:route.stops[0].name;
-  if(refresh)analyzeAndHighlight();
+  if(refresh){
+    if(map && originStop) map.panTo({ lat: originStop.lat, lng: originStop.lng });
+    analyzeAndHighlight();
+  }
 }
 
 async function refreshLocations(){await fetchVehicles();}

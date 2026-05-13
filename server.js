@@ -151,9 +151,6 @@ async function initializeDefaultData() {
         ],
         stops: [
           { name: 'นครศรีธรรมราช (วงเวียนนาคร)', lat: 8.4325, lng: 99.9629 },
-          { name: 'แยกถนน 4016', lat: 8.4370, lng: 99.9200 },
-          { name: 'นาสาร', lat: 8.4680, lng: 99.8820 },
-          { name: 'ตำบลพรหมโลก', lat: 8.5580, lng: 99.8250 },
           { name: 'โรงเรียนพรหมคีรีนครศรีธรรมราช', lat: 8.5780, lng: 99.8160 },
         ],
         createdAt: Date.now(),
@@ -553,7 +550,7 @@ function initTwin(){
   const R=_twinRoute;
   _twin.lat=R[0][0]; _twin.lng=R[0][1];
   _twin.segIdx=0; _twin.segProgress=0;
-  _twin.dir='south'; _twin.speed=0; _twin.targetSpeed=35;
+  _twin.dir='south'; _twin.speed=0; _twin.targetSpeed=80;
   _twin.battery=85; _twin.stopTicks=0;
   _twin.bearing=bearingCalc(R[0][0],R[0][1],R[1][0],R[1][1]);
   _twinActive=true;
@@ -565,13 +562,17 @@ async function twinTick(){
   const v=_twin;
   const today=todayStr(), hour=new Date().getHours();
 
-  // Speed ramp
+  // Speed ramp (Up to 100km/h, less stops)
   if(v.stopTicks>0){v.stopTicks--;v.speed=0;}
   else{
-    if(Math.random()<0.008){v.stopTicks=2+Math.floor(Math.random()*3);v.targetSpeed=0;}
-    else if(Math.random()<0.05) v.targetSpeed=20+Math.floor(Math.random()*30);
-    if(v.speed<v.targetSpeed) v.speed=Math.min(v.speed+2,v.targetSpeed);
-    else if(v.speed>v.targetSpeed) v.speed=Math.max(v.speed-2,v.targetSpeed);
+    // โอกาสหยุดรถน้อยลงมาก (0.2%)
+    if(Math.random()<0.002){v.stopTicks=1+Math.floor(Math.random()*2);v.targetSpeed=0;}
+    // ปรับความเร็วเป้าหมายระหว่าง 60-100 km/h
+    else if(Math.random()<0.05) v.targetSpeed=60+Math.floor(Math.random()*40);
+    
+    // อัตราเร่ง/เบรก
+    if(v.speed<v.targetSpeed) v.speed=Math.min(v.speed+3,v.targetSpeed);
+    else if(v.speed>v.targetSpeed) v.speed=Math.max(v.speed-3,v.targetSpeed);
   }
 
   // Move along segments
