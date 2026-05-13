@@ -113,10 +113,20 @@ function rateLimitMiddleware(req, res, next) {
 // ── Initialize Default Data ───────────────────────────────────────────────────
 async function initializeDefaultData() {
   try {
+    // ── Auto-purge stale DEMO/TWIN vehicles on startup ──
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleet = fleetSnap.val() || {};
+    const staleKeys = Object.keys(fleet).filter(k => k.startsWith('DEMO_') || k.startsWith('TWIN_'));
+    if (staleKeys.length) {
+      const purge = {};
+      staleKeys.forEach(k => { purge[`fleet/${k}`] = null; });
+      await db.ref().update(purge);
+      console.log('[Init] Purged stale vehicles:', staleKeys.join(', '));
+    }
+
     // Check if admin exists
     const adminSnap = await db.ref('system/admin').once('value');
     if (!adminSnap.exists()) {
-      // Create default admin
       const hashedPassword = bcrypt.hashSync('admin123', 10);
       await db.ref('system/admin').set({
         username: 'Admin123',
@@ -125,37 +135,40 @@ async function initializeDefaultData() {
       });
       console.log('[Init] Default admin created: Admin123 / admin123');
     }
-    
+
     // Check if default route exists
     const routesSnap = await db.ref('routes').once('value');
     if (!routesSnap.exists()) {
-      // Create default route
+      // เส้นทางจริง: นครศรีธรรมราช (เซ็นทรัล) → พรหมคีรี (โรงเรียนเตรียมอุดมฯ ภาคใต้)
       const defaultRoute = {
-        name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้ ↔ เซ็นทรัลนครศรีธรรมราช',
-        description: 'เส้นทางหลัก นครศรีธรรมราช',
+        name: 'นครศรีธรรมราช ↔ พรหมคีรี',
+        description: 'เซ็นทรัลนครศรีธรรมราช → โรงเรียนเตรียมอุดมศึกษาภาคใต้',
         coords: [
-          [8.432450, 99.959129],
-          [8.435500, 99.960500],
-          [8.440000, 99.962000],
-          [8.445000, 99.965000],
-          [8.452000, 99.968000],
-          [8.460000, 99.971000],
-          [8.467100, 99.974300]
+          [8.4671, 99.9743],  // เซ็นทรัลนครศรีธรรมราช
+          [8.4620, 99.9710],  // ถนนราชดำเนิน
+          [8.4555, 99.9685],  // แยกหัวถนน
+          [8.4480, 99.9655],  // ตลาดปากนคร
+          [8.4390, 99.9620],  // บ้านตาล
+          [8.4300, 99.9590],  // หนองบัว
+          [8.4200, 99.9565],  // พรหมคีรีเหนือ
+          [8.4130, 99.9545],  // บ้านพรหมโลก
+          [8.4040, 99.9520],  // อำเภอพรหมคีรี
+          [8.3980, 99.9500],  // หน้าที่ว่าการ
+          [8.3924, 99.9480],  // โรงเรียนเตรียมอุดมศึกษาภาคใต้
         ],
         stops: [
-          { name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้', lat: 8.432450, lng: 99.959129 },
-          { name: 'ถนนปั้นน้ำ', lat: 8.435500, lng: 99.960500 },
-          { name: 'แยกพรหมคีรี', lat: 8.440000, lng: 99.962000 },
-          { name: 'ถนนราชดำเนิน', lat: 8.445000, lng: 99.965000 },
-          { name: 'วงเวียนนาคร', lat: 8.452000, lng: 99.968000 },
-          { name: 'ถนนมหาราช', lat: 8.460000, lng: 99.971000 },
-          { name: 'เซ็นทรัลนครศรีธรรมราช', lat: 8.467100, lng: 99.974300 }
+          { name: 'เซ็นทรัลนครศรีธรรมราช', lat: 8.4671, lng: 99.9743 },
+          { name: 'ถนนราชดำเนิน', lat: 8.4555, lng: 99.9685 },
+          { name: 'ตลาดปากนคร', lat: 8.4480, lng: 99.9655 },
+          { name: 'หนองบัว', lat: 8.4300, lng: 99.9590 },
+          { name: 'อำเภอพรหมคีรี', lat: 8.4040, lng: 99.9520 },
+          { name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้', lat: 8.3924, lng: 99.9480 },
         ],
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
-      await db.ref('routes/route_nakhon_01').set(defaultRoute);
-      console.log('[Init] Default route created');
+      await db.ref('routes/route_nakhon_phromkhiri').set(defaultRoute);
+      console.log('[Init] Default route created: นครศรีธรรมราช ↔ พรหมคีรี');
     }
   } catch (e) {
     console.error('[Init] Error:', e);
@@ -527,8 +540,10 @@ let _twinTimer = null;
 let _twinSpeedMultiplier = 1;
 let _twinRouteId = 'unassigned';
 let _twinRoute = [
-  [8.432450,99.959129],[8.435500,99.960500],[8.440000,99.962000],
-  [8.445000,99.965000],[8.452000,99.968000],[8.460000,99.971000],[8.467100,99.974300],
+  [8.4671,99.9743],[8.4620,99.9710],[8.4555,99.9685],
+  [8.4480,99.9655],[8.4390,99.9620],[8.4300,99.9590],
+  [8.4200,99.9565],[8.4130,99.9545],[8.4040,99.9520],
+  [8.3980,99.9500],[8.3924,99.9480],
 ];
 const _twin = {
   lat:0, lng:0, speed:0, targetSpeed:35, bearing:0,

@@ -329,40 +329,37 @@ setInterval(fetchData,4000); fetchData();
 setInterval(loadChart,20000); loadChart();
 
 function updateAll(data) {
-  // รวมรถจริงเท่านั้น - ไม่แสดง demo vehicles บน admin dashboard
-  const vehicles=Object.entries(data)
-    .map(([id,v])=>({id,data:v?.current,isDemo:id.startsWith('TWIN_')||id.startsWith('DEMO_')}))
-    .filter(v=>!v.isDemo);
-  
-  const online=vehicles.filter(v=>isVehicleOnline(v.data));
+  const inDemoMode = window.SYS?.demoMode ?? false;
 
-  document.getElementById('kpi-active').textContent=online.length||'0';
-  const speeds=online.map(v=>v.data?.speed||0).filter(s=>s>0);
-  const avgSpd=speeds.length?Math.round(speeds.reduce((a,b)=>a+b,0)/speeds.length):0;
-  document.getElementById('kpi-speed').textContent=avgSpd||'—';
-  document.getElementById('nc-online').textContent=online.length;
-  document.getElementById('nc-speed').textContent=avgSpd||'—';
+  // ใน demo mode — ใช้ข้อมูลจาก TWIN_01 แทนรถจริง
+  // ใน real mode — เอาเฉพาะรถจริง (songthaew_01) หรือรถที่ไม่ใช่ TWIN/DEMO
+  const vehicles = Object.entries(data).map(([id,v]) => ({
+    id, data: v?.current,
+    isDemo: id.startsWith('TWIN_') || id.startsWith('DEMO_')
+  })).filter(v => inDemoMode ? v.isDemo : !v.isDemo);
 
-  // Battery from real vehicle
-  const realV=data[REAL_VEHICLE_ID]?.current;
-  const bat=realV?.battery>=0?realV.battery:null;
-  if(bat!==null){
-    const c=bat<20?'var(--red)':bat<50?'var(--amber)':'var(--green)';
-    const el=document.getElementById('kpi-bat'); if(el){el.textContent=bat+'%';el.style.color=c;}
-    const bar=document.getElementById('kpi-bat-bar'); if(bar){bar.style.width=bat+'%';bar.style.background=c;}
+  const online = vehicles.filter(v => isVehicleOnline(v.data));
+  document.getElementById('kpi-active').textContent = online.length || '0';
+  const speeds = online.map(v => v.data?.speed||0).filter(s => s > 0);
+  const avgSpd = speeds.length ? Math.round(speeds.reduce((a,b)=>a+b,0)/speeds.length) : 0;
+  document.getElementById('kpi-speed').textContent = avgSpd || '—';
+  document.getElementById('nc-online').textContent = online.length;
+  document.getElementById('nc-speed').textContent = avgSpd || '—';
+
+  // Battery — real vehicle หรือ TWIN_01
+  const primaryKey = inDemoMode ? 'TWIN_01' : REAL_VEHICLE_ID;
+  const primaryV = data[primaryKey]?.current;
+  const bat = primaryV?.battery >= 0 ? primaryV.battery : null;
+  if (bat !== null) {
+    const c = bat<20?'var(--red)':bat<50?'var(--amber)':'var(--green)';
+    const el = document.getElementById('kpi-bat'); if(el){el.textContent=bat+'%';el.style.color=c;}
+    const bar = document.getElementById('kpi-bat-bar'); if(bar){bar.style.width=bat+'%';bar.style.background=c;}
   }
 
   updateDeviceList(vehicles);
-  updateIoT(realV);
-  updatePowerPanel(realV);
-  const isDemo=window.SYS?.demoMode??false;
-  // [FIX] เลือกรถ DEMO แรกที่ online จริงๆ
-  let termV = realV;
-  if(isDemo) {
-    const demoKey = Object.keys(data).find(k => k.startsWith('DEMO_') && data[k]?.current);
-    termV = demoKey ? data[demoKey].current : null;
-  }
-  renderTerminal(termV, latencies[latencies.length-1]||0, isDemo);
+  updateIoT(primaryV);
+  updatePowerPanel(primaryV);
+  renderTerminal(primaryV, latencies[latencies.length-1]||0, inDemoMode);
 }
 
 function updateDeviceList(vehicles) {
@@ -376,10 +373,10 @@ function updateDeviceList(vehicles) {
     const batColor=bat===null?'#94A3B8':bat<20?'#DC2626':bat<50?'#D97706':'#059669';
     const status=!online?'off':moving?'on':'idle';
     const statusTx={on:'วิ่งอยู่',idle:'จอดอยู่',off:'Offline'}[status];
-    const badgeCls=(isDemo?'b-demo':{on:'b-on',idle:'b-idle',off:'b-off'}[status]);
+    const badgeCls=({on:'b-on',idle:'b-idle',off:'b-off'}[status]);
     const ts=v.timestamp?new Date(v.timestamp).toLocaleTimeString('th-TH'):'—';
     return `<div class="device-card">
-      <div class="dc-head"><span class="dc-id">${id}${isDemo?' 🎬':''}</span><span class="dc-badge ${badgeCls}">${isDemo?'DEMO':statusTx}</span></div>
+      <div class="dc-head"><span class="dc-id">${id}</span><span class="dc-badge ${badgeCls}">${statusTx}</span></div>
       <div class="dc-stats">
         <div class="dcs"><div class="dcs-val" style="color:#D97706">${online?(v.speed??'—'):'—'}</div><div class="dcs-lbl">km/h</div></div>
         <div class="dcs"><div class="dcs-val" style="color:${batColor}">${bat??'—'}%</div><div class="dcs-lbl">Battery</div></div>

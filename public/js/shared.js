@@ -4,20 +4,23 @@
  */
 'use strict';
 
+// เส้นทางจริง: เซ็นทรัลนครศรีธรรมราช → โรงเรียนเตรียมอุดมศึกษาภาคใต้ (พรหมคีรี)
 const ROUTE_COORDS = [
-  [8.432450,99.959129],[8.435500,99.960500],[8.440000,99.962000],
-  [8.445000,99.965000],[8.452000,99.968000],[8.460000,99.971000],[8.467100,99.974300],
+  [8.4671,99.9743],[8.4620,99.9710],[8.4555,99.9685],
+  [8.4480,99.9655],[8.4390,99.9620],[8.4300,99.9590],
+  [8.4200,99.9565],[8.4130,99.9545],[8.4040,99.9520],
+  [8.3980,99.9500],[8.3924,99.9480],
 ];
-const DIR_NORTH='โรงเรียนเตรียมอุดมศึกษาภาคใต้';
+const DIR_NORTH='โรงเรียนเตรียมอุดมศึกษาภาคใต้ (พรหมคีรี)';
 const DIR_SOUTH='เซ็นทรัลนครศรีธรรมราช';
-const DEST_NORTH=ROUTE_COORDS[0];
-const DEST_SOUTH=ROUTE_COORDS[6];
+const DEST_NORTH=ROUTE_COORDS[ROUTE_COORDS.length-1]; // พรหมคีรี
+const DEST_SOUTH=ROUTE_COORDS[0];                     // เซ็นทรัล
 const DEST_PHROMKHIRI=DEST_NORTH;
 const DEST_NAKHON=DEST_SOUTH;
 const REAL_VEHICLE_ID='songthaew_01';
 
 // ── Global Config ─────────────────────────────────────────────
-window.SYS={demoMode:false,demoVehicles:1,routeName:'เตรียมอุดมฯ ↔ เซ็นทรัล',offlineTimeout:30,announcement:'',updatedAt:null};
+window.SYS={demoMode:false,demoVehicles:1,routeName:'นครศรีธรรมราช ↔ พรหมคีรี',offlineTimeout:30,announcement:'',updatedAt:null};
 
 async function syncConfig(){
   try{
@@ -69,15 +72,16 @@ function isVehicleOnline(v){
 }
 
 // ── Google Maps Vehicle Marker ────────────────────────────────
+// รถ demo แสดงสีเขียวเหมือนรถจริงที่วิ่งอยู่ — ไม่มี badge พิเศษ
 function createVehicleMarkerContent(speed=0,online=true,isDemo=false,isRecommended=false){
-  const color=!online?'#9AA0A6':isDemo?(isRecommended?'#7C3AED':'#A78BFA'):isRecommended?'#059669':speed===0?'#EA4335':speed<20?'#FBBC04':'#4285F4';
+  // ทั้งรถจริงและรถ demo ใช้โลจิก color เดียวกัน
+  const color=!online?'#9AA0A6':speed===0?'#EA4335':speed<20?'#FBBC04':'#34A853';
   const size=isRecommended?48:36;
   const el=document.createElement('div');
   el.style.cssText='display:flex;flex-direction:column;align-items:center;position:relative;';
   let html='';
   if(isRecommended) html+=`<div style="background:${color};color:#fff;border-radius:99px;padding:2px 8px;font-size:9px;font-weight:800;font-family:Inter,Sarabun,sans-serif;white-space:nowrap;margin-bottom:2px;">✨ แนะนำ</div>`;
   html+=`<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:${size>40?18:14}px;box-shadow:0 4px 14px ${color}55;${!online?'opacity:.45;':''}transition:all .3s;">🚐</div>`;
-  if(isDemo) html+=`<div style="background:#7C3AED;color:#fff;border-radius:5px;font-family:'IBM Plex Mono',monospace;font-size:8px;font-weight:700;padding:1px 5px;margin-top:1px;">TWIN</div>`;
   el.innerHTML=html;
   return el;
 }

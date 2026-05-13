@@ -231,10 +231,6 @@
           style="padding:5px 12px;border:1px solid #FECACA;border-radius:8px;background:#FEF2F2;
             color:#DC2626;font-size:.72rem;font-weight:700;cursor:pointer;">
           🗑 ลบทั้งหมด</button>
-        <button onclick="purgeGhostVehicles()" title="ลบรถผีออกจาก Firebase"
-          style="padding:5px 12px;border:1px solid #FDE68A;border-radius:8px;background:#FFFBEB;
-            color:#D97706;font-size:.72rem;font-weight:700;cursor:pointer;">
-          👻 ล้างรถผี</button>
         <button class="btn btn-primary" style="padding:5px 14px;font-size:.72rem;" onclick="openRouteEditor()">+ สร้างเส้นทางใหม่</button>
       </div>
     </div>
@@ -245,18 +241,7 @@
     </div>
   </div>
 
-  <!-- ── FLEET MANAGEMENT ── -->
-  <div class="card card-full">
-    <div class="card-head">
-      <div class="card-title">🚐 จัดการรถ (Fleet)</div>
-      <button class="btn btn-green" style="padding:5px 14px;font-size:.72rem;" onclick="openRegisterVehicle()">+ เพิ่มรถใหม่</button>
-    </div>
-    <div class="card-body">
-      <div id="fleet-list" style="display:grid;gap:10px;">
-        <div style="padding:20px;text-align:center;color:var(--slate-400);">กำลังโหลด...</div>
-      </div>
-    </div>
-  </div>
+
 
   <!-- ── ROUTE EDITOR MODAL ── -->
   <div id="route-editor-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
