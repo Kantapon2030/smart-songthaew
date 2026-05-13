@@ -141,28 +141,20 @@ async function initializeDefaultData() {
     if (!routesSnap.exists()) {
       // เส้นทางจริง: นครศรีธรรมราช (เซ็นทรัล) → พรหมคีรี (โรงเรียนเตรียมอุดมฯ ภาคใต้)
       const defaultRoute = {
-        name: 'นครศรีธรรมราช ↔ พรหมคีรี',
-        description: 'เซ็นทรัลนครศรีธรรมราช → โรงเรียนเตรียมอุดมศึกษาภาคใต้',
+        name: 'นครศรีธรรมราช ↔ พรหมคีรี (ถนน 4016)',
+        description: 'วงเวียนนาคร → โรงเรียนพรหมคีรีนครศรีธรรมราช ผ่านถนน 4016',
         coords: [
-          [8.4671, 99.9743],  // เซ็นทรัลนครศรีธรรมราช
-          [8.4620, 99.9710],  // ถนนราชดำเนิน
-          [8.4555, 99.9685],  // แยกหัวถนน
-          [8.4480, 99.9655],  // ตลาดปากนคร
-          [8.4390, 99.9620],  // บ้านตาล
-          [8.4300, 99.9590],  // หนองบัว
-          [8.4200, 99.9565],  // พรหมคีรีเหนือ
-          [8.4130, 99.9545],  // บ้านพรหมโลก
-          [8.4040, 99.9520],  // อำเภอพรหมคีรี
-          [8.3980, 99.9500],  // หน้าที่ว่าการ
-          [8.3924, 99.9480],  // โรงเรียนเตรียมอุดมศึกษาภาคใต้
+          [8.4325,99.9629],[8.4340,99.9430],[8.4370,99.9200],
+          [8.4480,99.9000],[8.4680,99.8820],[8.4900,99.8680],
+          [8.5120,99.8530],[8.5350,99.8380],[8.5580,99.8250],
+          [8.5780,99.8160],
         ],
         stops: [
-          { name: 'เซ็นทรัลนครศรีธรรมราช', lat: 8.4671, lng: 99.9743 },
-          { name: 'ถนนราชดำเนิน', lat: 8.4555, lng: 99.9685 },
-          { name: 'ตลาดปากนคร', lat: 8.4480, lng: 99.9655 },
-          { name: 'หนองบัว', lat: 8.4300, lng: 99.9590 },
-          { name: 'อำเภอพรหมคีรี', lat: 8.4040, lng: 99.9520 },
-          { name: 'โรงเรียนเตรียมอุดมศึกษาภาคใต้', lat: 8.3924, lng: 99.9480 },
+          { name: 'นครศรีธรรมราช (วงเวียนนาคร)', lat: 8.4325, lng: 99.9629 },
+          { name: 'แยกถนน 4016', lat: 8.4370, lng: 99.9200 },
+          { name: 'นาสาร', lat: 8.4680, lng: 99.8820 },
+          { name: 'ตำบลพรหมโลก', lat: 8.5580, lng: 99.8250 },
+          { name: 'โรงเรียนพรหมคีรีนครศรีธรรมราช', lat: 8.5780, lng: 99.8160 },
         ],
         createdAt: Date.now(),
         updatedAt: Date.now()
@@ -316,12 +308,11 @@ app.get('/api/locations', async (req, res) => {
     const snap = await db.ref('fleet').once('value');
     const raw  = snap.val() || {};
 
-    // ส่งโครงสร้าง { vehicleId: { current: {...} } } ตามที่ frontend expect
     const result = {};
     for (const [id, val] of Object.entries(raw)) {
-      // Filter by routeId if specified
-      if (routeId && val.routeId !== routeId) continue;
-      
+      // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
+      const isDemo = id.startsWith('TWIN_') || id.startsWith('DEMO_');
+      if (!isDemo && routeId && val.routeId !== routeId) continue;
       if (val?.current) {
         result[id] = { current: val.current, routeId: val.routeId, type: val.type };
       }
@@ -540,10 +531,10 @@ let _twinTimer = null;
 let _twinSpeedMultiplier = 1;
 let _twinRouteId = 'unassigned';
 let _twinRoute = [
-  [8.4671,99.9743],[8.4620,99.9710],[8.4555,99.9685],
-  [8.4480,99.9655],[8.4390,99.9620],[8.4300,99.9590],
-  [8.4200,99.9565],[8.4130,99.9545],[8.4040,99.9520],
-  [8.3980,99.9500],[8.3924,99.9480],
+  [8.4325,99.9629],[8.4340,99.9430],[8.4370,99.9200],
+  [8.4480,99.9000],[8.4680,99.8820],[8.4900,99.8680],
+  [8.5120,99.8530],[8.5350,99.8380],[8.5580,99.8250],
+  [8.5780,99.8160],
 ];
 const _twin = {
   lat:0, lng:0, speed:0, targetSpeed:35, bearing:0,
@@ -628,6 +619,8 @@ async function twinTick(){
   const data={lat:v.lat,lng:v.lng,speed:v.speed,bearing:v.bearing,battery:v.battery,timestamp:ts,routeId:_twinRouteId,direction:dirLabel};
   const updates={};
   updates['fleet/TWIN_01/current']=data;
+  updates['fleet/TWIN_01/routeId']=_twinRouteId;   // ← fix: ต้องเขียน routeId ที่ root ด้วยเพื่อให้ API filter ทำงาน
+  updates['fleet/TWIN_01/type']='twin';
   updates[`history/${today}/TWIN_01/${ts}`]=data;
   updates[`analytics/peak_hours/${today}/TWIN_01/${hour}`]=admin.database.ServerValue.increment(1);
   await db.ref().update(updates);

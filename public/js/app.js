@@ -6,7 +6,7 @@
 
 // ── State ─────────────────────────────────────────────────────
 let map,trafficLayer,directionsService,directionsRenderer;
-let userLocation=[8.445000,99.965000];
+let userLocation=[8.4339,99.9598]; // วงเวียนนาคร นครศรีธรรมราช
 try{const s=localStorage.getItem('userPinLocation');if(s){const p=JSON.parse(s);if(p&&p.length===2)userLocation=p;}}catch(e){}
 
 let userDesiredDirection=null,userOriginIdx=0,userDestIdx=1;
@@ -262,9 +262,11 @@ let _lastEtaFetch=0;
 async function fetchVehicles(){
   if(!map)return;
   try{
-    const url=currentRouteId?`/api/locations?routeId=${currentRouteId}`:'/api/locations';
-    const data=await fetch(url).then(r=>r.json());
+    // ใน demo mode — ไม่ส่ง routeId filter เพื่อให้ TWIN_01 ผ่านเสมอ
     const inDemoMode=window.SYS?.demoMode??false;
+    const url=(currentRouteId&&!inDemoMode)?`/api/locations?routeId=${currentRouteId}`:'/api/locations';
+    const data=await fetch(url).then(r=>r.json());
+    const inDemo=inDemoMode;
 
     // Collect all vehicle IDs to track
     const allIds=new Set();
@@ -273,8 +275,8 @@ async function fetchVehicles(){
       if(!val?.current)continue;
       const v=val.current;
       const isDemoV=id.startsWith('TWIN_')||id.startsWith('DEMO_');
-      if(!inDemoMode&&isDemoV)continue;
-      if(inDemoMode&&!isDemoV)continue;
+      if(!inDemo&&isDemoV)continue;
+      if(inDemo&&!isDemoV)continue;
 
       allIds.add(id);
       const online=isVehicleOnline(v);
