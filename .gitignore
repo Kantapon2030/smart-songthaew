@@ -11,6 +11,7 @@ firebase-adminsdk*.json
 *-service-account.json
 *.pem
 *.key
+songthaew_secrets.h
 
 # ── Node ──────────────────────────────────────
 node_modules/

@@ -71,11 +71,12 @@ function changeVehicleCount(d) {
 async function startDemo() {
   addLog('info', 'เริ่ม Digital Twin (TWIN_01)...');
   try {
-    const r = await fetch('/api/demo/start', {
+    const response = await authFetch('/api/demo/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ vehicles: 1 }),
-    }).then(r => r.json());
+    });
+    const r = response ? await response.json() : {};
     addLog('ok', `Twin started: ${r.ids?.join(', ')}`);
     syncConfig();
   } catch (e) { addLog('err', e.message); }
@@ -84,7 +85,7 @@ async function startDemo() {
 async function stopDemo() {
   addLog('warn', 'หยุด Digital Twin...');
   try {
-    await fetch('/api/demo/stop', { method: 'POST' });
+    await authFetch('/api/demo/stop', { method: 'POST' });
     addLog('ok', 'Twin stopped — กลับเป็นโหมด Real');
     syncConfig();
   } catch (e) { addLog('err', e.message); }
@@ -92,11 +93,12 @@ async function stopDemo() {
 
 async function changeDemoSpeed(speed) {
   try {
-    const r = await fetch('/api/demo/speed', {
+    const response = await authFetch('/api/demo/speed', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ speed: parseFloat(speed) }),
-    }).then(r => r.json());
+    });
+    const r = response ? await response.json() : {};
     if (r.ok) {
       addLog('info', `ปรับความเร็วรถจำลองเป็น ${speed}x`);
     } else {
@@ -113,7 +115,7 @@ async function saveConfig() {
     announcement:   document.getElementById('cfg-announcement').value.trim(),
   };
   try {
-    await fetch('/api/config', {
+    await authFetch('/api/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(cfg),
@@ -129,7 +131,7 @@ async function refreshStatus() {
   const row = document.getElementById('status-row');
   try {
     const [loc, demo] = await Promise.all([
-      fetch('/api/locations').then(r => r.json()),
+      fetchV1FleetForLegacyViews(),
       fetch('/api/demo/status').then(r => r.json()),
     ]);
 
@@ -483,7 +485,8 @@ async function purgeGhostVehicles() {
   if (!confirm('ลบรถทั้งหมดที่มีพิกัดผิดพลาดหรือ OFFLINE นานเกิน 1 ชั่วโมง?')) return;
   addLog('warn', 'กำลังล้างข้อมูลรถผี...');
   try {
-    const res  = await fetch('/api/admin/purge-ghosts', { method: 'POST' });
+    const res  = await authFetch('/api/admin/purge-ghosts', { method: 'POST' });
+    if (!res) return;
     const body = await res.json();
     if (body.ok) {
       addLog('ok', `ล้างแล้ว ${body.removed} คัน: ${(body.ids || []).join(', ') || '-'}`);

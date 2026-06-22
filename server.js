@@ -93,7 +93,7 @@ function authMiddleware(req, res, next) {
 
 // ── Rate Limit Middleware ───────────────────────────────────────────────────
 function rateLimitMiddleware(req, res, next) {
-  const vehicleId = req.body.vehicleId || req.query.vehicleId;
+  const vehicleId = req.body.vehicleId || req.body.vehicle_id || req.query.vehicleId || req.query.vehicle_id;
   if (!vehicleId) return next(); // Skip if no vehicleId
   
   const now = Date.now();
@@ -168,6 +168,7 @@ async function initializeDefaultData() {
 const app  = express();
 const PORT = process.env.PORT || 3000;
 
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -188,6 +189,108 @@ function validLatLng(lat, lng) {
   );
 }
 
+const LEGACY_SUNSET = '2026-09-30';
+const ETA_CACHE_MS = 30 * 1000;
+const ETA_SESSION_LIMIT = 10;
+const ETA_IP_LIMIT = 60;
+const ETA_WINDOW_MS = 60 * 1000;
+const etaCache = new Map();
+const etaRateLimits = new Map();
+const ROUTE_ALIASES = {
+  route_nakhon_phromkhiri: 'NST-PROMKHIRI',
+  nakhon_phromkhiri: 'NST-PROMKHIRI',
+};
+
+function unixNow() { return Math.floor(Date.now() / 1000); }
+function canonicalRouteId(routeId) { return ROUTE_ALIASES[routeId] || routeId || 'unassigned'; }
+function validGpsTime(value, now = unixNow()) {
+  return Number.isInteger(value) && value >= 946684800 && value <= now + 24 * 60 * 60;
+}
+function vehicleStatus(lastSeen, now = unixNow()) {
+  const age = Math.max(0, now - Number(lastSeen || 0));
+  if (age <= 15) return 'online';
+  if (age <= 60) return 'delayed';
+  return 'offline';
+}
+function legacyHeaders(res, successor) {
+  res.set('Deprecation', 'true');
+  res.set('Sunset', LEGACY_SUNSET);
+  res.set('Link', `<${successor}>; rel="successor-version"`);
+}
+function logLegacy(req, vehicleId) {
+  console.warn(`[LEGACY_USED] endpoint=${req.path} vehicle_id=${vehicleId || '-'} ip=${req.ip}`);
+}
+function normalizeVehicle(vehicleId, entry, now = unixNow()) {
+  const current = entry?.current || entry || {};
+  const receivedAt = Number(current.server_received_at || current.serverReceivedAt || current.last_seen || current.lastSeen || Math.floor(Number(current.timestamp || 0) / 1000));
+  const lastSeen = Number.isFinite(receivedAt) && receivedAt > 0 ? receivedAt : 0;
+  const heading = Number(current.heading ?? current.bearing ?? 0);
+  return {
+    vehicle_id: current.vehicle_id || vehicleId,
+    lat: Number(current.lat),
+    lng: Number(current.lng),
+    speed: Number(current.speed || 0),
+    heading,
+    bearing: Number(current.bearing ?? heading),
+    battery: current.battery ?? -1,
+    gps_time: validGpsTime(Number(current.gps_time)) ? Number(current.gps_time) : null,
+    server_received_at: lastSeen,
+    last_seen: lastSeen,
+    gps_fix: current.gps_fix ?? validLatLng(Number(current.lat), Number(current.lng)),
+    status: vehicleStatus(lastSeen, now),
+    route_id: canonicalRouteId(current.route_id || current.routeId || entry?.routeId),
+    direction: current.direction || 'unknown',
+    hop: Number.isFinite(Number(current.hop)) ? Number(current.hop) : 0,
+    source: current.source || 'legacy',
+  };
+}
+function isWithinRouteCorridor(lat, lng, coords, radiusKm = 5) {
+  if (!Array.isArray(coords) || coords.length < 2) return false;
+  const toRadians = value => value * Math.PI / 180;
+  const meanLat = toRadians(lat);
+  const kmPoint = (a, b) => ({ x: (b - lng) * 111.32 * Math.cos(meanLat), y: (a - lat) * 110.57 });
+  for (let i = 0; i < coords.length - 1; i++) {
+    const [aLat, aLng] = coords[i];
+    const [bLat, bLng] = coords[i + 1];
+    const a = kmPoint(aLat, aLng), b = kmPoint(bLat, bLng);
+    const lengthSq = b.x * b.x + b.y * b.y;
+    const t = lengthSq ? Math.max(0, Math.min(1, (-(a.x * (b.x - a.x) + a.y * (b.y - a.y))) / lengthSq)) : 0;
+    const x = a.x + t * (b.x - a.x), y = a.y + t * (b.y - a.y);
+    if (Math.hypot(x, y) <= radiusKm) return true;
+  }
+  return false;
+}
+function consumeRateLimit(key, limit) {
+  const now = Date.now();
+  const recent = (etaRateLimits.get(key) || []).filter(ts => now - ts < ETA_WINDOW_MS);
+  if (recent.length >= limit) {
+    etaRateLimits.set(key, recent);
+    return Math.ceil((ETA_WINDOW_MS - (now - recent[0])) / 1000);
+  }
+  recent.push(now);
+  etaRateLimits.set(key, recent);
+  return 0;
+}
+async function verifyVehicleKey(vehicleId, providedKey) {
+  if (!providedKey) return false;
+  const snap = await db.ref(`system/device_credentials/${vehicleId}`).once('value');
+  const credential = snap.val();
+  const keyHash = typeof credential === 'string' ? credential : credential?.keyHash;
+  return !!keyHash && bcrypt.compareSync(providedKey, keyHash);
+}
+function telemetryDecision(previous, packet) {
+  if (!previous) return { accepted: true };
+  if (previous.boot_id === packet.boot_id) {
+    if (packet.seq === previous.seq) return { accepted: false, reason: 'duplicate_seq' };
+    if (packet.seq < previous.seq) return { accepted: false, reason: 'out_of_order_seq' };
+  }
+  const previousGpsTime = Number(previous.gps_time);
+  if (previous.boot_id !== packet.boot_id && packet.gps_fix && previous.gps_fix && validGpsTime(packet.gps_time) && validGpsTime(previousGpsTime) && packet.gps_time < previousGpsTime) {
+    return { accepted: false, reason: 'stale_gps_time' };
+  }
+  return { accepted: true };
+}
+
 // ============================================================
 //  POST /api/update-location
 //  ── รับข้อมูล GPS จาก ESP8266 ──
@@ -196,6 +299,8 @@ function validLatLng(lat, lng) {
 //  Body: { vehicleId, lat, lng, speed?, battery?, routeId?, direction? }
 // ============================================================
 app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
+  legacyHeaders(res, '/api/v1/telemetry');
+  logLegacy(req, req.body?.vehicleId);
   const {
     vehicleId,
     lat,
@@ -300,6 +405,8 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
 //  Response: { "ST-01": { current: {...} }, "ST-02": { current: {...} } }
 // ============================================================
 app.get('/api/locations', async (req, res) => {
+  legacyHeaders(res, '/api/v1/vehicles');
+  logLegacy(req);
   try {
     const { routeId } = req.query;
     const snap = await db.ref('fleet').once('value');
@@ -320,6 +427,201 @@ app.get('/api/locations', async (req, res) => {
     console.error('[GET /api/locations]', err);
     return res.status(500).json({ error: 'Failed to fetch locations' });
   }
+});
+
+// ============================================================
+// API v1 — Passenger data contract
+// ============================================================
+app.get('/api/v1/vehicles', async (req, res) => {
+  try {
+    const routeId = req.query.route_id ? canonicalRouteId(req.query.route_id) : null;
+    const now = unixNow();
+    const fleet = (await db.ref('fleet').once('value')).val() || {};
+    const vehicles = Object.entries(fleet)
+      .filter(([, entry]) => entry?.current)
+      .map(([id, entry]) => normalizeVehicle(id, entry, now))
+      .filter(vehicle => !routeId || vehicle.route_id === routeId)
+      .filter(vehicle => validLatLng(vehicle.lat, vehicle.lng));
+    return res.json({ server_time: now, vehicles });
+  } catch (error) {
+    console.error('[GET /api/v1/vehicles]', error);
+    return res.status(500).json({ error: 'Failed to fetch vehicles' });
+  }
+});
+
+app.get('/api/v1/routes', async (_req, res) => {
+  try {
+    const raw = (await db.ref('routes').once('value')).val() || {};
+    const routesById = new Map();
+    for (const [legacyId, route] of Object.entries(raw)) {
+      const routeId = canonicalRouteId(route.route_id || route.routeId || legacyId);
+      if (routesById.has(routeId)) continue;
+      const places = Array.isArray(route.places) && route.places.length
+        ? route.places
+        : (route.stops || []).map((place, index) => ({
+          place_id: place.place_id || `${routeId}-PLACE-${index + 1}`,
+          name: place.name,
+          lat: place.lat,
+          lng: place.lng,
+        }));
+      routesById.set(routeId, {
+        route_id: routeId,
+        name: route.name || routeId,
+        color: route.color || '#1E88E5',
+        coords: route.coords || [],
+        places,
+      });
+    }
+    return res.json({ routes: [...routesById.values()] });
+  } catch (error) {
+    console.error('[GET /api/v1/routes]', error);
+    return res.status(500).json({ error: 'Failed to fetch routes' });
+  }
+});
+
+app.get('/api/v1/eta', async (req, res) => {
+  const vehicleId = String(req.query.vehicle_id || '');
+  const [latRaw, lngRaw] = String(req.query.destination || '').split(',');
+  const destination = { lat: Number(latRaw), lng: Number(lngRaw) };
+  if (!vehicleId || !validLatLng(destination.lat, destination.lng)) {
+    return res.status(400).json({ error: 'vehicle_id and a valid destination=lat,lng are required' });
+  }
+
+  try {
+    const fleetEntry = (await db.ref(`fleet/${vehicleId}`).once('value')).val();
+    if (!fleetEntry?.current) return res.status(404).json({ error: 'Vehicle not found' });
+    const vehicle = normalizeVehicle(vehicleId, fleetEntry);
+    if (vehicle.status === 'offline' || !vehicle.gps_fix || !validLatLng(vehicle.lat, vehicle.lng)) {
+      return res.json({ vehicle_id: vehicleId, eta_min: null, distance_m: null, cached: false });
+    }
+
+    const routes = (await db.ref('routes').once('value')).val() || {};
+    const route = Object.entries(routes).find(([id, value]) => canonicalRouteId(value.route_id || value.routeId || id) === vehicle.route_id)?.[1];
+    if (!route || !isWithinRouteCorridor(destination.lat, destination.lng, route.coords)) {
+      return res.status(400).json({ error: 'Destination is outside this vehicle service area' });
+    }
+
+    const cacheKey = `${vehicleId}:${destination.lat.toFixed(5)},${destination.lng.toFixed(5)}`;
+    const cached = etaCache.get(cacheKey);
+    if (cached && Date.now() - cached.createdAt < ETA_CACHE_MS) {
+      return res.json({ ...cached.value, cached: true });
+    }
+
+    const session = String(req.get('x-client-session') || '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64);
+    const sessionRetry = consumeRateLimit(`eta:session:${session || req.ip}`, ETA_SESSION_LIMIT);
+    const ipRetry = consumeRateLimit(`eta:ip:${req.ip}`, ETA_IP_LIMIT);
+    const retryAfter = Math.max(sessionRetry, ipRetry);
+    if (retryAfter) {
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({ error: 'Too Many Requests', retry_after: retryAfter });
+    }
+
+    const apiKey = process.env.GOOGLE_ROUTES_API_KEY || GMAPS_KEY;
+    if (!apiKey) return res.json({ vehicle_id: vehicleId, eta_min: null, distance_m: null, cached: false });
+    const mapsResponse = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters',
+      },
+      body: JSON.stringify({
+        origin: { location: { latLng: { latitude: vehicle.lat, longitude: vehicle.lng } } },
+        destination: { location: { latLng: { latitude: destination.lat, longitude: destination.lng } } },
+        travelMode: 'DRIVE',
+        routingPreference: 'TRAFFIC_AWARE',
+      }),
+    });
+    if (!mapsResponse.ok) throw new Error(`Routes API ${mapsResponse.status}`);
+    const mapsData = await mapsResponse.json();
+    const routeResult = mapsData.routes?.[0];
+    const seconds = Number(String(routeResult?.duration || '').replace('s', ''));
+    const value = {
+      vehicle_id: vehicleId,
+      eta_min: Number.isFinite(seconds) ? Math.max(1, Math.round(seconds / 60)) : null,
+      distance_m: Number.isFinite(Number(routeResult?.distanceMeters)) ? Number(routeResult.distanceMeters) : null,
+      cached: false,
+    };
+    etaCache.set(cacheKey, { createdAt: Date.now(), value });
+    return res.json(value);
+  } catch (error) {
+    console.error('[GET /api/v1/eta]', error.message);
+    return res.json({ vehicle_id: vehicleId, eta_min: null, distance_m: null, cached: false });
+  }
+});
+
+app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
+  const vehicleId = String(req.body.vehicle_id || '');
+  const bootId = String(req.body.boot_id || '');
+  const seq = Number(req.body.seq);
+  if (!vehicleId || !bootId || !Number.isInteger(seq) || seq < 0) {
+    return res.status(400).json({ error: 'vehicle_id, boot_id, and non-negative integer seq are required' });
+  }
+  try {
+    if (!await verifyVehicleKey(vehicleId, req.get('X-Vehicle-Key'))) {
+      return res.status(403).json({ error: 'Vehicle key is not authorized for this vehicle_id' });
+    }
+    const receivedAt = unixNow();
+    const gpsTime = Number(req.body.gps_time);
+    const gpsFix = req.body.gps_fix === true;
+    const lat = Number(req.body.lat), lng = Number(req.body.lng);
+    const hasCoordinates = gpsFix && validLatLng(lat, lng);
+    const currentRef = db.ref(`fleet/${vehicleId}/current`);
+    const previous = (await currentRef.once('value')).val();
+    const packet = { boot_id: bootId, seq, gps_time: validGpsTime(gpsTime, receivedAt) ? gpsTime : null, gps_fix: gpsFix };
+    const decision = telemetryDecision(previous, packet);
+    if (!decision.accepted) return res.json({ ok: true, status: 'ignored', reason: decision.reason });
+
+    const routeId = canonicalRouteId(req.body.route_id || 'unassigned');
+    const heading = Number(req.body.heading ?? req.body.bearing ?? previous?.heading ?? 0);
+    const current = {
+      ...(previous || {}),
+      vehicle_id: vehicleId,
+      ...(hasCoordinates ? { lat, lng, heading, bearing: heading } : {}),
+      ...(hasCoordinates ? { speed: Number(req.body.speed || 0) } : {}),
+      battery: req.body.battery ?? previous?.battery ?? -1,
+      gps_time: packet.gps_time,
+      server_received_at: receivedAt,
+      last_seen: receivedAt,
+      gps_fix: gpsFix,
+      boot_id: bootId,
+      seq,
+      route_id: routeId,
+      routeId,
+      direction: req.body.direction || previous?.direction || 'unknown',
+      hop: Number.isFinite(Number(req.body.hop)) ? Number(req.body.hop) : 0,
+      source: req.body.source || 'vehicle',
+      timestamp: receivedAt * 1000,
+      battVoltage: req.body.battVoltage ?? previous?.battVoltage ?? -1,
+      currentMa: req.body.currentMa ?? previous?.currentMa ?? -1,
+      powerMw: req.body.powerMw ?? previous?.powerMw ?? -1,
+      txCount: req.body.txCount ?? previous?.txCount ?? -1,
+      sats: req.body.sats ?? previous?.sats ?? -1,
+      hdop: req.body.hdop ?? previous?.hdop ?? -1,
+      rssi: req.body.rssi ?? previous?.rssi ?? null,
+    };
+    const updates = { [`fleet/${vehicleId}/current`]: current, [`fleet/${vehicleId}/routeId`]: routeId };
+    if (hasCoordinates) {
+      const historyKey = Date.now();
+      updates[`history/${todayStr()}/${vehicleId}/${historyKey}`] = current;
+      updates[`routes_active/${todayStr()}/${routeId}/${vehicleId}`] = { lastActive: receivedAt * 1000, lat, lng };
+      updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+    }
+    await db.ref().update(updates);
+    return res.json({ ok: true, status: 'accepted', server_received_at: receivedAt, last_seen: receivedAt });
+  } catch (error) {
+    console.error('[POST /api/v1/telemetry]', error);
+    return res.status(500).json({ error: 'Failed to ingest telemetry' });
+  }
+});
+
+// Admin-only provisioning endpoint. The clear-text key is never persisted.
+app.post('/api/v1/admin/vehicle-keys/:vehicleId', authMiddleware, async (req, res) => {
+  const key = String(req.body.key || '');
+  if (key.length < 24) return res.status(400).json({ error: 'Vehicle key must be at least 24 characters' });
+  const vehicleId = req.params.vehicleId;
+  await db.ref(`system/device_credentials/${vehicleId}`).set({ keyHash: bcrypt.hashSync(key, 12), updatedAt: Date.now() });
+  return res.json({ ok: true, vehicle_id: vehicleId });
 });
 
 // ============================================================
@@ -503,7 +805,7 @@ app.get('/api/config', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.post('/api/config', async (req, res) => {
+app.post('/api/config', authMiddleware, async (req, res) => {
   try {
     const allowed = ['demoMode','demoVehicles','routeName','offlineTimeout','announcement'];
     const patch   = {};
@@ -627,7 +929,7 @@ async function twinTick(){
   await db.ref().update(updates);
 }
 
-app.post('/api/demo/start', async (req,res)=>{
+app.post('/api/demo/start', authMiddleware, async (req,res)=>{
   const routeId=req.body.routeId||null;
   try{
     if(routeId){
@@ -650,7 +952,7 @@ app.post('/api/demo/start', async (req,res)=>{
   res.json({ok:true,vehicles:1,routeId:_twinRouteId,ids:['TWIN_01']});
 });
 
-app.post('/api/demo/speed', async (req,res)=>{
+app.post('/api/demo/speed', authMiddleware, async (req,res)=>{
   const speed=parseFloat(req.body.speed);
   if(!isNaN(speed)&&speed>0&&speed<=10){
     _twinSpeedMultiplier=speed;
@@ -659,7 +961,7 @@ app.post('/api/demo/speed', async (req,res)=>{
   }else res.status(400).json({error:'Invalid speed'});
 });
 
-app.post('/api/demo/stop', async (req,res)=>{
+app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
   clearInterval(_twinTimer);_twinTimer=null;_twinActive=false;
   await db.ref('fleet/TWIN_01').remove();
   await db.ref('system/config').update({demoMode:false,updatedAt:Date.now()});
@@ -1020,7 +1322,7 @@ app.patch('/api/fleet/:id', authMiddleware, async (req, res) => {
 //  ไม่ต้อง Auth เพื่อให้ Dashboard กดได้ด้วย
 //  Response: { ok, removed, ids }
 // ============================================================
-app.post('/api/admin/purge-ghosts', async (req, res) => {
+app.post('/api/admin/purge-ghosts', authMiddleware, async (req, res) => {
   try {
     const snap  = await db.ref('fleet').once('value');
     const fleet = snap.val() || {};

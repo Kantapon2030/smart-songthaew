@@ -67,18 +67,46 @@ function calculateBearing(la1,lo1,la2,lo2){
 }
 
 function isVehicleOnline(v){
+  if(v?.status) return v.status === 'online' || v.status === 'delayed';
+  if(v?.last_seen) return (Date.now()/1000-v.last_seen) <= 60;
   const timeout=(window.SYS?.offlineTimeout??30)*1000;
   return!!(v?.timestamp&&(Date.now()-v.timestamp)<timeout);
 }
 
+function getClientSession(){
+  let id=sessionStorage.getItem('smartSongthaewSession');
+  if(!id){ id=window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`; sessionStorage.setItem('smartSongthaewSession',id); }
+  return id;
+}
+async function fetchV1Vehicles(routeId){
+  const query=routeId?`?route_id=${encodeURIComponent(routeId)}`:'';
+  const res=await fetch(`/api/v1/vehicles${query}`);
+  if(!res.ok) throw new Error(`vehicles ${res.status}`);
+  return res.json();
+}
+async function fetchV1FleetForLegacyViews(routeId){
+  const payload=await fetchV1Vehicles(routeId);
+  return Object.fromEntries((payload.vehicles || []).map(vehicle=>[vehicle.vehicle_id,{
+    current:{...vehicle,timestamp:(vehicle.last_seen || 0)*1000,routeId:vehicle.route_id},
+    routeId:vehicle.route_id,
+    type:vehicle.source,
+  }]));
+}
+async function fetchPassengerRoutes(){
+  const res=await fetch('/api/v1/routes');
+  if(!res.ok) throw new Error(`routes ${res.status}`);
+  return res.json();
+}
+
 // ── Google Maps Vehicle Marker ────────────────────────────────
 // รถ demo แสดงสีเขียวเหมือนรถจริงที่วิ่งอยู่ — ไม่มี badge พิเศษ
-function createVehicleMarkerContent(speed=0,online=true,isDemo=false,isRecommended=false){
+function createVehicleMarkerContent(speed=0,online=true,isDemo=false,isRecommended=false,heading=0){
   // ทั้งรถจริงและรถ demo ใช้โลจิก color เดียวกัน
   const color=!online?'#9AA0A6':speed===0?'#EA4335':speed<20?'#FBBC04':'#34A853';
   const size=isRecommended?48:36;
   const el=document.createElement('div');
   el.style.cssText='display:flex;flex-direction:column;align-items:center;position:relative;';
+  el.style.transform=`rotate(${Number(heading)||0}deg)`;
   let html='';
   if(isRecommended) html+=`<div style="background:${color};color:#fff;border-radius:99px;padding:2px 8px;font-size:9px;font-weight:800;font-family:Inter,Sarabun,sans-serif;white-space:nowrap;margin-bottom:2px;">✨ แนะนำ</div>`;
   html+=`<div style="width:${size}px;height:${size}px;border-radius:50%;background:${color};border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-size:${size>40?18:14}px;box-shadow:0 4px 14px ${color}55;${!online?'opacity:.45;':''}transition:all .3s;">🚐</div>`;

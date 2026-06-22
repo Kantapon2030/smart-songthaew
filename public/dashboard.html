@@ -332,8 +332,7 @@ function onConfigChanged(cfg) {
 async function fetchData() {
   const t0=Date.now();
   try {
-    const res=await fetch('/api/locations'); if(!res.ok) throw new Error(res.status);
-    const data=await res.json();
+    const data=await fetchV1FleetForLegacyViews();
     const lat=Date.now()-t0; pktTotal++; pktOk++; latencies.push(lat); if(latencies.length>10)latencies.shift();
     updateAll(data);
   } catch(e){ pktTotal++; updateAll({}); }
@@ -635,7 +634,8 @@ function switchChart(mode){
 async function purgeGhosts() {
   if(!confirm('ลบรถทั้งหมดที่ Offline นานเกิน 1 ชั่วโมงหรือพิกัดผิดพลาด?')) return;
   try {
-    const res  = await fetch('/api/admin/purge-ghosts', { method:'POST' });
+    const res  = await authFetch('/api/admin/purge-ghosts', { method:'POST' });
+    if (!res) return;
     const body = await res.json();
     if(body.ok) {
       alert(`✓ ล้างรถผีแล้ว ${body.removed} คัน\n${(body.ids||[]).join(', ')||'—'}`);

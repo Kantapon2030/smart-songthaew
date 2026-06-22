@@ -52,6 +52,7 @@
 #include <WiFiClientSecure.h>
 #include <WiFiClient.h>
 #include <math.h>
+#include "songthaew_secrets.h"
 
 // ── Mode เลือก GPS ───────────────────────────────────────────
 // #define USE_REAL_GPS   // uncomment เมื่อต่อ GPS6MV2 จริง
@@ -75,9 +76,8 @@
 #endif
 
 // ── WiFi + Server ────────────────────────────────────────────
-const char*  WIFI_SSID  = "Saowapha";
-const char*  WIFI_PASS  = "0887682695";
-const String SERVER_URL = "https://smart-songthaew-production.up.railway.app/api/update-location";
+// WIFI_SSID, WIFI_PASS, SERVER_URL, VEHICLE_ID, ROUTE_ID, and VEHICLE_API_KEY
+// come from songthaew_secrets.h (which must never be committed).
 
 // ── Route ────────────────────────────────────────────────────
 const int   NUM_WP = 5;
@@ -91,8 +91,6 @@ const float ROUTE[NUM_WP][2] = {
 
 // ── Constants ────────────────────────────────────────────────
 #define DEG_PER_KM     (1.0f/111.0f)
-const String VEHICLE_ID = "songthaew_01";
-const String ROUTE_ID   = "nakhon_phromkhiri";
 
 // ── Power Saving Modes ────────────────────────────────────────
 // SLEEP_NONE     = demo / presentation mode (ส่งทุก 2s เสมอ)
@@ -137,6 +135,8 @@ int    sleepModeActive = SLEEP_NONE;
 unsigned long stopStartMs    = 0;  // เวลาเริ่มจอด (0 = กำลังวิ่ง)
 unsigned long lastSendMs     = 0;
 int           txCount        = 0;
+uint32_t      packetSeq      = 0;
+String        bootId;
 
 // ─────────────────────────────────────────────────────────────
 
@@ -144,6 +144,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   randomSeed(analogRead(A0));
+  bootId = String(ESP.getChipId(), HEX) + "-" + String(micros(), HEX);
 
   Serial.println("\n=== Smart Songthaew Tracker v3-power ===");
   Serial.printf("[MODE] GPS: %s | INA219: %s | PowerSave: %s\n",
@@ -309,7 +310,7 @@ void wakeWiFiIfNeeded() {
 // ============================================================
 //  SEND TO SERVER
 // ============================================================
-bool sendToServer(float lat, float lng, int spd, int bat, String dir) {
+bool sendToServer(float lat, float lng, int spd, int bat, String dir, bool gpsFix) {
   wakeWiFiIfNeeded();
   if (WiFi.status() != WL_CONNECTED) {
     WiFi.reconnect(); delay(2000);
@@ -317,15 +318,23 @@ bool sendToServer(float lat, float lng, int spd, int bat, String dir) {
   }
 
   txCount++;
+  packetSeq++;
 
   String json =
-    "{\"vehicleId\":\""  + VEHICLE_ID          + "\""  +
-    ",\"routeId\":\""    + ROUTE_ID             + "\""  +
+    "{\"vehicle_id\":\"" + VEHICLE_ID          + "\""  +
+    ",\"boot_id\":\""    + bootId               + "\""  +
+    ",\"seq\":"           + String(packetSeq)             +
+    ",\"gps_time\":0"                                  +
+    ",\"gps_fix\":"       + String(gpsFix ? "true" : "false") +
+    ",\"route_id\":\""   + ROUTE_ID             + "\""  +
     ",\"direction\":\"" + dir                  + "\""  +
     ",\"lat\":"          + String(lat, 6)                +
     ",\"lng\":"          + String(lng, 6)                +
     ",\"speed\":"        + String(spd)                   +
+    ",\"heading\":0"                                    +
     ",\"battery\":"      + String(bat)                   +
+    ",\"hop\":0"                                        +
+    ",\"source\":\"vehicle\""                         +
     // ── Power fields (ใหม่) ──
     ",\"battVoltage\":"  + String((int)measuredVoltMv)    +
     ",\"currentMa\":"    + String((int)measuredCurrentMa) +
@@ -339,6 +348,7 @@ bool sendToServer(float lat, float lng, int spd, int bat, String dir) {
   client.setInsecure();       // ← เพิ่มบรรทัดนี้
   http.begin(client, SERVER_URL);
   http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Vehicle-Key", VEHICLE_API_KEY);
   http.setTimeout(5000);
   int code = http.POST(json);
   http.end();
@@ -415,7 +425,7 @@ void loop() {
     runSimulation();
     float nLat = curLat + (random(-5,6)*0.00001f);
     float nLng = curLng + (random(-5,6)*0.00001f);
-    sendToServer(nLat, nLng, curSpeed, battery, direction);
+    sendToServer(nLat, nLng, curSpeed, battery, direction, true);
 
   // ── Real GPS ──
   #else
@@ -427,7 +437,7 @@ void loop() {
     bool hasFix = gps.location.isValid() && gps.location.age() < 3000;
     if (!hasFix) {
       Serial.println("[GPS] No fix");
-      sendToServer(curLat, curLng, 0, battery, direction);  // fallback last pos
+      sendToServer(curLat, curLng, 0, battery, direction, false);  // no GPS fix: server preserves last real location
     } else {
       curLat  = (float)gps.location.lat();
       curLng  = (float)gps.location.lng();
@@ -435,7 +445,7 @@ void loop() {
       if (curLat > 8.49f) direction = "พรหมคีรี";
       else                direction = "นครศรีธรรมราช";
       Serial.printf("[GPS] Fix | %.6f,%.6f | %dkm/h\n", curLat, curLng, curSpeed);
-      sendToServer(curLat, curLng, curSpeed, battery, direction);
+      sendToServer(curLat, curLng, curSpeed, battery, direction, true);
     }
   #endif
 

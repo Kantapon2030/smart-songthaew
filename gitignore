@@ -2,6 +2,7 @@
 firebase-service-account.json
 .env
 .env.local
+songthaew_secrets.h
 
 # ── Node ──
 node_modules/
