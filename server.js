@@ -311,12 +311,11 @@ function isValidCoord(lat, lng) {
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
 }
 
-function normalizeNetworkNode(vehicleId, data, vehicleMeta) {
+function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs) {
   const lat = parseFloat(data.lat);
   const lng = parseFloat(data.lng);
   const validCoord = isValidCoord(lat, lng);
   const lastSeen = data.timestamp || 0;
-  const offlineThresholdMs = 5 * 60 * 1000;
   const isOnline = validCoord && (Date.now() - lastSeen < offlineThresholdMs);
   return {
     id: vehicleId,
@@ -427,7 +426,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
 
 function calculateMeshHealth(nodes, links) {
   const total = nodes.filter(n => n.type === 'vehicle').length;
-  if (total === 0) return { score: 0, label: 'No data' };
+  if (total === 0) return { score: 0, label: 'ไม่มีข้อมูล' };
   const online = nodes.filter(n => n.type === 'vehicle' && n.status === 'online').length;
   const onlineRatio = online / total;
   const hops = links.filter(l => l.hop !== null).map(l => l.hop);
@@ -439,7 +438,7 @@ function calculateMeshHealth(nodes, links) {
   const staleRatio = nodes.filter(n => n.type === 'vehicle' && n.status === 'offline').length / Math.max(total, 1);
   const staleScore = 1 - staleRatio;
   const score = Math.round(onlineRatio * 40 + hopScore * 20 + distScore * 20 + staleScore * 20);
-  const label = score >= 70 ? 'Network healthy' : score >= 40 ? 'Network degraded' : 'Network unhealthy';
+  const label = score >= 70 ? 'เครือข่ายพร้อมใช้งาน' : score >= 40 ? 'เครือข่ายพอใช้ได้' : 'เครือข่ายมีปัญหา';
   return { score, label };
 }
 
@@ -1545,13 +1544,18 @@ app.get('/api/v1/network', async (req, res) => {
       label: 'Ground Station'
     };
 
-    const fleetSnap = await db.ref('fleet').once('value');
+    const [fleetSnap, configSnap] = await Promise.all([
+      db.ref('fleet').once('value'),
+      db.ref('system/config').once('value')
+    ]);
     const fleetData = fleetSnap.val() || {};
+    const sysConfig = configSnap.val() || {};
+    const offlineTimeoutMs = ((sysConfig.offlineTimeout || 300) * 1000);
     const rawNodes = [];
 
     Object.entries(fleetData).forEach(([vehicleId, vehicleData]) => {
       const current = vehicleData.current || {};
-      const node = normalizeNetworkNode(vehicleId, current, vehicleData);
+      const node = normalizeNetworkNode(vehicleId, current, vehicleData, offlineTimeoutMs);
 
       if (route_id && route_id !== 'all' && node.route_id !== route_id) return;
       if (direction && direction !== 'all' && node.direction !== direction) return;
