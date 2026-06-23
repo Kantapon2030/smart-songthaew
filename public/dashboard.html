@@ -301,6 +301,191 @@
     </div>
   </div>
 
+  <!-- VIBE Mesh Network -->
+  <section id="mesh-section" style="margin-top:2rem">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem">
+      <h2 style="font-size:1.1rem;font-weight:600;margin:0">VIBE Mesh Network</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span id="mesh-health-badge" style="font-size:12px;padding:2px 10px;border-radius:99px;background:#dcfce7;color:#166534">-</span>
+        <span id="mesh-mode-badge-dash" style="font-size:11px;padding:2px 8px;border-radius:99px;background:#fef3c7;color:#92400e">estimated</span>
+        <button onclick="refreshMeshDashboard()" style="font-size:12px;padding:3px 10px;border-radius:6px;border:1px solid #d1d5db;background:transparent;cursor:pointer">Refresh</button>
+      </div>
+    </div>
+    <div id="mesh-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:1.25rem"></div>
+    <div style="position:relative;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;background:#f9fafb;margin-bottom:1.25rem">
+      <canvas id="mesh-graph-canvas" style="width:100%;display:block" height="320"></canvas>
+      <div id="mesh-graph-empty" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#9ca3af;font-size:14px;pointer-events:none">No data</div>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead>
+          <tr style="background:#f3f4f6">
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Vehicle</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Connected to</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Distance</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Hop</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Status</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Link</th>
+            <th style="padding:7px 10px;text-align:left;border-bottom:1px solid #e5e7eb">Last seen</th>
+          </tr>
+        </thead>
+        <tbody id="mesh-table-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <script>
+  let _meshData = null;
+  let _meshTimer = null;
+
+  async function fetchMeshData() {
+    const response = await fetch('/api/v1/network');
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    return response.json();
+  }
+
+  function escapeMeshHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (character) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character];
+    });
+  }
+
+  function renderMeshCards(data) {
+    const cards = [
+      { label: 'Online', value: data.meta.online_vehicles + ' / ' + data.meta.total_vehicles, sub: 'vehicles' },
+      { label: 'Direct', value: data.meta.direct_links, sub: 'links' },
+      { label: 'Relay', value: data.meta.relay_links, sub: 'links' },
+      { label: 'Mesh Health', value: data.health.score, sub: '/100' }
+    ];
+    document.getElementById('mesh-cards').innerHTML = cards.map(function (card) {
+      return '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 14px">' +
+        '<div style="font-size:11px;color:#6b7280;margin-bottom:3px">' + card.label + '</div>' +
+        '<div style="font-size:22px;font-weight:600;color:#111">' + card.value + '</div>' +
+        '<div style="font-size:11px;color:#9ca3af">' + card.sub + '</div></div>';
+    }).join('');
+
+    const badge = document.getElementById('mesh-health-badge');
+    const score = data.health.score;
+    badge.textContent = 'Health: ' + score;
+    badge.style.background = score >= 70 ? '#dcfce7' : score >= 40 ? '#fef3c7' : '#fee2e2';
+    badge.style.color = score >= 70 ? '#166534' : score >= 40 ? '#92400e' : '#991b1b';
+    document.getElementById('mesh-mode-badge-dash').textContent = data.mode;
+  }
+
+  function renderMeshGraph(data) {
+    const canvas = document.getElementById('mesh-graph-canvas');
+    const emptyEl = document.getElementById('mesh-graph-empty');
+    const ctx = canvas.getContext('2d');
+    const width = canvas.offsetWidth;
+    const height = 320;
+    canvas.width = width * devicePixelRatio;
+    canvas.height = height * devicePixelRatio;
+    canvas.style.height = height + 'px';
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+    ctx.clearRect(0, 0, width, height);
+
+    const vehicles = data.nodes.filter(function (node) { return node.type === 'vehicle'; });
+    const ground = data.nodes.find(function (node) { return node.type === 'ground_station'; });
+    if (!vehicles.length || !ground) { emptyEl.style.display = 'flex'; return; }
+    emptyEl.style.display = 'none';
+
+    const cx = width / 2;
+    const nodePos = {};
+    nodePos[ground.id] = { x: cx, y: 56 };
+    const radius = Math.min(width * 0.38, 130);
+    vehicles.forEach(function (vehicle, index) {
+      const angle = (index / vehicles.length) * 2 * Math.PI - Math.PI / 2;
+      nodePos[vehicle.id] = { x: cx + radius * Math.cos(angle), y: height / 2 + 30 + radius * Math.sin(angle) * 0.7 };
+    });
+
+    const colorMap = { good: '#22c55e', fair: '#f59e0b', poor: '#ef4444', offline: '#9ca3af' };
+    data.links.forEach(function (link) {
+      const from = nodePos[link.from];
+      const to = nodePos[link.to];
+      if (!from || !to) return;
+      const color = colorMap[link.status] || '#9ca3af';
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = link.type === 'direct' ? 2.5 : 1.5;
+      if (link.type === 'relay') ctx.setLineDash([6, 4]);
+      ctx.globalAlpha = 0.7;
+      ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(to.x, to.y); ctx.stroke();
+      ctx.setLineDash([]);
+      const mx = (from.x + to.x) / 2;
+      const my = (from.y + to.y) / 2 - 6;
+      const distance = link.distance_m !== null ? (link.distance_m >= 1000 ? (link.distance_m / 1000).toFixed(1) + 'km' : link.distance_m + 'm') : '?';
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff'; ctx.fillRect(mx - 18, my - 9, 36, 13);
+      ctx.fillStyle = color; ctx.font = '10px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(distance, mx, my);
+      ctx.restore();
+    });
+
+    const groundPos = nodePos[ground.id];
+    ctx.save();
+    ctx.fillStyle = '#6366f1'; ctx.beginPath(); ctx.arc(groundPos.x, groundPos.y, 18, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 10px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('GND', groundPos.x, groundPos.y);
+    ctx.restore();
+
+    vehicles.forEach(function (vehicle) {
+      const pos = nodePos[vehicle.id];
+      const link = data.links.find(function (item) { return item.from === vehicle.id; });
+      const color = vehicle.status === 'offline' ? '#9ca3af' : colorMap[(link && link.status) || 'fair'] || '#f59e0b';
+      ctx.save();
+      ctx.globalAlpha = vehicle.status === 'offline' ? 0.4 : 1;
+      ctx.fillStyle = color; ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pos.x, pos.y, 18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(vehicle.vehicle_id.replace(/\D+/g, '').slice(-2) || '?', pos.x, pos.y);
+      ctx.globalAlpha = 1; ctx.fillStyle = '#374151'; ctx.font = '10px sans-serif';
+      ctx.fillText(vehicle.status === 'offline' ? 'offline' : (vehicle.hop === 0 ? 'direct' : 'hop ' + vehicle.hop), pos.x, pos.y + 26);
+      ctx.restore();
+    });
+  }
+
+  function renderMeshTable(data) {
+    const tbody = document.getElementById('mesh-table-body');
+    const vehicles = data.nodes.filter(function (node) { return node.type === 'vehicle'; });
+    if (!vehicles.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:16px">No data</td></tr>';
+      return;
+    }
+    tbody.innerHTML = vehicles.map(function (vehicle) {
+      const link = data.links.find(function (item) { return item.from === vehicle.id; });
+      const dotColor = vehicle.status === 'online' ? (vehicle.hop === 0 ? '#22c55e' : (vehicle.hop === 1 ? '#f59e0b' : '#ef4444')) : '#9ca3af';
+      const connectedTo = link ? (link.to === 'GROUND_01' ? 'Ground Station' : link.to) : '-';
+      const distance = link && link.distance_m !== null && link.distance_m !== undefined
+        ? (link.distance_m >= 1000 ? (link.distance_m / 1000).toFixed(1) + ' km' : link.distance_m + ' m') : '-';
+      const lastSeen = vehicle.last_seen ? new Date(vehicle.last_seen).toLocaleTimeString('th-TH') : '-';
+      const tagStyle = vehicle.status === 'online'
+        ? (link && link.type === 'direct' ? 'background:#dcfce7;color:#166534' : 'background:#fef3c7;color:#92400e')
+        : 'background:#fee2e2;color:#991b1b';
+      const tagText = vehicle.status === 'online' ? ((link && link.type) || 'relay') : 'offline';
+      return '<tr><td style="padding:7px 10px;border-bottom:1px solid #f3f4f6"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + dotColor + ';margin-right:5px"></span>' + escapeMeshHtml(vehicle.vehicle_id) + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6">' + escapeMeshHtml(connectedTo) + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6">' + distance + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6">' + (vehicle.hop !== null ? vehicle.hop : '-') + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;color:' + (vehicle.status === 'online' ? '#166534' : '#991b1b') + '">' + vehicle.status + '</td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6"><span style="font-size:11px;padding:1px 7px;border-radius:99px;' + tagStyle + '">' + tagText + '</span></td>' +
+        '<td style="padding:7px 10px;border-bottom:1px solid #f3f4f6;color:#6b7280">' + lastSeen + '</td></tr>';
+    }).join('');
+  }
+
+  async function refreshMeshDashboard() {
+    try {
+      const data = await fetchMeshData();
+      _meshData = data;
+      renderMeshCards(data);
+      renderMeshGraph(data);
+      renderMeshTable(data);
+    } catch (error) {
+      console.error('[MeshDashboard]', error);
+    }
+  }
+
+  refreshMeshDashboard();
+  _meshTimer = setInterval(refreshMeshDashboard, 5000);
+  </script>
+
 </div>
 
 <script src="/js/shared.js"></script>

@@ -67,7 +67,11 @@ admin.initializeApp({
 const db = admin.database();
 
 // ── JWT Config ────────────────────────────────────────────────────────────────
-const JWT_SECRET = process.env.JWT_SECRET || 'smart-songthaew-secret-key-change-in-production';
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) {
+  console.error('[FATAL] JWT_SECRET environment variable is not set. Server will not start.');
+  process.exit(1);
+}
 const JWT_EXPIRES = '8h'; // 8 hours
 
 // ── Rate Limiting Store ───────────────────────────────────────────────────────
@@ -291,6 +295,154 @@ function telemetryDecision(previous, packet) {
   return { accepted: true };
 }
 
+// Mesh network helpers
+function haversineDistanceMeters(a, b) {
+  const R = 6371000;
+  const dLat = (b.lat - a.lat) * Math.PI / 180;
+  const dLon = (b.lng - a.lng) * Math.PI / 180;
+  const lat1 = a.lat * Math.PI / 180;
+  const lat2 = b.lat * Math.PI / 180;
+  const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(x));
+}
+
+function isValidCoord(lat, lng) {
+  return typeof lat === 'number' && typeof lng === 'number' &&
+    lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
+}
+
+function normalizeNetworkNode(vehicleId, data, vehicleMeta) {
+  const lat = parseFloat(data.lat);
+  const lng = parseFloat(data.lng);
+  const validCoord = isValidCoord(lat, lng);
+  const lastSeen = data.timestamp || 0;
+  const offlineThresholdMs = 5 * 60 * 1000;
+  const isOnline = validCoord && (Date.now() - lastSeen < offlineThresholdMs);
+  return {
+    id: vehicleId,
+    type: 'vehicle',
+    vehicle_id: vehicleId,
+    lat: validCoord ? lat : null,
+    lng: validCoord ? lng : null,
+    status: isOnline ? 'online' : 'offline',
+    route_id: data.routeId || vehicleMeta?.routeId || 'unassigned',
+    direction: data.direction || 'unknown',
+    hop: typeof data.hop === 'number' ? data.hop : null,
+    last_seen: lastSeen,
+    battery: typeof data.battery === 'number' ? data.battery : null,
+    speed: typeof data.speed === 'number' ? data.speed : null,
+    relay_from: data.relay_from || null,
+    relay_chain: Array.isArray(data.relay_chain) ? data.relay_chain : [],
+    neighbors: Array.isArray(data.neighbors) ? data.neighbors : [],
+    link_quality: typeof data.link_quality === 'number' ? data.link_quality : null,
+    rssi: typeof data.rssi === 'number' ? data.rssi : null,
+    snr: typeof data.snr === 'number' ? data.snr : null
+  };
+}
+
+function buildEstimatedLinks(nodes, groundStation) {
+  const links = [];
+  const onlineNodes = nodes.filter(n => n.status === 'online' && n.lat !== null);
+  if (onlineNodes.length === 0) return links;
+
+  const sorted = [...onlineNodes].sort((a, b) => {
+    const da = haversineDistanceMeters(a, groundStation);
+    const db = haversineDistanceMeters(b, groundStation);
+    return da - db;
+  });
+
+  sorted.forEach((node, idx) => {
+    const distToGround = haversineDistanceMeters(node, groundStation);
+    if (distToGround <= 15000 || idx === 0) {
+      links.push({
+        from: node.id,
+        to: groundStation.id,
+        type: 'direct',
+        distance_m: Math.round(distToGround),
+        hop: 0,
+        status: distToGround < 8000 ? 'good' : distToGround < 12000 ? 'fair' : 'poor',
+        source: 'estimated',
+        rssi: null, snr: null, latency_ms: null,
+        last_seen: node.last_seen
+      });
+      node._hop = 0;
+    } else {
+      const nearest = sorted.slice(0, idx).find(n => n._hop !== undefined);
+      if (nearest) {
+        const distToNearest = haversineDistanceMeters(node, nearest);
+        links.push({
+          from: node.id,
+          to: nearest.id,
+          type: 'relay',
+          distance_m: Math.round(distToNearest),
+          hop: (nearest._hop || 0) + 1,
+          status: distToNearest < 8000 ? 'fair' : 'poor',
+          source: 'estimated',
+          rssi: null, snr: null, latency_ms: null,
+          last_seen: node.last_seen
+        });
+        node._hop = (nearest._hop || 0) + 1;
+      }
+    }
+  });
+  return links;
+}
+
+function buildRealTelemetryLinks(nodes, groundStation) {
+  const links = [];
+  nodes.forEach(node => {
+    if (node.status !== 'online') return;
+    if (node.relay_from) {
+      const dist = node.lat !== null
+        ? haversineDistanceMeters(node, groundStation)
+        : null;
+      links.push({
+        from: node.id,
+        to: node.relay_from,
+        type: 'relay',
+        distance_m: dist ? Math.round(dist) : null,
+        hop: node.hop || 1,
+        status: node.link_quality >= 70 ? 'good' : node.link_quality >= 40 ? 'fair' : 'poor',
+        source: 'telemetry',
+        rssi: node.rssi, snr: node.snr, latency_ms: null,
+        last_seen: node.last_seen
+      });
+    } else if (node.lat !== null) {
+      const distToGround = haversineDistanceMeters(node, groundStation);
+      links.push({
+        from: node.id,
+        to: groundStation.id,
+        type: 'direct',
+        distance_m: Math.round(distToGround),
+        hop: 0,
+        status: 'good',
+        source: 'telemetry',
+        rssi: node.rssi, snr: node.snr, latency_ms: null,
+        last_seen: node.last_seen
+      });
+    }
+  });
+  return links;
+}
+
+function calculateMeshHealth(nodes, links) {
+  const total = nodes.filter(n => n.type === 'vehicle').length;
+  if (total === 0) return { score: 0, label: 'No data' };
+  const online = nodes.filter(n => n.type === 'vehicle' && n.status === 'online').length;
+  const onlineRatio = online / total;
+  const hops = links.filter(l => l.hop !== null).map(l => l.hop);
+  const avgHop = hops.length ? hops.reduce((a, b) => a + b, 0) / hops.length : 0;
+  const hopScore = Math.max(0, 1 - avgHop / 5);
+  const distances = links.filter(l => l.distance_m !== null).map(l => l.distance_m);
+  const avgDist = distances.length ? distances.reduce((a, b) => a + b, 0) / distances.length : 0;
+  const distScore = Math.max(0, 1 - avgDist / 20000);
+  const staleRatio = nodes.filter(n => n.type === 'vehicle' && n.status === 'offline').length / Math.max(total, 1);
+  const staleScore = 1 - staleRatio;
+  const score = Math.round(onlineRatio * 40 + hopScore * 20 + distScore * 20 + staleScore * 20);
+  const label = score >= 70 ? 'Network healthy' : score >= 40 ? 'Network degraded' : 'Network unhealthy';
+  return { score, label };
+}
+
 // ============================================================
 //  POST /api/update-location
 //  ── รับข้อมูล GPS จาก ESP8266 ──
@@ -319,6 +471,17 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     hdop        = -1,   // Horizontal Dilution of Precision (จาก GPS6MV2 จริง)
     rssi        = null, // WiFi signal strength dBm (จาก WiFi.RSSI() จริง)
   } = req.body;
+
+  // Optional VIBE Mesh fields (backward-compatible)
+  const hop = typeof req.body.hop === 'number' ? req.body.hop : null;
+  const relay_from = req.body.relay_from || null;
+  const relay_chain = Array.isArray(req.body.relay_chain) ? req.body.relay_chain : [];
+  const neighbors = Array.isArray(req.body.neighbors) ? req.body.neighbors : [];
+  const link_quality = typeof req.body.link_quality === 'number' ? req.body.link_quality : null;
+  const snr = typeof req.body.snr === 'number' ? req.body.snr : null;
+  const seq = typeof req.body.seq === 'number' ? req.body.seq : null;
+  const boot_id = req.body.boot_id || null;
+  const packet_id = req.body.packet_id || null;
 
   if (!vehicleId) {
     return res.status(400).json({ error: 'vehicleId is required' });
@@ -363,6 +526,17 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     routeId:     routeId   || 'unassigned',
     direction:   direction || 'unknown',
   };
+
+  // Preserve existing telemetry payloads by storing mesh fields only when supplied.
+  if (hop !== null) data.hop = hop;
+  if (relay_from) data.relay_from = relay_from;
+  if (relay_chain.length > 0) data.relay_chain = relay_chain;
+  if (neighbors.length > 0) data.neighbors = neighbors;
+  if (link_quality !== null) data.link_quality = link_quality;
+  if (snr !== null) data.snr = snr;
+  if (seq !== null) data.seq = seq;
+  if (boot_id) data.boot_id = boot_id;
+  if (packet_id) data.packet_id = packet_id;
 
   try {
     const updates = {};
@@ -1355,6 +1529,71 @@ app.post('/api/admin/purge-ghosts', authMiddleware, async (req, res) => {
   } catch (e) {
     console.error('[PURGE]', e);
     return res.status(500).json({ error: e.message });
+  }
+});
+
+// Mesh network topology. This is a new public read-only endpoint.
+app.get('/api/v1/network', async (req, res) => {
+  try {
+    const { route_id, direction, online_only } = req.query;
+    const GROUND_STATION = {
+      id: 'GROUND_01',
+      type: 'ground_station',
+      lat: 8.4304,
+      lng: 99.9631,
+      status: 'online',
+      label: 'Ground Station'
+    };
+
+    const fleetSnap = await db.ref('fleet').once('value');
+    const fleetData = fleetSnap.val() || {};
+    const rawNodes = [];
+
+    Object.entries(fleetData).forEach(([vehicleId, vehicleData]) => {
+      const current = vehicleData.current || {};
+      const node = normalizeNetworkNode(vehicleId, current, vehicleData);
+
+      if (route_id && route_id !== 'all' && node.route_id !== route_id) return;
+      if (direction && direction !== 'all' && node.direction !== direction) return;
+      if (online_only === 'true' && node.status !== 'online') return;
+
+      rawNodes.push(node);
+    });
+
+    const hasRealMesh = rawNodes.some(n => n.relay_from !== null || n.hop !== null);
+    const mode = hasRealMesh ? 'telemetry' : 'estimated';
+    const links = hasRealMesh
+      ? buildRealTelemetryLinks(rawNodes, GROUND_STATION)
+      : buildEstimatedLinks(rawNodes, GROUND_STATION);
+
+    if (!hasRealMesh) {
+      links.forEach(link => {
+        const node = rawNodes.find(n => n.id === link.from);
+        if (node) node.hop = link.hop;
+      });
+      rawNodes.forEach(node => { delete node._hop; });
+    }
+
+    const allNodes = [GROUND_STATION, ...rawNodes];
+    const health = calculateMeshHealth(allNodes, links);
+
+    res.json({
+      server_time: Date.now(),
+      mode,
+      health,
+      nodes: allNodes,
+      links,
+      meta: {
+        total_vehicles: rawNodes.length,
+        online_vehicles: rawNodes.filter(n => n.status === 'online').length,
+        direct_links: links.filter(l => l.type === 'direct').length,
+        relay_links: links.filter(l => l.type === 'relay').length,
+        ground_station: GROUND_STATION.id
+      }
+    });
+  } catch (err) {
+    console.error('[/api/v1/network]', err);
+    res.status(500).json({ error: 'network_error' });
   }
 });
 

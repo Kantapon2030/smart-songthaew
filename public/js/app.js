@@ -30,6 +30,8 @@ async function initMap(){
   await fetchVehicles();
   setInterval(fetchVehicles, 3000);
   setInterval(() => { if(selectedVehicleId) renderInfoCard(vehicleData[selectedVehicleId]); }, 1000);
+  // Initialize the optional mesh overlay only after the map is ready.
+  if(window.MeshOverlay) window.MeshOverlay.init(map);
 }
 
 async function loadRoutes(){
@@ -183,4 +185,5 @@ function ensureAdvancedView(){
   document.querySelector('#left-panel .panel-card')?.appendChild(button);
 }
 
+// ── Boot ──────────────────────────────────────────────────────
 initMap();
