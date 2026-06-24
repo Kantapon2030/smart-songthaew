@@ -41,6 +41,9 @@ function applyConfigToUI(cfg) {
   const sub       = document.getElementById('demo-state-sub');
   const badge     = document.getElementById('nav-mode-badge');
   const statusSub = document.getElementById('demo-status-sub');
+  const toggle    = document.getElementById('demo-mode-toggle');
+  const modeBadge = document.getElementById('demo-mode-badge');
+  if (toggle) toggle.checked = cfg.demoMode === true;
 
   if (cfg.demoMode) {
     light.classList.add('on');
@@ -48,6 +51,7 @@ function applyConfigToUI(cfg) {
     sub.textContent       = `TWIN_01 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
     badge.textContent     = 'TWIN';
     badge.className       = 'nav-badge';
+    if (modeBadge) { modeBadge.textContent = 'DEMO ACTIVE — simulated data'; modeBadge.classList.add('active'); }
     statusSub.textContent = 'TWIN_01 กำลังวิ่ง';
   } else {
     light.classList.remove('on');
@@ -55,6 +59,7 @@ function applyConfigToUI(cfg) {
     sub.textContent       = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
     badge.textContent     = 'REAL';
     badge.className       = 'nav-badge safe';
+    if (modeBadge) { modeBadge.textContent = 'LIVE — real data only'; modeBadge.classList.remove('active'); }
     statusSub.textContent = 'ปิดอยู่';
   }
 
@@ -63,6 +68,28 @@ function applyConfigToUI(cfg) {
 }
 
 // ── Demo Controls ─────────────────────────────────────────────
+async function toggleDemoMode(enabled) {
+  try {
+    if (enabled) await startDemo();
+    else await stopDemo();
+    await refreshDemoStatus();
+  } catch (error) {
+    const toggle = document.getElementById('demo-mode-toggle');
+    if (toggle) toggle.checked = !enabled;
+    addLog('err', error.message);
+  }
+}
+
+async function refreshDemoStatus() {
+  const response = await fetch('/api/demo/status');
+  if (!response.ok) throw new Error('Unable to read demo status');
+  const status = await response.json();
+  const config = { ...window.SYS, demoMode: status.demoMode === true };
+  Object.assign(window.SYS, config);
+  applyConfigToUI(config);
+  return status;
+}
+
 function changeVehicleCount(d) {
   _demoVehicleCount = Math.max(1, Math.min(8, _demoVehicleCount + d));
   document.getElementById('vcc-num').textContent = _demoVehicleCount;
@@ -78,8 +105,9 @@ async function startDemo() {
     });
     const r = response ? await response.json() : {};
     addLog('ok', `Twin started: ${r.ids?.join(', ')}`);
-    syncConfig();
-  } catch (e) { addLog('err', e.message); }
+    await syncConfig();
+    return r;
+  } catch (e) { addLog('err', e.message); throw e; }
 }
 
 async function stopDemo() {
@@ -87,8 +115,8 @@ async function stopDemo() {
   try {
     await authFetch('/api/demo/stop', { method: 'POST' });
     addLog('ok', 'Twin stopped — กลับเป็นโหมด Real');
-    syncConfig();
-  } catch (e) { addLog('err', e.message); }
+    await syncConfig();
+  } catch (e) { addLog('err', e.message); throw e; }
 }
 
 async function changeDemoSpeed(speed) {
@@ -196,6 +224,7 @@ async function checkAuth() {
   loadRoutes();
   loadFleet();
   refreshStatus();
+  refreshDemoStatus().catch(e => addLog('err', e.message));
 }
 
 function logout() {

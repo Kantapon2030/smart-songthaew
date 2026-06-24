@@ -295,6 +295,25 @@ function telemetryDecision(previous, packet) {
   return { accepted: true };
 }
 
+function isDemoVehicle(vehicleId, entry = {}) {
+  const current = entry?.current || entry || {};
+  return vehicleId.startsWith('DEMO') || vehicleId.startsWith('TWIN') || entry?.demo === true || current.demo === true;
+}
+
+function hasValidGpsFix(current = {}) {
+  return current.gps_fix !== false && validLatLng(Number(current.lat), Number(current.lng));
+}
+
+function currentForLiveMode(current = {}) {
+  if (hasValidGpsFix(current)) return current;
+  const { lat, lng, ...withoutCoordinates } = current;
+  return withoutCoordinates;
+}
+
+async function getDemoMode() {
+  const config = (await db.ref('system/config').once('value')).val() || {};
+  return config.demoMode === true;
+}
 // Mesh network helpers
 function haversineDistanceMeters(a, b) {
   const R = 6371000;
@@ -311,20 +330,23 @@ function isValidCoord(lat, lng) {
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
 }
 
-function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs) {
+function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, demoMode) {
   const lat = parseFloat(data.lat);
   const lng = parseFloat(data.lng);
-  const validCoord = isValidCoord(lat, lng);
+  const validCoord = hasValidGpsFix(data);
   const lastSeen = data.timestamp || 0;
-  const isOnline = validCoord && (Date.now() - lastSeen < offlineThresholdMs);
-  return {
+  const routeId = data.routeId || data.route_id || vehicleMeta?.routeId || 'unassigned';
+  const isDemo = isDemoVehicle(vehicleId, vehicleMeta) || String(routeId).toLowerCase().includes('demo');
+  const isOnline = validCoord && (isDemo && demoMode || Date.now() - lastSeen < offlineThresholdMs);
+  const node = {
     id: vehicleId,
     type: 'vehicle',
     vehicle_id: vehicleId,
     lat: validCoord ? lat : null,
     lng: validCoord ? lng : null,
     status: isOnline ? 'online' : 'offline',
-    route_id: data.routeId || vehicleMeta?.routeId || 'unassigned',
+    demo: isDemo,
+    route_id: routeId,
     direction: data.direction || 'unknown',
     hop: typeof data.hop === 'number' ? data.hop : null,
     last_seen: lastSeen,
@@ -337,11 +359,16 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs) 
     rssi: typeof data.rssi === 'number' ? data.rssi : null,
     snr: typeof data.snr === 'number' ? data.snr : null
   };
+  if (!demoMode && !validCoord) {
+    delete node.lat;
+    delete node.lng;
+  }
+  return node;
 }
 
 function buildEstimatedLinks(nodes, groundStation) {
   const links = [];
-  const onlineNodes = nodes.filter(n => n.status === 'online' && n.lat !== null);
+  const onlineNodes = nodes.filter(n => n.status === 'online' && Number.isFinite(n.lat) && Number.isFinite(n.lng));
   if (onlineNodes.length === 0) return links;
 
   const sorted = [...onlineNodes].sort((a, b) => {
@@ -392,7 +419,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
   nodes.forEach(node => {
     if (node.status !== 'online') return;
     if (node.relay_from) {
-      const dist = node.lat !== null
+      const dist = Number.isFinite(node.lat) && Number.isFinite(node.lng)
         ? haversineDistanceMeters(node, groundStation)
         : null;
       links.push({
@@ -406,7 +433,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
         rssi: node.rssi, snr: node.snr, latency_ms: null,
         last_seen: node.last_seen
       });
-    } else if (node.lat !== null) {
+    } else if (Number.isFinite(node.lat) && Number.isFinite(node.lng)) {
       const distToGround = haversineDistanceMeters(node, groundStation);
       links.push({
         from: node.id,
@@ -582,16 +609,16 @@ app.get('/api/locations', async (req, res) => {
   logLegacy(req);
   try {
     const { routeId } = req.query;
-    const snap = await db.ref('fleet').once('value');
-    const raw  = snap.val() || {};
+    const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
+    const raw = fleetSnap.val() || {};
 
     const result = {};
     for (const [id, val] of Object.entries(raw)) {
       // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
-      const isDemo = id.startsWith('TWIN_') || id.startsWith('DEMO_');
-      if (!isDemo && routeId && val.routeId !== routeId) continue;
+      if (!demoMode && isDemoVehicle(id, val)) continue;
+      if (routeId && val.routeId !== routeId) continue;
       if (val?.current) {
-        result[id] = { current: val.current, routeId: val.routeId, type: val.type };
+        result[id] = { current: demoMode ? val.current : currentForLiveMode(val.current), routeId: val.routeId, type: val.type };
       }
     }
 
@@ -609,9 +636,11 @@ app.get('/api/v1/vehicles', async (req, res) => {
   try {
     const routeId = req.query.route_id ? canonicalRouteId(req.query.route_id) : null;
     const now = unixNow();
-    const fleet = (await db.ref('fleet').once('value')).val() || {};
+    const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
+    const fleet = fleetSnap.val() || {};
     const vehicles = Object.entries(fleet)
       .filter(([, entry]) => entry?.current)
+      .filter(([id, entry]) => demoMode || !isDemoVehicle(id, entry))
       .map(([id, entry]) => normalizeVehicle(id, entry, now))
       .filter(vehicle => !routeId || vehicle.route_id === routeId)
       .filter(vehicle => validLatLng(vehicle.lat, vehicle.lng));
@@ -661,8 +690,12 @@ app.get('/api/v1/eta', async (req, res) => {
   }
 
   try {
-    const fleetEntry = (await db.ref(`fleet/${vehicleId}`).once('value')).val();
+    const [fleetSnap, demoMode] = await Promise.all([db.ref(`fleet/${vehicleId}`).once('value'), getDemoMode()]);
+    const fleetEntry = fleetSnap.val();
     if (!fleetEntry?.current) return res.status(404).json({ error: 'Vehicle not found' });
+    if (!demoMode && isDemoVehicle(vehicleId, fleetEntry)) {
+      return res.status(404).json({ error: 'Vehicle not found' });
+    }
     const vehicle = normalizeVehicle(vehicleId, fleetEntry);
     if (vehicle.status === 'offline' || !vehicle.gps_fix || !validLatLng(vehicle.lat, vehicle.lng)) {
       return res.json({ vehicle_id: vehicleId, eta_min: null, distance_m: null, cached: false });
@@ -1033,6 +1066,11 @@ function initTwin(){
 
 async function twinTick(){
   if(!_twinActive) return;
+  if (!await getDemoMode()) {
+    clearInterval(_twinTimer); _twinTimer = null; _twinActive = false;
+    await db.ref('fleet/TWIN_01').remove();
+    return;
+  }
   const R=_twinRoute;
   const v=_twin;
   const today=todayStr(), hour=new Date().getHours();
@@ -1092,11 +1130,12 @@ async function twinTick(){
   }catch(_){}
 
   const ts=Date.now();
-  const data={lat:v.lat,lng:v.lng,speed:v.speed,bearing:v.bearing,battery:v.battery,timestamp:ts,routeId:_twinRouteId,direction:dirLabel};
+  const data={lat:v.lat,lng:v.lng,speed:v.speed,bearing:v.bearing,battery:v.battery,timestamp:ts,routeId:_twinRouteId,direction:dirLabel,demo:true};
   const updates={};
   updates['fleet/TWIN_01/current']=data;
   updates['fleet/TWIN_01/routeId']=_twinRouteId;   // ← fix: ต้องเขียน routeId ที่ root ด้วยเพื่อให้ API filter ทำงาน
   updates['fleet/TWIN_01/type']='twin';
+  updates['fleet/TWIN_01/demo']=true;
   updates[`history/${today}/TWIN_01/${ts}`]=data;
   updates[`analytics/peak_hours/${today}/TWIN_01/${hour}`]=admin.database.ServerValue.increment(1);
   await db.ref().update(updates);
@@ -1117,10 +1156,10 @@ app.post('/api/demo/start', authMiddleware, async (req,res)=>{
     }
   }catch(e){console.warn('[TWIN]',e.message);}
 
+  await db.ref('system/config').update({demoMode:true,demoVehicles:1,demoRouteId:_twinRouteId,demoSpeed:_twinSpeedMultiplier,updatedAt:Date.now()});
   initTwin();
   clearInterval(_twinTimer);
   _twinTimer=setInterval(twinTick,2000);
-  await db.ref('system/config').update({demoMode:true,demoVehicles:1,demoRouteId:_twinRouteId,demoSpeed:_twinSpeedMultiplier,updatedAt:Date.now()});
   console.log(`[TWIN] started on route ${_twinRouteId}`);
   res.json({ok:true,vehicles:1,routeId:_twinRouteId,ids:['TWIN_01']});
 });
@@ -1135,15 +1174,20 @@ app.post('/api/demo/speed', authMiddleware, async (req,res)=>{
 });
 
 app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
+  await db.ref('system/config').update({demoMode:false,updatedAt:Date.now()});
   clearInterval(_twinTimer);_twinTimer=null;_twinActive=false;
   await db.ref('fleet/TWIN_01').remove();
-  await db.ref('system/config').update({demoMode:false,updatedAt:Date.now()});
   console.log('[TWIN] stopped');
   res.json({ok:true});
 });
 
-app.get('/api/demo/status', (req,res)=>{
-  res.json({running:_twinTimer!==null,vehicles:_twinActive?1:0,ids:_twinActive?['TWIN_01']:[]});
+app.get('/api/demo/status', async (req,res)=>{
+  try {
+    const demoMode = await getDemoMode();
+    res.json({demoMode,running:demoMode && _twinTimer!==null,vehicles:demoMode && _twinActive?1:0,ids:demoMode && _twinActive?['TWIN_01']:[]});
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to read demo status' });
+  }
 });
 
 // ============================================================
@@ -1413,21 +1457,23 @@ app.get('/api/routes/:id/vehicles', async (req, res) => {
 // ============================================================
 app.get('/api/fleet', async (req, res) => {
   try {
-    const snap  = await db.ref('fleet').once('value');
-    const fleet = snap.val() || {};
+    const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
+    const fleet = fleetSnap.val() || {};
     const result = {};
     for (const [id, v] of Object.entries(fleet)) {
+      if (!demoMode && isDemoVehicle(id, v)) continue;
+      const current = v.current && !demoMode ? currentForLiveMode(v.current) : v.current;
       result[id] = {
         vehicleId:  id,
         routeId:    v.routeId || 'unassigned',
         type:       v.type || 'real',
         assignedAt: v.assignedAt || null,
-        current: v.current ? {
-          lat:       v.current.lat,
-          lng:       v.current.lng,
-          speed:     v.current.speed,
-          battery:   v.current.battery,
-          timestamp: v.current.timestamp,
+        current: current ? {
+          ...(current.lat !== undefined ? { lat: current.lat } : {}),
+          ...(current.lng !== undefined ? { lng: current.lng } : {}),
+          speed:     current.speed,
+          battery:   current.battery,
+          timestamp: current.timestamp,
         } : null,
       };
     }
@@ -1531,79 +1577,68 @@ app.post('/api/admin/purge-ghosts', authMiddleware, async (req, res) => {
   }
 });
 
-// Mesh network topology. This is a new public read-only endpoint.
+// ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
+// [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
+// → frontend parse JSON ไม่ได้ → "Unexpected token '<'"
 app.get('/api/v1/network', async (req, res) => {
   try {
     const { route_id, direction, online_only } = req.query;
-    const GROUND_STATION = {
-      id: 'GROUND_01',
-      type: 'ground_station',
-      lat: 8.4304,
-      lng: 99.9631,
-      status: 'online',
-      label: 'Ground Station'
-    };
-
     const [fleetSnap, configSnap] = await Promise.all([
       db.ref('fleet').once('value'),
       db.ref('system/config').once('value')
     ]);
     const fleetData = fleetSnap.val() || {};
     const sysConfig = configSnap.val() || {};
-    const offlineTimeoutMs = ((sysConfig.offlineTimeout || 300) * 1000);
-    const rawNodes = [];
+    const demoMode = sysConfig.demoMode === true;
+    const configuredGroundStation = sysConfig.groundStation || {};
+    const configuredLat = Number(configuredGroundStation.lat);
+    const configuredLng = Number(configuredGroundStation.lng);
+    const groundStation = {
+      id: 'GROUND_01',
+      type: 'ground_station',
+      lat: configuredGroundStation.lat != null && configuredGroundStation.lat !== '' && Number.isFinite(configuredLat) ? configuredLat : 8.4304,
+      lng: configuredGroundStation.lng != null && configuredGroundStation.lng !== '' && Number.isFinite(configuredLng) ? configuredLng : 99.9631,
+      status: 'online',
+      label: configuredGroundStation.label || 'Ground Station'
+    };
+    const offlineTimeoutMs = (sysConfig.offlineTimeout || 300) * 1000;
+    const nodes = Object.entries(fleetData)
+      .filter(([vehicleId, vehicleData]) => demoMode || !isDemoVehicle(vehicleId, vehicleData))
+      .map(([vehicleId, vehicleData]) => normalizeNetworkNode(vehicleId, vehicleData.current || {}, vehicleData, offlineTimeoutMs, demoMode))
+      .filter(node => !route_id || route_id === 'all' || node.route_id === route_id)
+      .filter(node => !direction || direction === 'all' || node.direction === direction)
+      .filter(node => online_only !== 'true' || node.status === 'online');
 
-    Object.entries(fleetData).forEach(([vehicleId, vehicleData]) => {
-      const current = vehicleData.current || {};
-      const node = normalizeNetworkNode(vehicleId, current, vehicleData, offlineTimeoutMs);
-
-      if (route_id && route_id !== 'all' && node.route_id !== route_id) return;
-      if (direction && direction !== 'all' && node.direction !== direction) return;
-      if (online_only === 'true' && node.status !== 'online') return;
-
-      rawNodes.push(node);
-    });
-
-    const hasRealMesh = rawNodes.some(n => n.relay_from !== null || n.hop !== null);
-    const mode = hasRealMesh ? 'telemetry' : 'estimated';
-    const links = hasRealMesh
-      ? buildRealTelemetryLinks(rawNodes, GROUND_STATION)
-      : buildEstimatedLinks(rawNodes, GROUND_STATION);
-
-    if (!hasRealMesh) {
+    const hasRealMesh = nodes.some(node => node.relay_from !== null || node.hop !== null);
+    const links = hasRealMesh ? buildRealTelemetryLinks(nodes, groundStation) : demoMode ? buildEstimatedLinks(nodes, groundStation) : [];
+    if (demoMode && !hasRealMesh) {
       links.forEach(link => {
-        const node = rawNodes.find(n => n.id === link.from);
+        const node = nodes.find(item => item.id === link.from);
         if (node) node.hop = link.hop;
       });
-      rawNodes.forEach(node => { delete node._hop; });
+      nodes.forEach(node => { delete node._hop; });
     }
-
-    const allNodes = [GROUND_STATION, ...rawNodes];
-    const health = calculateMeshHealth(allNodes, links);
 
     res.json({
       server_time: Date.now(),
-      mode,
-      health,
-      nodes: allNodes,
+      mode: hasRealMesh ? 'telemetry' : demoMode ? 'estimated' : 'waiting',
+      health: calculateMeshHealth([groundStation, ...nodes], links),
+      nodes: [groundStation, ...nodes],
       links,
       meta: {
-        total_vehicles: rawNodes.length,
-        online_vehicles: rawNodes.filter(n => n.status === 'online').length,
-        direct_links: links.filter(l => l.type === 'direct').length,
-        relay_links: links.filter(l => l.type === 'relay').length,
-        ground_station: GROUND_STATION.id
+        total_vehicles: nodes.length,
+        online_vehicles: nodes.filter(node => node.status === 'online').length,
+        direct_links: links.filter(link => link.type === 'direct').length,
+        relay_links: links.filter(link => link.type === 'relay').length,
+        ground_station: groundStation.id
       }
     });
-  } catch (err) {
-    console.error('[/api/v1/network]', err);
+  } catch (error) {
+    console.error('[/api/v1/network]', error);
     res.status(500).json({ error: 'network_error' });
   }
 });
 
-// ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
-// [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
-// → frontend parse JSON ไม่ได้ → "Unexpected token '<'"
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

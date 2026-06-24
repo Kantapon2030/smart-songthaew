@@ -20,6 +20,7 @@
     *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
     html,body{height:100dvh;overflow:hidden;font-family:Inter,Sarabun,sans-serif;color:var(--text);}
     #map{position:absolute;inset:0;z-index:1;background:var(--bg-2);}
+    #no-vehicles-notice{display:none;position:absolute;z-index:20;top:68px;left:50%;transform:translateX(-50%);padding:7px 12px;border-radius:99px;background:rgba(255,255,255,.94);box-shadow:0 2px 8px #0002;color:var(--text-2);font-size:.75rem;}
 
     @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
     @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -117,6 +118,7 @@
 <body>
 
 <div id="map"></div>
+<div id="no-vehicles-notice">No vehicles currently active</div>
 <div id="offline-banner">📡 รถ Offline <span id="offline-secs"></span></div>
 
 <!-- TOP BAR -->

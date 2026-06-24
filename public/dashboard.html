@@ -189,7 +189,7 @@
 
 <div id="demo-banner">
   <span>🧬</span>
-  <span>DIGITAL TWIN MODE — รถจำลอง TWIN_01 กำลังวิ่ง</span>
+  <span>⚠ Demo mode — data is simulated</span>
 </div>
 
 <div id="page">
@@ -386,7 +386,11 @@
 
     const vehicles = data.nodes.filter(function (node) { return node.type === 'vehicle'; });
     const ground = data.nodes.find(function (node) { return node.type === 'ground_station'; });
-    if (!vehicles.length || !ground) { emptyEl.style.display = 'flex'; return; }
+    if (data.mode === 'waiting' || !vehicles.length || !ground) {
+      emptyEl.textContent = 'Waiting for real telemetry';
+      emptyEl.style.display = 'flex';
+      return;
+    }
     emptyEl.style.display = 'none';
 
     const cx = width / 2;
@@ -445,8 +449,8 @@
   function renderMeshTable(data) {
     const tbody = document.getElementById('mesh-table-body');
     const vehicles = data.nodes.filter(function (node) { return node.type === 'vehicle'; });
-    if (!vehicles.length) {
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:16px">No data</td></tr>';
+    if (data.mode === 'waiting' || !vehicles.length) {
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#9ca3af;padding:16px">Waiting for real telemetry</td></tr>';
       return;
     }
     tbody.innerHTML = vehicles.map(function (vehicle) {
@@ -532,7 +536,7 @@ function updateAll(data) {
   // ใน real mode — เอาเฉพาะรถจริง (songthaew_01) หรือรถที่ไม่ใช่ TWIN/DEMO
   const vehicles = Object.entries(data).map(([id,v]) => ({
     id, data: v?.current,
-    isDemo: id.startsWith('TWIN_') || id.startsWith('DEMO_')
+    isDemo: id.startsWith('TWIN') || id.startsWith('DEMO') || v?.current?.demo === true
   })).filter(v => inDemoMode ? v.isDemo : !v.isDemo);
 
   const online = vehicles.filter(v => isVehicleOnline(v.data));
@@ -553,15 +557,16 @@ function updateAll(data) {
     const bar = document.getElementById('kpi-bat-bar'); if(bar){bar.style.width=bat+'%';bar.style.background=c;}
   }
 
-  updateDeviceList(vehicles);
+  updateDeviceList(vehicles, inDemoMode);
   updateIoT(primaryV);
   updatePowerPanel(primaryV);
   renderTerminal(primaryV, latencies[latencies.length-1]||0, inDemoMode);
 }
 
-function updateDeviceList(vehicles) {
+function updateDeviceList(vehicles, inDemoMode) {
   const list=document.getElementById('device-list');
-  if(!vehicles.length){list.innerHTML='<div class="no-data"><div class="icon">📡</div>ไม่มีข้อมูล</div>';return;}
+  const onlineCount = vehicles.filter(vehicle => isVehicleOnline(vehicle.data)).length;
+  if(!vehicles.length || (!inDemoMode && !onlineCount)){list.innerHTML='<div class="no-data"><div class="icon">📡</div>No vehicles online</div>';return;}
 
   list.innerHTML=vehicles.map(({id,data:v,isDemo})=>{
     if(!v) return '';

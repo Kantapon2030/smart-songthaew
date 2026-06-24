@@ -14,6 +14,8 @@ function vehicleAge(v){ return Math.max(0, Math.floor(serverNow() - (v?.last_see
 function isUsableVehicle(v){ return v && v.status !== 'offline' && v.gps_fix && validPosition(v); }
 function validPosition(v){ return Number.isFinite(v?.lat) && Number.isFinite(v?.lng); }
 function setText(id, value){ const el=document.getElementById(id); if(el) el.textContent=value; }
+function isDemoVehicle(v){ return v?.demo === true || v?.vehicle_id?.startsWith('DEMO') || v?.vehicle_id?.startsWith('TWIN'); }
+function onConfigChanged(){ fetchVehicles(); }
 
 async function initMap(){
   await loadGoogleMapsAPI();
@@ -97,9 +99,10 @@ async function fetchVehicles(){
   try {
     const data=await fetchV1Vehicles(currentRouteId);
     serverClock={serverTime:data.server_time,perfAt:performance.now()};
-    vehicleData=Object.fromEntries(data.vehicles.map(vehicle=>[vehicle.vehicle_id,vehicle]));
+    const visibleVehicles = data.vehicles.filter(vehicle => window.SYS?.demoMode || !isDemoVehicle(vehicle));
+    vehicleData=Object.fromEntries(visibleVehicles.map(vehicle=>[vehicle.vehicle_id,vehicle]));
     const ids=new Set();
-    for(const vehicle of data.vehicles){
+    for(const vehicle of visibleVehicles){
       if(!validPosition(vehicle)) continue;
       ids.add(vehicle.vehicle_id);
       const position={lat:vehicle.lat,lng:vehicle.lng};
@@ -117,7 +120,10 @@ async function fetchVehicles(){
     updateMarkerSelection();
     renderInfoCard(selectedVehicleId?vehicleData[selectedVehicleId]:null);
     requestSelectedEta();
-    setText('total-active',data.vehicles.filter(v=>v.status==='online').length);
+    const onlineVehicles = visibleVehicles.filter(v=>v.status==='online');
+    setText('total-active',onlineVehicles.length);
+    const notice = document.getElementById('no-vehicles-notice');
+    if(notice) notice.style.display = !window.SYS?.demoMode && !onlineVehicles.length ? 'block' : 'none';
     document.getElementById('live-chip')?.classList.remove('demo');
   } catch(error) {
     console.error('[vehicles]',error);
