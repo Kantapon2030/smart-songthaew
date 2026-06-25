@@ -12,6 +12,7 @@ firebase-adminsdk*.json
 *.pem
 *.key
 songthaew_secrets.h
+mesh_config.h
 
 # ── Node ──────────────────────────────────────
 node_modules/
