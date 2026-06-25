@@ -9,7 +9,7 @@
   let pollInterval = null;
   let mapInstance = null;
 
-  const POLL_MS = 5000;
+  const POLL_MS = 3000;
 
   window.MeshOverlay = {
     init(map) { mapInstance = map; },
@@ -108,6 +108,23 @@
       });
       infoWindow.open(mapInstance);
 
+      polylines.push(polyline);
+      infoWindows.push(infoWindow);
+    });
+
+    const pairColors = { close: '#22c55e', near: '#2563eb', far: '#f59e0b', distant: '#9ca3af' };
+    (data.vehicle_pairs || []).forEach(pair => {
+      const fromPos = getNodeLatLng(pair.from, nodes);
+      const toPos = getNodeLatLng(pair.to, nodes);
+      if (!fromPos || !toPos) return;
+      const color = pairColors[pair.status] || '#9ca3af';
+      const polyline = new google.maps.Polyline({ path: [fromPos, toPos], strokeColor: color, strokeWeight: 1.5, strokeOpacity: 0.65, map: mapInstance });
+      const infoWindow = new google.maps.InfoWindow({
+        content: '<div style="font-size:11px;color:' + color + ';font-weight:500">' + pair.distance_label + '</div>',
+        position: { lat: (fromPos.lat + toPos.lat) / 2, lng: (fromPos.lng + toPos.lng) / 2 },
+        disableAutoPan: true
+      });
+      infoWindow.open(mapInstance);
       polylines.push(polyline);
       infoWindows.push(infoWindow);
     });

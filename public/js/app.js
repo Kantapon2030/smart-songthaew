@@ -1,195 +1,392 @@
 'use strict';
 
-let map, userMarker, routeLine;
-let currentRouteId = null, allRoutes = {};
-let userLocation = null, selectedVehicleId = null, pinMode = false;
-let vehicleMarkers = {}, vehicleData = {};
+let map;
+let routeLine;
+let userMarker;
+let currentRouteId = null;
+let currentDirection = 'outbound';
+let selectedDestination = null;
+let selectedVehicleId = null;
+let routesById = {};
+let vehicleData = {};
+let vehicleMarkers = {};
+let stopMarkers = [];
 let etaState = { key: null, value: null, fetchedAt: 0 };
 let serverClock = { serverTime: 0, perfAt: 0 };
 
-function serverNow(){
-  return serverClock.serverTime + (performance.now() - serverClock.perfAt) / 1000;
-}
-function vehicleAge(v){ return Math.max(0, Math.floor(serverNow() - (v?.last_seen || 0))); }
-function isUsableVehicle(v){ return v && v.status !== 'offline' && v.gps_fix && validPosition(v); }
-function validPosition(v){ return Number.isFinite(v?.lat) && Number.isFinite(v?.lng); }
-function setText(id, value){ const el=document.getElementById(id); if(el) el.textContent=value; }
-function isDemoVehicle(v){ return v?.demo === true || v?.vehicle_id?.startsWith('DEMO') || v?.vehicle_id?.startsWith('TWIN'); }
-function onConfigChanged(){ fetchVehicles(); }
+document.addEventListener('DOMContentLoaded', initPassengerPage);
 
-async function initMap(){
+async function initPassengerPage() {
+  renderSharedNavbar({
+    active: 'home',
+    fixed: true,
+    onRouteChange(routeId) {
+      if (routeId && routeId !== currentRouteId) changeRoute(routeId);
+    },
+  });
+  document.getElementById('vehicle-image').innerHTML = busSvg(34, '#2563EB');
+  document.getElementById('mesh-toggle-icon').innerHTML = antennaSvg(16, '#64748B');
+  bindPassengerControls();
+  await initMap();
+}
+
+function bindPassengerControls() {
+  document.querySelectorAll('.direction-row button').forEach(button => {
+    button.addEventListener('click', () => {
+      currentDirection = button.dataset.direction;
+      document.querySelectorAll('.direction-row button').forEach(item => item.classList.toggle('active', item === button));
+      renderRecommendedStops();
+      requestSelectedEta(true);
+    });
+  });
+
+  document.getElementById('destination-search').addEventListener('input', renderPopularDestinations);
+  document.getElementById('show-route-btn').addEventListener('click', () => {
+    const destination = selectedDestination || routeStops(routesById[currentRouteId])[0];
+    if (destination) setDestination(destination);
+  });
+  document.getElementById('swap-route-btn').addEventListener('click', () => {
+    const ids = Object.keys(routesById);
+    if (!ids.length) return;
+    const index = ids.indexOf(currentRouteId);
+    changeRoute(ids[(index + 1) % ids.length]);
+  });
+  document.getElementById('route-select').addEventListener('change', event => changeRoute(event.target.value));
+  document.getElementById('mesh-toggle-wrap').addEventListener('click', toggleMeshOverlay);
+}
+
+async function initMap() {
   await loadGoogleMapsAPI();
-  if(!window.google?.maps){ document.getElementById('map').textContent='ไม่สามารถโหลดแผนที่ได้'; return; }
-  map = new google.maps.Map(document.getElementById('map'), {
-    center: { lat: 8.50, lng: 99.89 }, zoom: 11, disableDefaultUI: true,
-    zoomControl: true, gestureHandling: 'greedy', mapId: 'smart_songthaew_map'
+  const mapEl = document.getElementById('map');
+  if (!window.google?.maps) {
+    mapEl.textContent = 'ไม่สามารถโหลดแผนที่ได้';
+    return;
+  }
+
+  map = new google.maps.Map(mapEl, {
+    center: { lat: 8.50, lng: 99.89 },
+    zoom: 11,
+    mapId: 'smart_songthaew_map',
+    disableDefaultUI: true,
+    zoomControl: true,
+    gestureHandling: 'greedy',
   });
-  map.addListener('click', event => {
-    if(pinMode) { setDestination([event.latLng.lat(), event.latLng.lng()]); pinMode=false; document.getElementById('btn-pin')?.classList.remove('active'); }
-  });
-  ensureAdvancedView();
+
+  if (window.MeshOverlay) window.MeshOverlay.init(map);
   await loadRoutes();
   await fetchVehicles();
-  setInterval(fetchVehicles, 3000);
-  setInterval(() => { if(selectedVehicleId) renderInfoCard(vehicleData[selectedVehicleId]); }, 1000);
-  // Initialize the optional mesh overlay only after the map is ready.
-  if(window.MeshOverlay) window.MeshOverlay.init(map);
+  setInterval(fetchVehicles, 3500);
+  setInterval(() => renderVehicleCard(vehicleData[selectedVehicleId]), 1000);
 }
 
-async function loadRoutes(){
+async function loadRoutes() {
   try {
     const { routes } = await fetchPassengerRoutes();
-    allRoutes = Object.fromEntries((routes || []).map(route => [route.route_id, route]));
-    const select = document.getElementById('route-select');
-    select.innerHTML = routes.map(route => `<option value="${route.route_id}">${route.name}</option>`).join('');
-    if(routes.length) changeRoute(routes[0].route_id);
-  } catch(error) { console.error('[routes]', error); }
+    routesById = Object.fromEntries((routes || []).map(route => [route.route_id, route]));
+    const localSelect = document.getElementById('route-select');
+    localSelect.innerHTML = routes.map(route => `<option value="${route.route_id}">${route.name}</option>`).join('');
+    const sharedValue = document.getElementById('shared-route-select')?.value;
+    changeRoute(sharedValue && routesById[sharedValue] ? sharedValue : routes[0]?.route_id);
+  } catch (error) {
+    console.error('[routes]', error);
+  }
 }
 
-function changeRoute(routeId){
-  const route = allRoutes[routeId]; if(!route || !map) return;
+function changeRoute(routeId) {
+  const route = routesById[routeId];
+  if (!route || !map) return;
   currentRouteId = routeId;
-  document.getElementById('route-select').value = routeId;
-  if(routeLine) routeLine.setMap(null);
-  const path = (route.coords || []).map(([lat,lng]) => ({lat,lng}));
-  routeLine = new google.maps.Polyline({ path, map, strokeColor: route.color || '#1E88E5', strokeWeight: 5, strokeOpacity: .8 });
-  if(path.length){ const bounds=new google.maps.LatLngBounds(); path.forEach(point=>bounds.extend(point)); map.fitBounds(bounds, 50); }
-  populatePlaceControls(route);
+  const localSelect = document.getElementById('route-select');
+  const sharedSelect = document.getElementById('shared-route-select');
+  if (localSelect) localSelect.value = routeId;
+  if (sharedSelect && sharedSelect.value !== routeId) sharedSelect.value = routeId;
+  sessionStorage.setItem('smartSongthaewRoute', routeId);
+
+  drawRoute(route);
+  drawStops(route);
+  selectedDestination = routeStops(route)[0] || null;
+  if (selectedDestination) setDestination(selectedDestination, false);
+  renderPopularDestinations();
+  renderRecommendedStops();
   fetchVehicles();
 }
 
-function populatePlaceControls(route){
-  const places = route.places || [];
-  const options = places.map(place => `<option value="${place.lat},${place.lng}">${place.name}</option>`).join('');
-  const origin = document.getElementById('origin-select');
-  const destination = document.getElementById('dest-select');
-  if(origin){ origin.innerHTML=options; origin.parentElement?.style.setProperty('display','none'); }
-  if(destination){ destination.innerHTML=options; destination.value=destination.options[0]?.value || ''; }
-  if(!userLocation && places[0]) setDestination([places[0].lat, places[0].lng], false);
+function drawRoute(route) {
+  if (routeLine) routeLine.setMap(null);
+  const path = (route.coords || []).map(([lat, lng]) => ({ lat, lng }));
+  routeLine = new google.maps.Polyline({
+    path,
+    map,
+    strokeColor: routeColor(route),
+    strokeWeight: 5,
+    strokeOpacity: 0.9,
+  });
+  if (path.length) {
+    const bounds = new google.maps.LatLngBounds();
+    path.forEach(point => bounds.extend(point));
+    map.fitBounds(bounds, 64);
+  }
 }
 
-function updateOdSelection(){
-  const select=document.getElementById('dest-select');
-  const [lat,lng]=(select?.value || '').split(',').map(Number);
-  if(Number.isFinite(lat) && Number.isFinite(lng)) setDestination([lat,lng]);
+function drawStops(route) {
+  stopMarkers.forEach(marker => { marker.map = null; });
+  stopMarkers = [];
+  routeStops(route).forEach(stop => {
+    if (!Number.isFinite(Number(stop.lat)) || !Number.isFinite(Number(stop.lng))) return;
+    const marker = new google.maps.marker.AdvancedMarkerElement({
+      map,
+      position: { lat: Number(stop.lat), lng: Number(stop.lng) },
+      content: createStopMarkerContent(false),
+      title: stop.name,
+      zIndex: 300,
+    });
+    marker.addListener('click', () => setDestination(stop));
+    stopMarkers.push(marker);
+  });
 }
 
-function setDestination(position, refresh=true){
-  userLocation=position;
-  if(!userMarker){
-    const content=document.createElement('div'); content.textContent='📍'; content.style.cssText='font-size:30px;filter:drop-shadow(0 2px 4px #0006);';
-    userMarker=new google.maps.marker.AdvancedMarkerElement({map,position:{lat:position[0],lng:position[1]},content,gmpDraggable:true,zIndex:1000});
-    userMarker.addListener('dragend',()=>{ const p=userMarker.position; setDestination([p.lat,p.lng]); });
-  } else userMarker.position={lat:position[0],lng:position[1]};
-  if(refresh){ map.panTo({lat:position[0],lng:position[1]}); selectedVehicleId=null; etaState={key:null,value:null,fetchedAt:0}; chooseNearestVehicle(); renderInfoCard(selectedVehicleId?vehicleData[selectedVehicleId]:null); }
+function renderPopularDestinations() {
+  const route = routesById[currentRouteId];
+  const query = document.getElementById('destination-search').value.trim().toLowerCase();
+  const stops = routeStops(route).filter(stop => !query || String(stop.name).toLowerCase().includes(query)).slice(0, 8);
+  const root = document.getElementById('popular-destinations');
+  root.innerHTML = stops.length ? stops.map((stop, index) => `
+    <button class="destination-button ${selectedDestination?.name === stop.name ? 'active' : ''}" type="button" data-index="${index}">
+      <span class="item-icon" aria-hidden="true">${pinSvg(17, '#2563EB')}</span>
+      <span>${stop.name}</span>
+    </button>`).join('') : '<div class="empty-state" style="grid-column:1/-1;">ไม่พบจุดหมาย</div>';
+  [...root.querySelectorAll('button')].forEach((button, index) => {
+    button.addEventListener('click', () => setDestination(stops[index]));
+  });
 }
 
-function useMyLocation(){
-  if(!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(position => {
-    setDestination([position.coords.latitude, position.coords.longitude]);
-    document.getElementById('btn-gps')?.classList.add('active');
-  }, () => {}, {enableHighAccuracy:true,timeout:8000});
-}
-function togglePinMode(){ pinMode=!pinMode; document.getElementById('btn-pin')?.classList.toggle('active',pinMode); }
-function toggleBottomPanel(){ document.getElementById('info-panel')?.classList.toggle('expanded'); }
+async function renderRecommendedStops() {
+  const route = routesById[currentRouteId];
+  const stops = directionStops(route).slice(0, 5);
+  const root = document.getElementById('recommended-stops');
+  if (!stops.length) {
+    root.innerHTML = '<div class="empty-state">ยังไม่มีจุดจอดในเส้นทางนี้</div>';
+    return;
+  }
 
-async function fetchVehicles(){
-  if(!map || !currentRouteId) return;
-  try {
-    const data=await fetchV1Vehicles(currentRouteId);
-    serverClock={serverTime:data.server_time,perfAt:performance.now()};
-    const visibleVehicles = data.vehicles.filter(vehicle => window.SYS?.demoMode || !isDemoVehicle(vehicle));
-    vehicleData=Object.fromEntries(visibleVehicles.map(vehicle=>[vehicle.vehicle_id,vehicle]));
-    const ids=new Set();
-    for(const vehicle of visibleVehicles){
-      if(!validPosition(vehicle)) continue;
-      ids.add(vehicle.vehicle_id);
-      const position={lat:vehicle.lat,lng:vehicle.lng};
-      const online=vehicle.status !== 'offline';
-      if(!vehicleMarkers[vehicle.vehicle_id]){
-        vehicleMarkers[vehicle.vehicle_id]=new google.maps.marker.AdvancedMarkerElement({map,position,content:createVehicleMarkerContent(vehicle.speed,online,false,vehicle.vehicle_id===selectedVehicleId,vehicle.heading),zIndex:500});
-        vehicleMarkers[vehicle.vehicle_id].addListener('click',()=>selectVehicle(vehicle.vehicle_id));
-      }else{
-        smoothMoveMarker(vehicleMarkers[vehicle.vehicle_id],position);
-        vehicleMarkers[vehicle.vehicle_id].content=createVehicleMarkerContent(vehicle.speed,online,false,vehicle.vehicle_id===selectedVehicleId,vehicle.heading);
-      }
+  root.innerHTML = stops.map(stop => `
+    <button class="recommended-item" type="button" data-name="${stop.name}">
+      <div>
+        <div class="recommended-name">${stop.name}</div>
+        <div class="recommended-meta" id="stop-meta-${safeId(stop.name)}">กำลังคำนวณเวลา</div>
+      </div>
+      <span class="item-icon" aria-hidden="true">${signalSvg(18, '#2563EB')}</span>
+    </button>`).join('');
+  [...root.querySelectorAll('button')].forEach((button, index) => {
+    button.addEventListener('click', () => setDestination(stops[index]));
+  });
+  updateStopEtas(stops);
+}
+
+function directionStops(route) {
+  const stops = [...routeStops(route)];
+  return currentDirection === 'inbound' ? stops.reverse() : stops;
+}
+
+async function updateStopEtas(stops) {
+  const origin = selectedVehicleId && vehicleData[selectedVehicleId]
+    ? `${vehicleData[selectedVehicleId].lat},${vehicleData[selectedVehicleId].lng}`
+    : selectedDestination
+      ? `${selectedDestination.lat},${selectedDestination.lng}`
+      : null;
+  if (!origin) return;
+  for (const stop of stops) {
+    const meta = document.getElementById(`stop-meta-${safeId(stop.name)}`);
+    if (!meta || !Number.isFinite(Number(stop.lat)) || !Number.isFinite(Number(stop.lng))) continue;
+    const distance = selectedDestination ? haversineKm(selectedDestination.lat, selectedDestination.lng, stop.lat, stop.lng) : null;
+    try {
+      const data = await fetchMapsEta(origin, `${stop.lat},${stop.lng}`);
+      meta.textContent = `${formatDistanceKm(distance)} • ${formatMinutes(data.eta_min)}`;
+    } catch (_) {
+      meta.textContent = `${formatDistanceKm(distance)} • ETA —`;
     }
-    for(const id of Object.keys(vehicleMarkers)) if(!ids.has(id)){ vehicleMarkers[id].map=null; delete vehicleMarkers[id]; }
-    if(!selectedVehicleId || !vehicleData[selectedVehicleId]) chooseNearestVehicle();
-    updateMarkerSelection();
-    renderInfoCard(selectedVehicleId?vehicleData[selectedVehicleId]:null);
+  }
+}
+
+function setDestination(stop, refresh = true) {
+  if (!stop) return;
+  selectedDestination = stop;
+  const position = { lat: Number(stop.lat), lng: Number(stop.lng) };
+  if (!userMarker) {
+    userMarker = new google.maps.marker.AdvancedMarkerElement({
+      map,
+      position,
+      content: destinationMarkerContent(),
+      title: stop.name,
+      zIndex: 900,
+    });
+  } else {
+    userMarker.position = position;
+    userMarker.title = stop.name;
+  }
+  if (refresh) {
+    map.panTo(position);
+    chooseNearestVehicle();
+    requestSelectedEta(true);
+  }
+  renderPopularDestinations();
+  renderRecommendedStops();
+}
+
+function destinationMarkerContent() {
+  const el = document.createElement('div');
+  el.style.cssText = 'width:34px;height:34px;border-radius:50%;background:#2563EB;color:#fff;display:flex;align-items:center;justify-content:center;border:3px solid #fff;box-shadow:0 8px 22px rgba(37,99,235,.35);';
+  el.innerHTML = pinSvg(18, '#fff');
+  return el;
+}
+
+async function fetchVehicles() {
+  if (!currentRouteId || !map) return;
+  try {
+    const data = await fetchVehicleLocations(currentRouteId);
+    serverClock = { serverTime: data.server_time || Date.now() / 1000, perfAt: performance.now() };
+    const visibleVehicles = (data.vehicles || []).filter(vehicle => window.SYS?.demoMode || !isDemoVehicle(vehicle));
+    vehicleData = Object.fromEntries(visibleVehicles.map(vehicle => [vehicle.vehicle_id, vehicle]));
+    renderVehicleMarkers(visibleVehicles);
+    if (!selectedVehicleId || !vehicleData[selectedVehicleId]) chooseNearestVehicle();
     requestSelectedEta();
-    const onlineVehicles = visibleVehicles.filter(v=>v.status==='online');
-    setText('total-active',onlineVehicles.length);
-    const notice = document.getElementById('no-vehicles-notice');
-    if(notice) notice.style.display = !window.SYS?.demoMode && !onlineVehicles.length ? 'block' : 'none';
-    document.getElementById('live-chip')?.classList.remove('demo');
-  } catch(error) {
-    console.error('[vehicles]',error);
-    setText('live-chip','CONNECTING');
+    renderVehicleCard(vehicleData[selectedVehicleId]);
+    renderRecommendedStops();
+    document.getElementById('no-vehicles-notice').style.display = visibleVehicles.some(vehicle => vehicle.status === 'online') ? 'none' : 'block';
+  } catch (error) {
+    console.error('[vehicles]', error);
   }
 }
 
-function chooseNearestVehicle(){
-  if(!userLocation) return;
-  const candidates=Object.values(vehicleData).filter(isUsableVehicle);
-  if(!candidates.length){ selectedVehicleId=null; return; }
-  candidates.sort((a,b)=>haversineKm(a.lat,a.lng,userLocation[0],userLocation[1])-haversineKm(b.lat,b.lng,userLocation[0],userLocation[1]));
-  selectedVehicleId=candidates[0].vehicle_id;
+function renderVehicleMarkers(vehicles) {
+  const ids = new Set();
+  vehicles.forEach(vehicle => {
+    ids.add(vehicle.vehicle_id);
+    const position = { lat: vehicle.lat, lng: vehicle.lng };
+    const online = vehicle.status === 'online' && vehicle.speed > 0;
+    const selected = vehicle.vehicle_id === selectedVehicleId;
+    if (!vehicleMarkers[vehicle.vehicle_id]) {
+      vehicleMarkers[vehicle.vehicle_id] = new google.maps.marker.AdvancedMarkerElement({
+        map,
+        position,
+        content: createVehicleMarkerContent(vehicle.speed, online, false, selected, vehicle.heading),
+        title: vehicle.vehicle_id,
+        zIndex: selected ? 600 : 500,
+      });
+      vehicleMarkers[vehicle.vehicle_id].addListener('click', () => selectVehicle(vehicle.vehicle_id));
+    } else {
+      vehicleMarkers[vehicle.vehicle_id].position = position;
+      vehicleMarkers[vehicle.vehicle_id].content = createVehicleMarkerContent(vehicle.speed, online, false, selected, vehicle.heading);
+      vehicleMarkers[vehicle.vehicle_id].zIndex = selected ? 600 : 500;
+    }
+  });
+  Object.keys(vehicleMarkers).forEach(id => {
+    if (!ids.has(id)) {
+      vehicleMarkers[id].map = null;
+      delete vehicleMarkers[id];
+    }
+  });
 }
-function selectVehicle(vehicleId){
-  selectedVehicleId=vehicleId; etaState={key:null,value:null,fetchedAt:0}; updateMarkerSelection(); renderInfoCard(vehicleData[vehicleId]); requestSelectedEta();
+
+function chooseNearestVehicle() {
+  if (!selectedDestination) return;
+  const candidates = Object.values(vehicleData).filter(vehicle => vehicle.status === 'online' && vehicle.gps_fix !== false);
+  if (!candidates.length) {
+    selectedVehicleId = null;
+    return;
+  }
+  candidates.sort((a, b) => haversineKm(a.lat, a.lng, selectedDestination.lat, selectedDestination.lng) - haversineKm(b.lat, b.lng, selectedDestination.lat, selectedDestination.lng));
+  selectedVehicleId = candidates[0].vehicle_id;
 }
-function updateMarkerSelection(){
-  for(const [id, marker] of Object.entries(vehicleMarkers)){
-    const vehicle=vehicleData[id]; if(vehicle) marker.content=createVehicleMarkerContent(vehicle.speed,vehicle.status!=='offline',false,id===selectedVehicleId,vehicle.heading);
+
+function selectVehicle(vehicleId) {
+  selectedVehicleId = vehicleId;
+  etaState = { key: null, value: null, fetchedAt: 0 };
+  renderVehicleMarkers(Object.values(vehicleData));
+  requestSelectedEta(true);
+  renderVehicleCard(vehicleData[vehicleId]);
+}
+
+async function requestSelectedEta(force = false) {
+  const vehicle = vehicleData[selectedVehicleId];
+  if (!vehicle || !selectedDestination) {
+    etaState = { key: null, value: null, fetchedAt: Date.now() };
+    return;
+  }
+  const key = `${vehicle.vehicle_id}:${Number(selectedDestination.lat).toFixed(5)},${Number(selectedDestination.lng).toFixed(5)}`;
+  if (!force && etaState.key === key && Date.now() - etaState.fetchedAt < 30000) return;
+  etaState = { key, value: null, fetchedAt: Date.now() };
+  try {
+    etaState.value = await fetchMapsEta(
+      `${vehicle.lat},${vehicle.lng}`,
+      `${selectedDestination.lat},${selectedDestination.lng}`,
+      vehicle.vehicle_id
+    );
+  } catch (_) {
+    etaState.value = null;
+  }
+  etaState.fetchedAt = Date.now();
+  renderVehicleCard(vehicleData[selectedVehicleId]);
+}
+
+function renderVehicleCard(vehicle) {
+  const card = document.getElementById('vehicle-card');
+  if (!vehicle) {
+    card.classList.remove('show');
+    return;
+  }
+  card.classList.add('show');
+  const route = routesById[vehicle.route_id] || routesById[currentRouteId];
+  const status = vehicle.status === 'online' ? 'ออนไลน์' : 'ออฟไลน์';
+  const statusEl = document.getElementById('vehicle-status');
+  statusEl.textContent = status;
+  statusEl.className = `status-badge ${vehicle.status === 'online' ? 'status-online' : 'status-offline'}`;
+  document.getElementById('vehicle-updated').textContent = `อัปเดต ${vehicleAge(vehicle)} วินาทีที่แล้ว`;
+  document.getElementById('vehicle-route').textContent = route?.name || vehicle.route_id || '—';
+  document.getElementById('vehicle-plate').textContent = vehicle.plate || vehicle.vehicle_id;
+
+  const eta = etaState.value;
+  document.getElementById('vehicle-eta').textContent = formatMinutes(eta?.eta_min);
+  document.getElementById('vehicle-distance').textContent = formatDistanceMeters(eta?.distance_m);
+  const seatStat = document.getElementById('vehicle-seat-stat');
+  if (vehicle.seats_available != null || vehicle.seat_count != null) {
+    seatStat.style.display = '';
+    document.getElementById('vehicle-seats').textContent = vehicle.seats_available ?? vehicle.seat_count;
+  } else {
+    seatStat.style.display = 'none';
+  }
+  const nextStop = findNextStop(vehicle, route);
+  document.getElementById('vehicle-next-stop').textContent = nextStop ? `${nextStop.name} • ${formatMinutes(eta?.eta_min)}` : '—';
+}
+
+function findNextStop(vehicle, route) {
+  const stops = directionStops(route);
+  if (!stops.length || !vehicle) return null;
+  return stops
+    .map(stop => ({ stop, distance: haversineKm(vehicle.lat, vehicle.lng, stop.lat, stop.lng) }))
+    .sort((a, b) => a.distance - b.distance)[0]?.stop || null;
+}
+
+function vehicleAge(vehicle) {
+  const now = serverClock.serverTime + (performance.now() - serverClock.perfAt) / 1000;
+  return Math.max(0, Math.floor(now - (vehicle?.last_seen || 0)));
+}
+
+function safeId(value) {
+  return String(value).replace(/[^\wก-๙-]/g, '-');
+}
+
+function toggleMeshOverlay() {
+  if (!window.MeshOverlay) return;
+  const enabled = window.MeshOverlay.toggle();
+  document.getElementById('mesh-toggle-label').textContent = enabled ? 'Mesh ON' : 'Mesh';
+  if (enabled) {
+    fetch('/api/v1/network').then(response => response.json()).then(data => {
+      const badge = document.getElementById('mesh-mode-badge');
+      badge.textContent = data.mode || 'waiting';
+      badge.style.display = 'inline-flex';
+    }).catch(() => {});
+  } else {
+    document.getElementById('mesh-mode-badge').style.display = 'none';
   }
 }
-
-async function requestSelectedEta(){
-  const vehicle=vehicleData[selectedVehicleId];
-  if(!userLocation || !isUsableVehicle(vehicle)){ etaState={key:null,value:null,fetchedAt:Date.now()}; renderInfoCard(vehicle); return; }
-  const key=`${vehicle.vehicle_id}:${userLocation[0].toFixed(5)},${userLocation[1].toFixed(5)}`;
-  if(etaState.key===key && Date.now()-etaState.fetchedAt<30000) return;
-  etaState={key,value:null,fetchedAt:Date.now()}; renderInfoCard(vehicle);
-  try{
-    const params=new URLSearchParams({vehicle_id:vehicle.vehicle_id,destination:`${userLocation[0]},${userLocation[1]}`});
-    const response=await fetch(`/api/v1/eta?${params}`,{headers:{'X-Client-Session':getClientSession()}});
-    etaState.value=response.ok?await response.json():null;
-  }catch(_){ etaState.value=null; }
-  etaState.fetchedAt=Date.now(); renderInfoCard(vehicleData[selectedVehicleId]);
-}
-
-function renderInfoCard(vehicle){
-  if(!vehicle){ setText('card-vid','ยังไม่มีรถออนไลน์'); setText('eta-val','กำลังคำนวณเวลา'); return; }
-  const status=vehicle.status || 'offline';
-  setText('card-vid',vehicle.vehicle_id); setText('card-dir',`มุ่งหน้า: ${vehicle.direction || '—'}`);
-  setText('v-speed',vehicle.speed ?? '--'); setText('v-battery',vehicle.battery ?? '--');
-  setText('v-gpsfix',vehicle.gps_fix?'FIX':'NO FIX');
-  setText('status-tx',status); setText('status-tx2',status);
-  const timestamp=vehicleAge(vehicle); setText('last-ts',`อัปเดต ${timestamp} วินาทีที่แล้ว`);
-  const eta=etaState.value;
-  if(eta?.eta_min != null){ setText('eta-val',`${eta.eta_min} นาที`); setText('eta-dist',eta.distance_m<1000?`${eta.distance_m} ม.`:`${(eta.distance_m/1000).toFixed(1)} กม.`); setText('eta-note',eta.cached?'Google Maps (cached)':'Google Maps Traffic ETA'); }
-  else { setText('eta-val','กำลังคำนวณเวลา'); setText('eta-dist','--'); setText('eta-note',status==='offline'||!vehicle.gps_fix?'รอสัญญาณตำแหน่งรถ':'เลือกจุดหมายเพื่อดู ETA'); }
-  setText('collapsed-title',`🚐 ${vehicle.vehicle_id}`); setText('collapsed-eta',eta?.eta_min!=null?`${eta.eta_min} นาที`:'กำลังคำนวณเวลา');
-  const raw=document.getElementById('advanced-data'); if(raw) raw.textContent=JSON.stringify(vehicle,null,2);
-}
-
-function smoothMoveMarker(marker,to,duration=2000){
-  const from=marker.position; if(!from) { marker.position=to; return; }
-  const start=performance.now();
-  const frame=now=>{ const p=Math.min(1,(now-start)/duration); marker.position={lat:from.lat+(to.lat-from.lat)*p,lng:from.lng+(to.lng-from.lng)*p}; if(p<1)requestAnimationFrame(frame); };
-  requestAnimationFrame(frame);
-}
-
-function ensureAdvancedView(){
-  const panel=document.createElement('aside'); panel.id='advanced-panel'; panel.style.cssText='display:none;position:absolute;z-index:700;top:60px;right:10px;width:min(340px,calc(100% - 20px));max-height:70vh;overflow:auto;background:#202124;color:#fff;border-radius:12px;padding:12px;box-shadow:0 8px 32px #0006;font:12px monospace;';
-  panel.innerHTML='<button type="button" style="float:right" onclick="document.getElementById(\'advanced-panel\').style.display=\'none\'">×</button><strong>Advanced View</strong><pre id="advanced-data" style="white-space:pre-wrap;margin-top:12px"></pre>';
-  document.body.appendChild(panel);
-  const button=document.createElement('button'); button.type='button'; button.textContent='Advanced'; button.className='loc-btn'; button.style.marginTop='8px'; button.onclick=()=>{ panel.style.display=panel.style.display==='none'?'block':'none'; };
-  document.querySelector('#left-panel .panel-card')?.appendChild(button);
-}
-
-// ── Boot ──────────────────────────────────────────────────────
-initMap();

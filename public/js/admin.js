@@ -48,11 +48,11 @@ function applyConfigToUI(cfg) {
   if (cfg.demoMode) {
     light.classList.add('on');
     title.textContent     = 'Digital Twin กำลังทำงาน';
-    sub.textContent       = `TWIN_01 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
-    badge.textContent     = 'TWIN';
+    sub.textContent       = `DEMO_1, DEMO_2, DEMO_3 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
+    badge.textContent     = 'DEMO';
     badge.className       = 'nav-badge';
     if (modeBadge) { modeBadge.textContent = 'DEMO ACTIVE — simulated data'; modeBadge.classList.add('active'); }
-    statusSub.textContent = 'TWIN_01 กำลังวิ่ง';
+    statusSub.textContent = 'DEMO_1–3 กำลังวิ่ง';
   } else {
     light.classList.remove('on');
     title.textContent     = 'Digital Twin ปิดอยู่';
@@ -96,25 +96,25 @@ function changeVehicleCount(d) {
 }
 
 async function startDemo() {
-  addLog('info', 'เริ่ม Digital Twin (TWIN_01)...');
+  addLog('info', 'เริ่ม Demo Fleet (DEMO_1–3)...');
   try {
     const response = await authFetch('/api/demo/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vehicles: 1 }),
+      body: JSON.stringify({ vehicles: 3 }),
     });
     const r = response ? await response.json() : {};
-    addLog('ok', `Twin started: ${r.ids?.join(', ')}`);
+    addLog('ok', `Demo started: ${r.ids?.join(', ')}`);
     await syncConfig();
     return r;
   } catch (e) { addLog('err', e.message); throw e; }
 }
 
 async function stopDemo() {
-  addLog('warn', 'หยุด Digital Twin...');
+  addLog('warn', 'หยุด Demo Fleet...');
   try {
     await authFetch('/api/demo/stop', { method: 'POST' });
-    addLog('ok', 'Twin stopped — กลับเป็นโหมด Real');
+    addLog('ok', 'Demo stopped — กลับเป็นโหมด Real');
     await syncConfig();
   } catch (e) { addLog('err', e.message); throw e; }
 }
@@ -173,7 +173,7 @@ async function refreshStatus() {
     );
 
     if (demo.running) {
-      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Twin: TWIN_01 วิ่งอยู่</span>`);
+      pills.push(`<span class="status-pill pill-demo"><span class="pill-dot"></span>Demo Fleet: ${demo.ids?.join(', ') || 'DEMO_1–3'}</span>`);
     }
 
     for (const id of (demo.ids || [])) {

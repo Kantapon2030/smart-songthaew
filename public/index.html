@@ -2,239 +2,326 @@
 <html lang="th">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"/>
-  <title>สองแถวสมาร์ท — ติดตามสด</title>
-  <meta name="description" content="ติดตามรถสองแถวสมาร์ทแบบเรียลไทม์ด้วย Google Maps"/>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Smart Songthaew — หน้าหลัก</title>
+  <meta name="description" content="ติดตามรถสองแถวแบบเรียลไทม์ วางแผนเส้นทาง และดูเวลาเดินทาง"/>
+  <link rel="stylesheet" href="/css/style.css"/>
   <style>
-    :root{
-      --g-blue:#4285F4;--g-blue-light:#E8F0FE;--g-blue-dark:#1A73E8;
-      --g-green:#34A853;--g-green-light:#E6F4EA;
-      --g-yellow:#FBBC04;--g-yellow-light:#FEF7E0;
-      --g-red:#EA4335;--g-red-light:#FCE8E6;
-      --g-purple:#7C3AED;--g-purple-light:#F3E8FD;
-      --text:#202124;--text-2:#5F6368;--text-3:#9AA0A6;
-      --bg:#FFFFFF;--bg-2:#F8F9FA;--border:#DADCE0;
-      --shadow-sm:0 1px 3px rgba(60,64,67,.15);--shadow-md:0 4px 16px rgba(60,64,67,.12);--shadow-lg:0 8px 32px rgba(60,64,67,.15);
+    html,
+    body {
+      height: 100%;
+      overflow: hidden;
     }
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    html,body{height:100dvh;overflow:hidden;font-family:Inter,Sarabun,sans-serif;color:var(--text);}
-    #map{position:absolute;inset:0;z-index:1;background:var(--bg-2);}
-    #no-vehicles-notice{display:none;position:absolute;z-index:20;top:68px;left:50%;transform:translateX(-50%);padding:7px 12px;border-radius:99px;background:rgba(255,255,255,.94);box-shadow:0 2px 8px #0002;color:var(--text-2);font-size:.75rem;}
 
-    @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
-    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-
-    /* ═══ TOP BAR ═══ */
-    #topbar{
-      position:absolute;top:0;left:0;right:0;z-index:500;height:48px;
-      background:var(--bg);border-bottom:1px solid var(--border);
-      display:flex;align-items:center;padding:0 14px;gap:8px;box-shadow:var(--shadow-sm);
+    .passenger-page {
+      height: 100%;
+      background: var(--color-background);
     }
-    .brand{display:flex;align-items:center;gap:8px;}
-    .brand-icon{width:30px;height:30px;border-radius:8px;background:var(--g-blue);color:#fff;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;}
-    .brand-name{font-size:.82rem;font-weight:700;color:var(--text);white-space:nowrap;}
-    .brand-sub{font-size:.55rem;color:var(--text-3);font-weight:500;}
-    .brand-count{font-size:.62rem;color:var(--text-3);}
-    .brand-count b{color:var(--g-blue);font-weight:700;}
-    .top-sep{flex:1;}
 
-    .tb-chip{display:flex;align-items:center;gap:4px;padding:4px 10px;border-radius:20px;
-      background:var(--bg-2);border:1px solid var(--border);font-size:.65rem;font-weight:600;color:var(--text-2);white-space:nowrap;}
-    .tb-chip .dot{width:6px;height:6px;border-radius:50%;background:var(--g-green);animation:pulse 1.5s infinite;}
-    .tb-chip.demo{background:var(--g-purple-light);border-color:#D1B3FF;color:var(--g-purple);}
-    .tb-chip.demo .dot{background:var(--g-purple);}
-    .tb-link{text-decoration:none;padding:4px 12px;border-radius:20px;background:var(--bg-2);border:1px solid var(--border);font-size:.65rem;font-weight:600;color:var(--text-2);transition:.15s;white-space:nowrap;}
-    .tb-link:hover{background:var(--g-blue-light);color:var(--g-blue);border-color:var(--g-blue);}
-    .tb-link.dash{background:var(--g-blue-light);color:var(--g-blue);border-color:#C6D9F7;}
-    .tb-link.admin{background:var(--g-red-light);color:var(--g-red);border-color:#F5C6C0;}
-
-    /* ═══ LEFT PANEL ═══ */
-    #left-panel{position:absolute;top:56px;left:10px;z-index:500;display:flex;flex-direction:column;gap:8px;width:200px;}
-    .panel-card{background:var(--bg);border:1px solid var(--border);border-radius:12px;padding:10px 12px;box-shadow:var(--shadow-sm);}
-    .pc-label{font-size:.58rem;font-weight:700;color:var(--text-3);letter-spacing:.07em;text-transform:uppercase;margin-bottom:7px;}
-    .loc-row{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:7px;}
-    .loc-btn{display:flex;align-items:center;justify-content:center;gap:4px;padding:6px 4px;border-radius:20px;border:1px solid var(--border);
-      background:var(--bg);color:var(--text-2);font-family:Inter,Sarabun,sans-serif;font-size:.68rem;font-weight:600;cursor:pointer;transition:.15s;}
-    .loc-btn:hover{border-color:var(--g-blue);background:var(--g-blue-light);color:var(--g-blue);}
-    .loc-btn.active{background:var(--g-green-light);border-color:#A8DAB5;color:var(--g-green);}
-
-    /* ═══ BOTTOM PANEL ═══ */
-    #info-panel{position:absolute;bottom:10px;right:10px;z-index:500;width:320px;cursor:pointer;transition:all .3s ease;}
-    .ip-collapsed{display:flex;align-items:center;padding:12px 16px;gap:12px;background:var(--bg);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);}
-    .ip-expanded{padding:16px;background:var(--bg);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow-lg);}
-    #info-panel.expanded{cursor:default;max-height:80vh;overflow-y:auto;}
-    #info-panel.expanded .ip-collapsed{display:none;}
-    #info-panel.expanded .ip-expanded{display:block!important;}
-    #info-panel:not(.expanded) .ip-expanded{display:none!important;}
-
-    .ip-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
-    .ip-vid{font-size:.88rem;font-weight:700;color:var(--text);}
-    .ip-dir{font-size:.62rem;color:var(--text-3);}
-    .status-pill{display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:.6rem;font-weight:700;}
-    .status-pill.online{background:var(--g-green-light);border:1px solid #A8DAB5;color:var(--g-green);}
-    .status-pill.offline{background:var(--g-red-light);border:1px solid #F5C6C0;color:var(--g-red);}
-
-    .stats-row{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:10px;}
-    .stat-b{background:var(--bg-2);border:1px solid var(--border);border-radius:10px;padding:8px 4px;text-align:center;}
-    .stat-ic{font-size:.95rem;margin-bottom:2px;}
-    .stat-v{font-family:'IBM Plex Mono',monospace;font-size:.92rem;font-weight:600;color:var(--g-blue);line-height:1;}
-    .stat-u{font-size:.52rem;color:var(--text-3);}
-    .stat-l{font-size:.55rem;color:var(--text-2);margin-top:1px;}
-    .mini-bar{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:3px;}
-    .mini-fill{height:100%;border-radius:2px;transition:width .5s;}
-
-    .eta-strip{display:flex;align-items:center;gap:8px;background:var(--g-blue-light);border:1px solid #C6D9F7;border-radius:12px;padding:9px 12px;margin-bottom:8px;}
-    .eta-icon{font-size:1rem;flex-shrink:0;}
-    .eta-val{font-size:.95rem;font-weight:800;color:var(--g-blue);}
-    .eta-note{font-size:.58rem;color:var(--text-3);line-height:1.3;}
-    .eta-dist{font-size:.62rem;font-weight:700;color:var(--text-2);background:var(--bg);border:1px solid var(--border);border-radius:20px;padding:2px 8px;margin-left:auto;white-space:nowrap;flex-shrink:0;}
-
-    .ip-footer{display:flex;align-items:center;justify-content:space-between;}
-    .ip-ts{font-family:'IBM Plex Mono',monospace;font-size:.57rem;color:var(--text-3);}
-
-    #offline-banner{display:none;position:absolute;top:56px;left:50%;transform:translateX(-50%);z-index:600;background:var(--g-red-light);border:1px solid #F5C6C0;border-radius:20px;padding:7px 14px;align-items:center;gap:7px;font-size:.75rem;font-weight:700;color:var(--g-red);box-shadow:var(--shadow-md);white-space:nowrap;}
-    #offline-banner.show{display:flex;animation:fadeIn .3s ease;}
-
-    @media(max-width:768px){
-      #topbar{height:52px;padding:0 8px;gap:6px;overflow-x:auto;overflow-y:hidden;white-space:nowrap;}
-      #topbar::-webkit-scrollbar {display:none;}
-      .brand-sub, .brand-count, .top-sep {display:none;}
-      .route-label {display:none;}
-      .tb-link span {display:none;} 
-      .tb-link {font-size:14px;padding:4px 8px;}
-      .brand {flex-shrink:0;}
-      #route-select {max-width:130px;text-overflow:ellipsis;}
-      #left-panel{top:58px;left:8px;width:180px;}
+    #map {
+      position: fixed;
+      inset: 0;
+      z-index: 1;
     }
-    @media(max-width:480px){
-      #left-panel{top:58px;left:8px;width:calc(100% - 16px);max-width:none;}
-      .loc-row {grid-template-columns:1fr 1fr;}
-      .tb-link {display:none;}
-      #info-panel{right:0;left:0;bottom:0;width:auto;padding:0 8px 8px;}
+
+    #navbar-root {
+      position: relative;
+      z-index: 700;
+    }
+
+    .journey-sidebar {
+      position: fixed;
+      z-index: 650;
+      top: 84px;
+      left: 24px;
+      width: 380px;
+      max-height: calc(100dvh - 108px);
+      overflow-y: auto;
+      padding: 18px;
+      background: #fff;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      box-shadow: 0 18px 55px rgba(15, 23, 42, 0.16);
+    }
+
+    .journey-title {
+      margin: 0 0 16px;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 850;
+      letter-spacing: 0;
+    }
+
+    .route-control-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .direction-row,
+    .search-row,
+    .popular-grid,
+    .recommended-list {
+      margin-top: 12px;
+    }
+
+    .popular-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .destination-button {
+      min-height: 58px;
+      justify-content: flex-start;
+      text-align: left;
+      padding: 10px;
+      background: var(--color-background);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      color: var(--color-ink);
+      font-weight: 750;
+    }
+
+    .destination-button.active {
+      border-color: var(--color-primary);
+      background: var(--color-primary-50);
+      color: var(--color-primary);
+    }
+
+    .section-label {
+      margin: 18px 0 8px;
+      font-size: 13px;
+      color: var(--color-muted);
+      font-weight: 800;
+    }
+
+    .recommended-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      background: #fff;
+    }
+
+    .recommended-name {
+      font-weight: 800;
+    }
+
+    .recommended-meta {
+      margin-top: 3px;
+      color: var(--color-muted);
+      font-size: 12px;
+    }
+
+    .vehicle-card {
+      position: fixed;
+      right: 24px;
+      bottom: 24px;
+      z-index: 650;
+      width: 360px;
+      display: none;
+      overflow: hidden;
+    }
+
+    .vehicle-card.show {
+      display: block;
+    }
+
+    .vehicle-hero {
+      display: grid;
+      grid-template-columns: 74px 1fr;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .vehicle-image {
+      width: 74px;
+      height: 58px;
+      border-radius: var(--radius-control);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, var(--color-primary-50), #fff);
+      border: 1px solid var(--color-primary-100);
+      color: var(--color-primary);
+    }
+
+    .vehicle-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 14px;
+    }
+
+    .vehicle-stat {
+      padding: 10px 8px;
+      text-align: center;
+      background: var(--color-background);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+    }
+
+    .vehicle-stat strong {
+      display: block;
+      font-size: 17px;
+      line-height: 1;
+    }
+
+    .vehicle-stat span {
+      display: block;
+      margin-top: 5px;
+      color: var(--color-muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .next-stop {
+      margin-top: 14px;
+      padding: 12px;
+      background: var(--color-primary-50);
+      border: 1px solid var(--color-primary-100);
+      border-radius: var(--radius-control);
+    }
+
+    #mesh-toggle-wrap {
+      position: fixed;
+      right: 24px;
+      bottom: 410px;
+      z-index: 620;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      background: rgba(255, 255, 255, 0.94);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      box-shadow: var(--shadow-card);
+      color: var(--color-muted);
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    #no-vehicles-notice {
+      position: fixed;
+      top: 84px;
+      left: 50%;
+      z-index: 640;
+      display: none;
+      transform: translateX(-50%);
+      padding: 8px 12px;
+      background: #fff;
+      border: 1px solid var(--color-border);
+      border-radius: 999px;
+      box-shadow: var(--shadow-card);
+      color: var(--color-muted);
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    @media (max-width: 860px) {
+      .journey-sidebar {
+        top: auto;
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+        width: auto;
+        max-height: 52dvh;
+      }
+
+      .vehicle-card {
+        right: 12px;
+        left: 12px;
+        bottom: calc(52dvh + 24px);
+        width: auto;
+      }
+
+      #mesh-toggle-wrap {
+        right: 12px;
+        bottom: calc(52dvh + 210px);
+      }
+    }
+
+    @media (max-width: 560px) {
+      .popular-grid,
+      .vehicle-stats {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
-<body>
+<body class="passenger-page" data-page="home">
+  <div id="map" class="map-canvas"></div>
+  <div id="navbar-root"></div>
+  <div id="no-vehicles-notice">ยังไม่มีรถออนไลน์ในเส้นทางนี้</div>
 
-<div id="map"></div>
-<div id="no-vehicles-notice">No vehicles currently active</div>
-<div id="offline-banner">📡 รถ Offline <span id="offline-secs"></span></div>
-
-<!-- TOP BAR -->
-<div id="topbar">
-  <div class="brand">
-    <div class="brand-icon">🚐</div>
-    <div>
-      <div class="brand-name">สองแถวสมาร์ท</div>
-      <div class="brand-sub">นครศรีธรรมราช • วงเวียนนาคร ↔ โรงเรียนพรหมคีรี</div>
-      <div class="brand-count">ออนไลน์ <b id="total-active">0</b> คัน</div>
+  <aside class="journey-sidebar" aria-label="วางแผนการเดินทาง">
+    <h1 class="journey-title">วางแผนการเดินทาง</h1>
+    <div class="route-control-row">
+      <select id="route-select" class="select-control" aria-label="เลือกเส้นทาง"></select>
+      <button id="swap-route-btn" class="button ghost" type="button">เปลี่ยนสาย</button>
     </div>
-  </div>
-  <div class="top-sep"></div>
-  <div style="display:flex;align-items:center;gap:4px;margin-right:10px;">
-    <span class="route-label" style="font-size:.65rem;color:var(--text-3);">เส้นทาง:</span>
-    <select id="route-select" onchange="changeRoute(this.value)" style="padding:4px 10px;border-radius:20px;border:1px solid var(--border);background:var(--bg);font-family:Inter,Sarabun,sans-serif;font-size:.75rem;cursor:pointer;">
-      <option value="">กำลังโหลด...</option>
-    </select>
-  </div>
-      <div class="tb-chip" id="live-chip"><span class="dot"></span> LIVE</div>
-  <div class="tb-chip demo" id="demo-chip" style="display:none;">🎬 Digital Twin</div>
-  <a href="/dashboard.html" class="tb-link dash">📊 Dashboard</a>
-  <a href="/admin.html" class="tb-link admin">⚙ Admin</a>
-</div>
 
-<!-- LEFT PANEL -->
-<div id="left-panel">
-  <div class="panel-card">
-    <div class="pc-label">📍 เส้นทางการเดินทาง</div>
-    <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px;">
-      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-        <span style="font-size:12px;flex-shrink:0;">จุดขึ้น:</span>
-        <select id="origin-select" onchange="updateOdSelection()" style="flex:1;min-width:0;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;"></select>
+    <div class="direction-row segmented" role="group" aria-label="ทิศทาง">
+      <button id="direction-outbound" class="active" type="button" data-direction="outbound">ขาไป</button>
+      <button id="direction-inbound" type="button" data-direction="inbound">ขากลับ</button>
+    </div>
+
+    <div class="search-row">
+      <input id="destination-search" class="search-control" type="search" placeholder="ค้นหาปลายทาง สถานที่ หรือสำคัญ"/>
+    </div>
+
+    <div class="section-label">ปลายทางยอดนิยม</div>
+    <div id="popular-destinations" class="popular-grid"></div>
+
+    <button id="show-route-btn" class="button primary" type="button" style="width:100%;margin-top:14px;">ดูเส้นทางและเวลาเดินทาง</button>
+
+    <div class="section-label">จุดจอดแนะนำ</div>
+    <div id="recommended-stops" class="recommended-list panel-list">
+      <div class="empty-state">กำลังโหลดจุดจอด...</div>
+    </div>
+  </aside>
+
+  <section id="vehicle-card" class="vehicle-card card" aria-live="polite">
+    <div class="card-header">
+      <div>
+        <h2 class="card-title">รถที่ใกล้คุณที่สุด</h2>
+        <div id="vehicle-updated" class="card-subtitle">อัปเดต —</div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;min-width:0;">
-        <span style="font-size:12px;flex-shrink:0;">จุดลง:</span>
-        <select id="dest-select" onchange="updateOdSelection()" style="flex:1;min-width:0;padding:4px 6px;border-radius:8px;border:1px solid var(--border);font-family:Inter,Sarabun,sans-serif;font-size:11px;text-overflow:ellipsis;white-space:nowrap;overflow:hidden;"></select>
+      <span id="vehicle-status" class="status-badge status-offline">—</span>
+    </div>
+    <div class="card-body">
+      <div class="vehicle-hero">
+        <div class="vehicle-image" id="vehicle-image"></div>
+        <div>
+          <div id="vehicle-route" class="item-title">—</div>
+          <div id="vehicle-plate" class="item-meta">—</div>
+        </div>
       </div>
-    </div>
-    <div class="pc-label" style="margin-top:9px;margin-bottom:0;">📍 ตำแหน่ง</div>
-    <div class="loc-row">
-      <button class="loc-btn" id="btn-gps" onclick="useMyLocation()">🎯 ตำแหน่งฉัน</button>
-      <button class="loc-btn" id="btn-pin" onclick="togglePinMode()">📌 วางหมุด</button>
-    </div>
-  </div>
-</div>
-
-<!-- BOTTOM PANEL -->
-<div id="info-panel" onclick="toggleBottomPanel()">
-  <div id="ip-collapsed" class="ip-collapsed">
-    <div style="display:flex;align-items:center;gap:12px;flex:1;min-width:0;">
-      <div style="font-size:1.2rem;">🚐</div>
-      <div style="flex:1;min-width:0;">
-        <div id="collapsed-title" style="font-weight:600;font-size:.85rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">รอข้อมูล...</div>
-        <div id="collapsed-eta" style="font-size:.75rem;color:var(--g-green);font-weight:500;">กำลังคำนวณ ETA...</div>
+      <div class="vehicle-stats">
+        <div class="vehicle-stat"><strong id="vehicle-eta">—</strong><span>ETA</span></div>
+        <div class="vehicle-stat"><strong id="vehicle-distance">—</strong><span>ระยะทาง</span></div>
+        <div class="vehicle-stat" id="vehicle-seat-stat"><strong id="vehicle-seats">—</strong><span>ที่นั่ง</span></div>
+      </div>
+      <div class="next-stop">
+        <div class="item-meta">จุดจอดถัดไป</div>
+        <div id="vehicle-next-stop" class="item-title">—</div>
       </div>
     </div>
-    <div style="display:flex;align-items:center;gap:6px;font-size:.7rem;color:var(--text-3);">
-      <span>↑ ดูรายละเอียด</span><span style="font-size:1rem;">⌄</span>
-    </div>
-  </div>
+  </section>
 
-  <div id="ip-expanded" class="ip-expanded" style="display:none;" onclick="event.stopPropagation();">
-    <div class="ip-head">
-      <div><div class="ip-vid" id="card-vid">สองแถว</div><div class="ip-dir" id="card-dir">มุ่งหน้า: —</div></div>
-      <div class="status-pill online" id="status-pill"><span>●</span><span id="status-tx">Online</span></div>
-    </div>
-    <div class="stats-row">
-      <div class="stat-b"><div class="stat-ic">🚀</div><div class="stat-v"><span id="v-speed">--</span><span class="stat-u">km/h</span></div><div class="stat-l">ความเร็ว</div></div>
-      <div class="stat-b"><div class="stat-ic">🔋</div><div class="stat-v"><span id="v-battery">--</span><span class="stat-u">%</span></div><div class="stat-l">แบต</div><div class="mini-bar"><div class="mini-fill" id="bat-bar" style="width:0%"></div></div></div>
-      <div class="stat-b"><div class="stat-ic">📡</div><div class="stat-v" id="v-gpsfix" style="font-size:.72rem;color:var(--g-green)">FIX</div><div class="stat-l">GPS Fix</div></div>
-    </div>
-    <div class="eta-strip">
-      <div class="eta-icon">🕐</div>
-      <div style="flex:1;min-width:0;">
-        <div style="font-size:.58rem;color:var(--text-3);">Google Maps Traffic ETA</div>
-        <div class="eta-val" id="eta-val">กำลังคำนวณ…</div>
-        <div class="eta-note" id="eta-note">อ้างอิงจาก Google Distance Matrix</div>
-      </div>
-      <div class="eta-dist" id="eta-dist">-- กม.</div>
-    </div>
-    <div class="ip-footer">
-      <div class="status-pill online" id="status-pill2"><span>●</span><span id="status-tx2">Online</span></div>
-      <span class="ip-ts" id="last-ts">อัปเดต: --</span>
-      <button onclick="toggleBottomPanel()" style="margin-left:auto;padding:5px 12px;border:1px solid var(--border);border-radius:20px;background:var(--bg);font-family:Inter,Sarabun,sans-serif;font-size:.7rem;cursor:pointer;color:var(--text-2);">↓ ปิด</button>
-    </div>
-  </div>
-</div>
+  <button id="mesh-toggle-wrap" type="button">
+    <span id="mesh-toggle-icon" aria-hidden="true"></span>
+    <span id="mesh-toggle-label">Mesh</span>
+    <span id="mesh-mode-badge" class="small-badge status-warning" style="display:none;">waiting</span>
+  </button>
 
-<!-- VIBE Mesh Overlay Toggle (advanced/development mode) -->
-<div id="mesh-toggle-wrap" style="position:absolute;bottom:90px;right:12px;z-index:10;background:rgba(255,255,255,0.95);border-radius:8px;box-shadow:0 2px 6px rgba(0,0,0,0.15);padding:6px 10px;display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;" onclick="toggleMeshOverlay()">
-  <span id="mesh-toggle-icon" style="font-size:16px">Mesh</span>
-  <span id="mesh-toggle-label" style="color:#444;user-select:none">Mesh</span>
-  <span id="mesh-mode-badge" style="display:none;font-size:10px;background:#fef3c7;color:#92400e;padding:1px 6px;border-radius:99px">estimated</span>
-</div>
-
-<script src="/js/shared.js"></script>
-<script src="/js/meshOverlay.js"></script>
-<script src="/js/app.js"></script>
-<script>
-function toggleMeshOverlay() {
-  if (!window.MeshOverlay) return;
-  const enabled = window.MeshOverlay.toggle();
-  document.getElementById('mesh-toggle-label').textContent = enabled ? 'Mesh ON' : 'Mesh';
-  document.getElementById('mesh-toggle-wrap').style.background =
-    enabled ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.95)';
-  if (enabled) {
-    fetch('/api/v1/network').then(response => response.json()).then(data => {
-      const badge = document.getElementById('mesh-mode-badge');
-      badge.textContent = data.mode;
-      badge.style.display = 'inline';
-    }).catch(() => {});
-  } else {
-    document.getElementById('mesh-mode-badge').style.display = 'none';
-  }
-}
-</script>
+  <script src="/js/shared.js"></script>
+  <script src="/js/meshOverlay.js"></script>
+  <script src="/js/app.js"></script>
 </body>
 </html>

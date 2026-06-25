@@ -1002,7 +1002,7 @@ app.get('/api/config', async (req, res) => {
     // defaults
     return res.json({
       demoMode:       cfg.demoMode       ?? false,
-      demoVehicles:   cfg.demoVehicles   ?? 2,
+      demoVehicles:   cfg.demoVehicles   ?? 3,
       routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
       offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 30) ? cfg.offlineTimeout : 30,
       announcement:   cfg.announcement  ?? '',
@@ -1025,166 +1025,147 @@ app.post('/api/config', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ============================================================
-//  DIGITAL TWIN — Single Vehicle (TWIN_01) Simulation
-//  POST /api/demo/start   ← เริ่ม Twin
-//  POST /api/demo/stop    ← หยุด Twin
-//  POST /api/demo/speed   ← ปรับความเร็ว
-//  GET  /api/demo/status  ← สถานะ
-// ============================================================
-let _twinTimer = null;
-let _twinSpeedMultiplier = 1;
-let _twinRouteId = 'unassigned';
-let _twinRoute = [
-  [8.4325,99.9629],[8.4340,99.9430],[8.4370,99.9200],
-  [8.4480,99.9000],[8.4680,99.8820],[8.4900,99.8680],
-  [8.5120,99.8530],[8.5350,99.8380],[8.5580,99.8250],
-  [8.5780,99.8160],
-];
-const _twin = {
-  lat:0, lng:0, speed:0, targetSpeed:35, bearing:0,
-  segIdx:0, segProgress:0, dir:'south', battery:85, stopTicks:0,
-};
-let _twinActive = false;
-
+// Demo fleet simulation
 function bearingCalc(la1,lo1,la2,lo2){
   const dO=(lo2-lo1)*Math.PI/180;
   const y=Math.sin(dO)*Math.cos(la2*Math.PI/180);
   const x=Math.cos(la1*Math.PI/180)*Math.sin(la2*Math.PI/180)-Math.sin(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.cos(dO);
   return((Math.atan2(y,x)*180/Math.PI)+360)%360;
 }
+const DEMO_IDS = ['DEMO_1', 'DEMO_2', 'DEMO_3'];
+let _demoTimer = null;
+let _demoRouteId = 'route_nakhon_phromkhiri';
+let _demoRoute = [
+  [8.4325,99.9629],[8.4340,99.9430],[8.4370,99.9200],[8.4480,99.9000],[8.4680,99.8820],
+  [8.4900,99.8680],[8.5120,99.8530],[8.5350,99.8380],[8.5580,99.8250],[8.5780,99.8160],
+];
+let _demoSpeedMultiplier = 1;
+let _demoVehicles = [];
 
-function initTwin(){
-  const R=_twinRoute;
-  _twin.lat=R[0][0]; _twin.lng=R[0][1];
-  _twin.segIdx=0; _twin.segProgress=0;
-  _twin.dir='south'; _twin.speed=0; _twin.targetSpeed=80;
-  _twin.battery=85; _twin.stopTicks=0;
-  _twin.bearing=bearingCalc(R[0][0],R[0][1],R[1][0],R[1][1]);
-  _twinActive=true;
+function demoPosition(vehicle) {
+  const start = vehicle.forward ? vehicle.segment : _demoRoute.length - 1 - vehicle.segment;
+  const end = vehicle.forward ? Math.min(start + 1, _demoRoute.length - 1) : Math.max(start - 1, 0);
+  const a = _demoRoute[start], b = _demoRoute[end];
+  return {
+    lat: a[0] + (b[0] - a[0]) * vehicle.progress,
+    lng: a[1] + (b[1] - a[1]) * vehicle.progress,
+    bearing: bearingCalc(a[0], a[1], b[0], b[1])
+  };
 }
 
-async function twinTick(){
-  if(!_twinActive) return;
-  if (!await getDemoMode()) {
-    clearInterval(_twinTimer); _twinTimer = null; _twinActive = false;
-    await db.ref('fleet/TWIN_01').remove();
-    return;
-  }
-  const R=_twinRoute;
-  const v=_twin;
-  const today=todayStr(), hour=new Date().getHours();
-
-  // Speed ramp (Up to 100km/h, less stops)
-  if(v.stopTicks>0){v.stopTicks--;v.speed=0;}
-  else{
-    // โอกาสหยุดรถน้อยลงมาก (0.2%)
-    if(Math.random()<0.002){v.stopTicks=1+Math.floor(Math.random()*2);v.targetSpeed=0;}
-    // ปรับความเร็วเป้าหมายระหว่าง 60-100 km/h
-    else if(Math.random()<0.05) v.targetSpeed=60+Math.floor(Math.random()*40);
-    
-    // อัตราเร่ง/เบรก
-    if(v.speed<v.targetSpeed) v.speed=Math.min(v.speed+3,v.targetSpeed);
-    else if(v.speed>v.targetSpeed) v.speed=Math.max(v.speed-3,v.targetSpeed);
-  }
-
-  // Move along segments
-  if(v.speed>0 && R.length>=2){
-    const stepDeg=(v.speed/3600)/111*2*_twinSpeedMultiplier;
-    let remaining=stepDeg;
-    while(remaining>0 && v.segIdx<R.length-1){
-      const s=v.dir==='south'?v.segIdx:R.length-1-v.segIdx;
-      const e=v.dir==='south'?v.segIdx+1:R.length-2-v.segIdx;
-      if(s<0||s>=R.length||e<0||e>=R.length){v.segIdx=0;break;}
-      const p0=R[s],p1=R[e];
-      const dLat=p1[0]-p0[0],dLng=p1[1]-p0[1];
-      const segLen=Math.sqrt(dLat*dLat+dLng*dLng);
-      if(segLen<1e-9){v.segIdx++;continue;}
-      const left=segLen*(1-v.segProgress);
-      if(remaining>=left){
-        remaining-=left; v.segIdx++; v.segProgress=0;
-        if(v.segIdx>=R.length-1){v.segIdx=0;v.dir=v.dir==='south'?'north':'south';}
-      }else{
-        v.segProgress+=remaining/segLen; remaining=0;
-      }
+function buildVehiclePairs(nodes) {
+  const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
+  const pairs = [];
+  for (let i = 0; i < vehicles.length; i++) {
+    for (let j = i + 1; j < vehicles.length; j++) {
+      const distance = haversineDistanceMeters(vehicles[i], vehicles[j]);
+      const distance_m = Math.round(distance);
+      pairs.push({
+        from: vehicles[i].vehicle_id,
+        to: vehicles[j].vehicle_id,
+        distance_m,
+        distance_label: distance_m < 2000 ? `${distance_m} m` : `${(distance_m / 1000).toFixed(2)} km`,
+        status: distance_m < 500 ? 'close' : distance_m < 2000 ? 'near' : distance_m < 10000 ? 'far' : 'distant'
+      });
     }
-    // Interpolate position
-    const si=v.dir==='south'?v.segIdx:R.length-1-v.segIdx;
-    const ei=v.dir==='south'?Math.min(v.segIdx+1,R.length-1):Math.max(R.length-2-v.segIdx,0);
-    const t=v.segProgress;
-    v.lat=R[si][0]+(R[ei][0]-R[si][0])*t;
-    v.lng=R[si][1]+(R[ei][1]-R[si][1])*t;
-    v.bearing=bearingCalc(R[si][0],R[si][1],R[ei][0],R[ei][1]);
   }
+  return pairs;
+}
 
-  if(Math.random()<0.02)v.battery--;
-  if(v.battery<10)v.battery=92;
+function initializeDemoFleet() {
+  const offsets = [0.08, 0.42, 0.76];
+  _demoVehicles = offsets.map((offset, index) => ({
+    id: DEMO_IDS[index],
+    segment: Math.min(_demoRoute.length - 2, Math.floor(offset * (_demoRoute.length - 1))),
+    progress: (offset * (_demoRoute.length - 1)) % 1,
+    forward: index !== 1,
+    speed: [34, 43, 55][index],
+    targetSpeed: [38, 46, 52][index],
+    battery: [93, 86, 79][index]
+  }));
+}
 
-  // Direction label
-  let dirLabel='ปลายทาง';
-  try{
-    const rSnap=await db.ref(`routes/${_twinRouteId}`).once('value');
-    const rInfo=rSnap.val();
-    const stops=rInfo?.stops||[];
-    dirLabel=v.dir==='south'?(stops[stops.length-1]?.name||'ปลายทาง'):(stops[0]?.name||'ต้นทาง');
-  }catch(_){}
+function moveDemoVehicle(vehicle) {
+  vehicle.targetSpeed = Math.max(30, Math.min(60, vehicle.targetSpeed + (Math.random() - 0.5) * 4));
+  vehicle.speed += Math.max(-2, Math.min(2, vehicle.targetSpeed - vehicle.speed));
+  let remaining = ((vehicle.speed * _demoSpeedMultiplier * 2) / 3600) / 111;
+  while (remaining > 0) {
+    const start = vehicle.forward ? vehicle.segment : _demoRoute.length - 1 - vehicle.segment;
+    const end = vehicle.forward ? start + 1 : start - 1;
+    const a = _demoRoute[start], b = _demoRoute[end];
+    const segmentLength = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    const remainingOnSegment = segmentLength * (1 - vehicle.progress);
+    if (remaining < remainingOnSegment) { vehicle.progress += remaining / segmentLength; break; }
+    remaining -= remainingOnSegment;
+    vehicle.segment++;
+    vehicle.progress = 0;
+    if (vehicle.segment >= _demoRoute.length - 1) { vehicle.segment = 0; vehicle.forward = !vehicle.forward; }
+  }
+  vehicle.battery = Math.max(20, Number((vehicle.battery - 0.004 - vehicle.speed * 0.00002).toFixed(3)));
+}
 
-  const ts=Date.now();
-  const data={lat:v.lat,lng:v.lng,speed:v.speed,bearing:v.bearing,battery:v.battery,timestamp:ts,routeId:_twinRouteId,direction:dirLabel,demo:true};
-  const updates={};
-  updates['fleet/TWIN_01/current']=data;
-  updates['fleet/TWIN_01/routeId']=_twinRouteId;   // ← fix: ต้องเขียน routeId ที่ root ด้วยเพื่อให้ API filter ทำงาน
-  updates['fleet/TWIN_01/type']='twin';
-  updates['fleet/TWIN_01/demo']=true;
-  updates[`history/${today}/TWIN_01/${ts}`]=data;
-  updates[`analytics/peak_hours/${today}/TWIN_01/${hour}`]=admin.database.ServerValue.increment(1);
+async function stopDemoFleet() {
+  clearInterval(_demoTimer); _demoTimer = null; _demoVehicles = [];
+  const cleanup = { 'fleet/TWIN_01': null };
+  DEMO_IDS.forEach(id => { cleanup[`fleet/${id}`] = null; });
+  await db.ref().update(cleanup);
+}
+
+async function demoFleetTick() {
+  if (!await getDemoMode()) { await stopDemoFleet(); return; }
+  const timestamp = Date.now();
+  const updates = {};
+  _demoVehicles.forEach(vehicle => {
+    moveDemoVehicle(vehicle);
+    const position = demoPosition(vehicle);
+    const current = { vehicle_id: vehicle.id, ...position, speed: Number(vehicle.speed.toFixed(1)), battery: Number(vehicle.battery.toFixed(1)), timestamp, server_received_at: Math.floor(timestamp / 1000), last_seen: Math.floor(timestamp / 1000), gps_fix: true, routeId: _demoRouteId, route_id: _demoRouteId, direction: vehicle.forward ? 'ไปพรหมคีรี' : 'ไปนครศรีธรรมราช', demo: true, source: 'demo' };
+    updates[`fleet/${vehicle.id}`] = { routeId: _demoRouteId, type: 'demo', demo: true, current };
+    updates[`history/${todayStr()}/${vehicle.id}/${timestamp}`] = current;
+    updates[`analytics/peak_hours/${todayStr()}/${vehicle.id}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+  });
   await db.ref().update(updates);
 }
 
-app.post('/api/demo/start', authMiddleware, async (req,res)=>{
-  const routeId=req.body.routeId||null;
-  try{
-    if(routeId){
-      const snap=await db.ref(`routes/${routeId}`).once('value');
-      const r=snap.val();
-      if(r?.coords?.length>=2){_twinRoute=r.coords;_twinRouteId=routeId;}
-    }else{
-      const snap=await db.ref('routes').limitToFirst(1).once('value');
-      const routes=snap.val()||{};
-      const fid=Object.keys(routes)[0];
-      if(fid&&routes[fid]?.coords?.length>=2){_twinRoute=routes[fid].coords;_twinRouteId=fid;}
-    }
-  }catch(e){console.warn('[TWIN]',e.message);}
+async function startDemoFleet() {
+  const route = (await db.ref('routes/route_nakhon_phromkhiri').once('value')).val();
+  if (route?.coords?.length >= 2) _demoRoute = route.coords;
+  _demoRouteId = 'route_nakhon_phromkhiri';
+  await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
+  initializeDemoFleet();
+  clearInterval(_demoTimer);
+  _demoTimer = setInterval(demoFleetTick, 2000);
+  await demoFleetTick();
+}
 
-  await db.ref('system/config').update({demoMode:true,demoVehicles:1,demoRouteId:_twinRouteId,demoSpeed:_twinSpeedMultiplier,updatedAt:Date.now()});
-  initTwin();
-  clearInterval(_twinTimer);
-  _twinTimer=setInterval(twinTick,2000);
-  console.log(`[TWIN] started on route ${_twinRouteId}`);
-  res.json({ok:true,vehicles:1,routeId:_twinRouteId,ids:['TWIN_01']});
+app.post('/api/demo/start', authMiddleware, async (req,res)=>{
+  try {
+    await startDemoFleet();
+    return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
 });
 
 app.post('/api/demo/speed', authMiddleware, async (req,res)=>{
   const speed=parseFloat(req.body.speed);
   if(!isNaN(speed)&&speed>0&&speed<=10){
-    _twinSpeedMultiplier=speed;
+    _demoSpeedMultiplier=speed;
     await db.ref('system/config').update({demoSpeed:speed,updatedAt:Date.now()});
-    res.json({ok:true,speed});
-  }else res.status(400).json({error:'Invalid speed'});
+    return res.json({ok:true,speed});
+  }
+  res.status(400).json({error:'Invalid speed'});
 });
 
 app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
   await db.ref('system/config').update({demoMode:false,updatedAt:Date.now()});
-  clearInterval(_twinTimer);_twinTimer=null;_twinActive=false;
-  await db.ref('fleet/TWIN_01').remove();
-  console.log('[TWIN] stopped');
-  res.json({ok:true});
+  await stopDemoFleet();
+  return res.json({ok:true});
 });
 
 app.get('/api/demo/status', async (req,res)=>{
   try {
     const demoMode = await getDemoMode();
-    res.json({demoMode,running:demoMode && _twinTimer!==null,vehicles:demoMode && _twinActive?1:0,ids:demoMode && _twinActive?['TWIN_01']:[]});
+    return res.json({demoMode,running:demoMode && _demoTimer!==null,vehicles:demoMode ? DEMO_IDS.length : 0,ids:demoMode ? DEMO_IDS : []});
   } catch (error) {
     res.status(500).json({ error: 'Failed to read demo status' });
   }
@@ -1619,12 +1600,14 @@ app.get('/api/v1/network', async (req, res) => {
       nodes.forEach(node => { delete node._hop; });
     }
 
+    const vehiclePairs = buildVehiclePairs(nodes);
     res.json({
       server_time: Date.now(),
       mode: hasRealMesh ? 'telemetry' : demoMode ? 'estimated' : 'waiting',
       health: calculateMeshHealth([groundStation, ...nodes], links),
       nodes: [groundStation, ...nodes],
       links,
+      vehicle_pairs: vehiclePairs,
       meta: {
         total_vehicles: nodes.length,
         online_vehicles: nodes.filter(node => node.status === 'online').length,

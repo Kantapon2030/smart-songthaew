@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Smart Songthaew — ภาพรวมการปฏิบัติการ</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/css/style.css"/>
+  <style>
+    .operations-shell {
+      display: grid;
+      grid-template-columns: 230px minmax(0, 1fr);
+      min-height: calc(100dvh - var(--nav-height));
+    }
+
+    .ops-sidebar {
+      padding: 18px 14px;
+      border-right: 1px solid var(--color-border);
+      background: #fff;
+    }
+
+    .ops-nav {
+      display: grid;
+      gap: 6px;
+    }
+
+    .ops-nav a {
+      display: flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 12px;
+      border-radius: var(--radius-control);
+      color: var(--color-muted);
+      text-decoration: none;
+      font-weight: 800;
+    }
+
+    .ops-nav a.active,
+    .ops-nav a:hover {
+      color: var(--color-primary);
+      background: var(--color-primary-50);
+    }
+
+    .ops-content {
+      padding: 20px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .ops-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(260px, 0.7fr) 320px;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .ops-right {
+      display: grid;
+      gap: 18px;
+    }
+
+    .chart-box {
+      height: 260px;
+    }
+
+    .route-performance {
+      display: grid;
+      gap: 12px;
+    }
+
+    .vehicle-table-controls {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 1240px) {
+      .ops-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .ops-right {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 880px) {
+      .operations-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .ops-sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--color-border);
+      }
+
+      .ops-nav {
+        display: flex;
+        overflow-x: auto;
+      }
+
+      .ops-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body data-page="operations">
+  <div id="navbar-root"></div>
+  <main class="operations-shell">
+    <aside class="ops-sidebar">
+      <nav class="ops-nav" aria-label="เมนูปฏิบัติการ">
+        <a class="active" href="#overview">ภาพรวม</a>
+        <a href="#live">การติดตามสด</a>
+        <a href="#vehicles">ยานพาหนะ</a>
+        <a href="#routes">เส้นทาง</a>
+        <a href="#performance">ประสิทธิภาพ</a>
+        <a href="#alerts">การแจ้งเตือน</a>
+        <a href="#reports">รายงาน</a>
+        <a href="/admin.html">ตั้งค่า</a>
+      </nav>
+    </aside>
+
+    <section class="ops-content">
+      <section class="metric-grid">
+        <div class="metric-card">
+          <div class="metric-label">ยานพาหนะทั้งหมด</div>
+          <div id="ops-total" class="metric-value">—</div>
+          <div class="metric-sub">จาก /api/fleet</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">ยานพาหนะที่ใช้งานอยู่</div>
+          <div id="ops-online" class="metric-value">—</div>
+          <div class="metric-sub">ออนไลน์ตอนนี้</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">เวลาโดยสารเฉลี่ย (ETA)</div>
+          <div id="ops-eta" class="metric-value">—</div>
+          <div class="metric-sub">คำนวณจากตำแหน่งรถ</div>
+        </div>
+        <div class="metric-card">
+          <div class="metric-label">อัตราตรงเวลา</div>
+          <div id="ops-on-time" class="metric-value">—</div>
+          <div class="metric-sub">จากสถานะรถและ ETA</div>
+        </div>
+      </section>
+
+      <section class="ops-grid">
+        <div class="card">
+          <div class="card-header"><h1 class="card-title">ชั่วโมงที่มีผู้โดยสารหนาแน่น</h1></div>
+          <div class="card-body chart-box"><canvas id="peak-hours-chart"></canvas></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2 class="card-title">ประสิทธิภาพเส้นทาง</h2></div>
+          <div id="route-performance" class="card-body route-performance"></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2 class="card-title">สถานะยานพาหนะ</h2></div>
+          <div class="card-body chart-box"><canvas id="fleet-status-chart"></canvas></div>
+        </div>
+        <aside class="ops-right">
+          <div class="card" id="live">
+            <div class="card-header"><h2 class="card-title">แผนที่เรียลไทม์</h2></div>
+            <div class="card-body"><div id="ops-mini-map" class="mini-map map-canvas"></div></div>
+          </div>
+          <div class="card" id="alerts">
+            <div class="card-header"><h2 class="card-title">การแจ้งเตือน</h2></div>
+            <div id="ops-alerts" class="card-body panel-list"></div>
+          </div>
+          <div class="card" id="announcements">
+            <div class="card-header"><h2 class="card-title">ประกาศจากผู้ดูแลระบบ</h2></div>
+            <div id="ops-announcement" class="card-body"></div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="card" id="vehicles">
+        <div class="card-header">
+          <h2 class="card-title">ยานพาหนะ</h2>
+          <div class="vehicle-table-controls">
+            <input id="vehicle-search" class="search-control" type="search" placeholder="ค้นหาเลขรถหรือเส้นทาง" style="width:220px;"/>
+            <select id="status-filter" class="select-control" style="width:180px;">
+              <option value="all">ทุกสถานะ</option>
+              <option value="online">ใช้งานอยู่</option>
+              <option value="idle">จอด/ไม่ให้บริการ</option>
+              <option value="offline">ออฟไลน์</option>
+              <option value="issue">มีปัญหา</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>เลขรถ</th>
+                <th>สถานะ</th>
+                <th>เส้นทาง</th>
+                <th>แบตเตอรี่</th>
+                <th>อัปเดตล่าสุด</th>
+                <th>แหล่งข้อมูล</th>
+              </tr>
+            </thead>
+            <tbody id="vehicle-table-body"></tbody>
+          </table>
+        </div>
+        <div class="card-body" style="display:flex;justify-content:flex-end;gap:8px;">
+          <button id="ops-prev" class="button ghost" type="button">ก่อนหน้า</button>
+          <button id="ops-next" class="button ghost" type="button">ถัดไป</button>
+        </div>
+      </section>
+      <div id="help" class="sr-only">ช่วยเหลือ</div>
+    </section>
+  </main>
+
+  <script src="/js/shared.js"></script>
+  <script src="/js/operations.js"></script>
+</body>
+</html>

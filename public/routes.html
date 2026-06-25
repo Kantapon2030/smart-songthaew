@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Smart Songthaew — เส้นทาง</title>
+  <link rel="stylesheet" href="/css/style.css"/>
+  <style>
+    .routes-page {
+      min-height: 100dvh;
+    }
+
+    .routes-layout {
+      display: grid;
+      grid-template-columns: 380px minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .routes-panel {
+      position: sticky;
+      top: 88px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .stop-detail-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 18px;
+    }
+
+    .arrival-list {
+      display: grid;
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    .arrival-card {
+      display: grid;
+      grid-template-columns: auto 1fr auto auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      background: #fff;
+    }
+
+    .vertical-stops {
+      position: relative;
+      display: grid;
+      gap: 0;
+      padding-left: 18px;
+    }
+
+    .vertical-stops::before {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 10px;
+      bottom: 10px;
+      width: 2px;
+      background: var(--color-border);
+    }
+
+    .vertical-stop {
+      position: relative;
+      padding: 9px 0 9px 8px;
+      color: var(--color-muted);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .vertical-stop::before {
+      content: "";
+      position: absolute;
+      left: -16px;
+      top: 14px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      border: 3px solid var(--color-border);
+    }
+
+    .vertical-stop.current {
+      color: var(--color-primary);
+    }
+
+    .vertical-stop.current::before {
+      border-color: var(--color-primary);
+      background: var(--color-primary);
+    }
+
+    @media (max-width: 1020px) {
+      .routes-layout,
+      .stop-detail-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .routes-panel {
+        position: static;
+      }
+    }
+  </style>
+</head>
+<body class="routes-page" data-page="routes">
+  <div id="navbar-root"></div>
+  <main class="page-shell">
+    <div class="tabs" role="tablist" aria-label="ค้นหา">
+      <button class="tab active" type="button" data-tab="destination">ค้นหาจุดหมาย</button>
+      <button class="tab" type="button" data-tab="stop">ค้นหาป้าย</button>
+    </div>
+
+    <section class="routes-layout" style="margin-top:18px;">
+      <aside class="routes-panel">
+        <div class="card">
+          <div class="card-body">
+            <input id="stop-search" class="search-control" type="search" placeholder="ค้นหาจุดหมายหรือป้าย"/>
+            <button id="use-location-btn" class="button ghost" type="button" style="width:100%;margin-top:10px;">
+              <span aria-hidden="true" id="location-icon"></span>
+              ใช้ตำแหน่งฉัน
+            </button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <h1 class="card-title">จุดจอดยอดนิยม</h1>
+          </div>
+          <div id="popular-stops" class="card-body panel-list"></div>
+        </div>
+      </aside>
+
+      <section id="stop-detail" class="card">
+        <div class="empty-state">เลือกจุดจอดเพื่อดูรถที่กำลังจะถึง</div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/js/shared.js"></script>
+  <script src="/js/routes.js"></script>
+</body>
+</html>
