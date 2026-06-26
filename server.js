@@ -1035,23 +1035,10 @@ function bearingCalc(la1,lo1,la2,lo2){
 const DEMO_IDS = ['DEMO_1', 'DEMO_2', 'DEMO_3'];
 let _demoTimer = null;
 let _demoRouteId = 'route_nakhon_phromkhiri';
-let _demoRoute = [
-  [8.4325,99.9629],[8.4340,99.9430],[8.4370,99.9200],[8.4480,99.9000],[8.4680,99.8820],
-  [8.4900,99.8680],[8.5120,99.8530],[8.5350,99.8380],[8.5580,99.8250],[8.5780,99.8160],
-];
+let demoRouteCoords = [];
+let _demoRouteCoordFormat = 'unknown';
 let _demoSpeedMultiplier = 1;
-let _demoVehicles = [];
-
-function demoPosition(vehicle) {
-  const start = vehicle.forward ? vehicle.segment : _demoRoute.length - 1 - vehicle.segment;
-  const end = vehicle.forward ? Math.min(start + 1, _demoRoute.length - 1) : Math.max(start - 1, 0);
-  const a = _demoRoute[start], b = _demoRoute[end];
-  return {
-    lat: a[0] + (b[0] - a[0]) * vehicle.progress,
-    lng: a[1] + (b[1] - a[1]) * vehicle.progress,
-    bearing: bearingCalc(a[0], a[1], b[0], b[1])
-  };
-}
+let _demoVehicles = new Map();
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -1073,48 +1060,63 @@ function buildVehiclePairs(nodes) {
 }
 
 function initializeDemoFleet() {
-  const len = _demoRoute.length;
+  const len = demoRouteCoords.length;
   const indices = [
     0,
-    Math.floor((len - 1) / 3),
-    Math.floor((len - 1) * 2 / 3)
+    Math.floor(len / 3),
+    Math.floor((2 * len) / 3)
   ];
-  _demoVehicles = indices.map((idx, index) => {
-    const forward = index !== 1;
-    const segment = forward ? idx : (len - 1 - idx);
-    return {
+  _demoVehicles = new Map(indices.map((idx, index) => [
+    DEMO_IDS[index],
+    {
       id: DEMO_IDS[index],
-      segment: Math.max(0, Math.min(len - 2, segment)),
-      progress: 0,
-      forward,
+      segmentIndex: Math.max(0, Math.min(len - 1, idx)),
       speed: [34, 43, 55][index],
-      targetSpeed: [38, 46, 52][index],
-      battery: [93, 86, 79][index]
-    };
-  });
+      battery: [93, 86, 79][index],
+    }
+  ]));
 }
 
-function moveDemoVehicle(vehicle) {
-  vehicle.targetSpeed = Math.max(30, Math.min(60, vehicle.targetSpeed + (Math.random() - 0.5) * 4));
-  vehicle.speed += Math.max(-2, Math.min(2, vehicle.targetSpeed - vehicle.speed));
-  let remaining = ((vehicle.speed * _demoSpeedMultiplier * 3) / 3600) / 111;
-  while (remaining > 0) {
-    const start = vehicle.forward ? vehicle.segment : _demoRoute.length - 1 - vehicle.segment;
-    const end = vehicle.forward ? start + 1 : start - 1;
-    const a = _demoRoute[start], b = _demoRoute[end];
-    const segmentLength = Math.hypot(b[0] - a[0], b[1] - a[1]);
-    const remainingOnSegment = segmentLength * (1 - vehicle.progress);
-    if (remaining < remainingOnSegment) { vehicle.progress += remaining / segmentLength; break; }
-    remaining -= remainingOnSegment;
-    vehicle.segment++;
-    vehicle.progress = 0;
-    if (vehicle.segment >= _demoRoute.length - 1) { vehicle.segment = 0; vehicle.forward = !vehicle.forward; }
-  }
-  vehicle.battery = Math.max(20, Number((vehicle.battery - 0.004 - vehicle.speed * 0.00002).toFixed(3)));
+function moveDemoVehicle(vehicleId, timestamp, updates) {
+  const vehicle = _demoVehicles.get(vehicleId);
+  if (!vehicle || !demoRouteCoords.length) return null;
+  const currentIndex = vehicle.segmentIndex;
+  const coord = demoRouteCoords[currentIndex];
+  const nextCoord = demoRouteCoords[(currentIndex + 1) % demoRouteCoords.length];
+  const speed = Math.round((30 + Math.random() * 25) * _demoSpeedMultiplier);
+  vehicle.speed = Math.max(30, Math.min(55, speed));
+  vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
+
+  const current = {
+    vehicle_id: vehicleId,
+    lat: coord.lat,
+    lng: coord.lng,
+    speed: vehicle.speed,
+    battery: Number(vehicle.battery.toFixed(1)),
+    bearing: bearingCalc(coord.lat, coord.lng, nextCoord.lat, nextCoord.lng),
+    timestamp,
+    server_received_at: Math.floor(timestamp / 1000),
+    last_seen: Math.floor(timestamp / 1000),
+    gps_fix: true,
+    routeId: _demoRouteId,
+    route_id: _demoRouteId,
+    direction: 'ตามเส้นทางเดโม',
+    demo: true,
+    source: 'demo',
+  };
+
+  updates[`fleet/${vehicleId}/current`] = current;
+  updates[`fleet/${vehicleId}/routeId`] = _demoRouteId;
+  updates[`fleet/${vehicleId}/type`] = 'demo';
+  updates[`fleet/${vehicleId}/demo`] = true;
+  updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
+  updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+  vehicle.segmentIndex = (currentIndex + 1) % demoRouteCoords.length;
+  return current;
 }
 
 async function stopDemoFleet() {
-  clearInterval(_demoTimer); _demoTimer = null; _demoVehicles = [];
+  clearInterval(_demoTimer); _demoTimer = null; _demoVehicles = new Map();
   const cleanup = { 'fleet/TWIN_01': null };
   DEMO_IDS.forEach(id => { cleanup[`fleet/${id}`] = null; });
   await db.ref().update(cleanup);
@@ -1124,21 +1126,59 @@ async function demoFleetTick() {
   if (!await getDemoMode()) { await stopDemoFleet(); return; }
   const timestamp = Date.now();
   const updates = {};
-  _demoVehicles.forEach(vehicle => {
-    moveDemoVehicle(vehicle);
-    const position = demoPosition(vehicle);
-    const current = { vehicle_id: vehicle.id, ...position, speed: Number(vehicle.speed.toFixed(1)), battery: Number(vehicle.battery.toFixed(1)), timestamp, server_received_at: Math.floor(timestamp / 1000), last_seen: Math.floor(timestamp / 1000), gps_fix: true, routeId: _demoRouteId, route_id: _demoRouteId, direction: vehicle.forward ? 'ไปพรหมคีรี' : 'ไปนครศรีธรรมราช', demo: true, source: 'demo' };
-    updates[`fleet/${vehicle.id}`] = { routeId: _demoRouteId, type: 'demo', demo: true, current };
-    updates[`history/${todayStr()}/${vehicle.id}/${timestamp}`] = current;
-    updates[`analytics/peak_hours/${todayStr()}/${vehicle.id}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
-  });
+  DEMO_IDS.forEach(vehicleId => moveDemoVehicle(vehicleId, timestamp, updates));
   await db.ref().update(updates);
 }
 
-async function startDemoFleet() {
-  const route = (await db.ref('routes/route_nakhon_phromkhiri').once('value')).val();
-  if (route?.coords?.length >= 2) _demoRoute = route.coords;
-  _demoRouteId = 'route_nakhon_phromkhiri';
+function normalizeDemoRouteCoords(coords = []) {
+  const normalized = coords.map(point => {
+    if (Array.isArray(point)) return { lat: Number(point[0]), lng: Number(point[1]) };
+    return { lat: Number(point?.lat), lng: Number(point?.lng) };
+  }).filter(point => validLatLng(point.lat, point.lng));
+  const first = coords[0];
+  const format = Array.isArray(first) ? 'array-pair' : first && typeof first === 'object' ? 'object-lat-lng' : 'unknown';
+  return { coords: normalized, format };
+}
+
+function selectDemoRoute(routes, requestedRouteId, configuredRouteId) {
+  const entries = Object.entries(routes || {});
+  const preferredIds = [requestedRouteId, configuredRouteId, _demoRouteId].filter(Boolean);
+  for (const routeId of preferredIds) {
+    const canonical = canonicalRouteId(routeId);
+    const found = entries.find(([id, route]) =>
+      id === routeId ||
+      route.routeId === routeId ||
+      route.route_id === routeId ||
+      canonicalRouteId(id) === canonical ||
+      canonicalRouteId(route.routeId || route.route_id) === canonical
+    );
+    if (found) return found;
+  }
+  return entries.find(([, route]) => Array.isArray(route?.coords) && route.coords.length > 0);
+}
+
+async function startDemoFleet(requestedRouteId = null) {
+  const [routesSnap, configSnap] = await Promise.all([
+    db.ref('routes').once('value'),
+    db.ref('system/config').once('value'),
+  ]);
+  const routes = routesSnap.val() || {};
+  const config = configSnap.val() || {};
+  const selected = selectDemoRoute(routes, requestedRouteId || config.demoRouteId, config.demoRouteId);
+  if (!selected) {
+    console.error('[DEMO] Cannot start: no route with coords found in Firebase routes');
+    throw new Error('No route with coords found for demo');
+  }
+  const [routeKey, route] = selected;
+  const normalized = normalizeDemoRouteCoords(route.coords || []);
+  if (!normalized.coords.length) {
+    console.error(`[DEMO] Cannot start: route ${routeKey} has no valid coords`);
+    throw new Error(`Route ${routeKey} has no valid coords`);
+  }
+  demoRouteCoords = normalized.coords;
+  _demoRouteCoordFormat = normalized.format;
+  _demoRouteId = route.route_id || route.routeId || routeKey;
+  console.log(`[DEMO] route=${_demoRouteId} coords=${demoRouteCoords.length} format=${_demoRouteCoordFormat}`);
   await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
   initializeDemoFleet();
   clearInterval(_demoTimer);
@@ -1148,8 +1188,8 @@ async function startDemoFleet() {
 
 app.post('/api/demo/start', authMiddleware, async (req,res)=>{
   try {
-    await startDemoFleet();
-    return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS });
+    await startDemoFleet(req.body?.routeId || req.body?.route_id || null);
+    return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS, coords: demoRouteCoords.length, coordFormat: _demoRouteCoordFormat });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

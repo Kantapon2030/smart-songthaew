@@ -3,198 +3,234 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Smart Songthaew — VIBE Mesh</title>
+  <title>Smart Songthaew — Dashboard</title>
   <link rel="stylesheet" href="/css/style.css"/>
   <style>
-    .mesh-layout {
+    .dashboard-layout {
       display: grid;
       gap: 18px;
     }
 
-    .mesh-main {
+    .mesh-status-grid {
       display: grid;
-      grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
-      gap: 18px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
     }
 
-    .mesh-bottom {
+    .mesh-status-card {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.55fr);
+      grid-template-columns: auto 1fr;
+      gap: 12px;
+      align-items: center;
+      padding: 16px;
+      background: #fff;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-card);
+    }
+
+    .mesh-status-icon {
+      width: 42px;
+      height: 42px;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      font-weight: 850;
+    }
+
+    .mesh-status-icon.green { color: var(--color-success); background: var(--color-success-50); }
+    .mesh-status-icon.blue { color: var(--color-primary); background: var(--color-primary-50); }
+    .mesh-status-icon.amber { color: var(--color-warning); background: var(--color-warning-50); }
+    .mesh-status-icon.purple { color: #7c3aed; background: #f5f3ff; }
+
+    .mesh-workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
       gap: 18px;
+      align-items: stretch;
     }
 
     .mesh-canvas-wrap {
-      position: relative;
-      min-height: 430px;
-      padding: 18px;
+      min-height: 540px;
+      padding: 16px;
     }
 
     #mesh-graph-canvas {
       width: 100%;
-      height: 390px;
+      height: 500px;
       display: block;
-      background: linear-gradient(180deg, #fff, #f8fafc);
+      background: #fff;
       border: 1px solid var(--color-border);
       border-radius: var(--radius-card);
     }
 
-    .donut {
+    .mesh-side-panel {
+      min-height: 100%;
+    }
+
+    .health-ring {
       --value: 0;
-      width: 58px;
-      height: 58px;
+      width: 48px;
+      height: 48px;
       display: grid;
       place-items: center;
       border-radius: 50%;
-      background: conic-gradient(var(--color-success) calc(var(--value) * 1%), var(--color-soft) 0);
-      font-size: 13px;
+      background: conic-gradient(#7c3aed calc(var(--value) * 1%), var(--color-soft) 0);
+      color: #5b21b6;
+      font-size: 12px;
       font-weight: 850;
     }
 
-    .donut::before {
-      content: "";
-      position: absolute;
+    .distance-pill {
+      display: inline-flex;
+      min-width: 66px;
+      justify-content: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
     }
 
-    .network-details {
-      display: grid;
-      gap: 10px;
-    }
+    .distance-pill.green { color: var(--color-success); background: var(--color-success-50); }
+    .distance-pill.blue { color: var(--color-primary); background: var(--color-primary-50); }
+    .distance-pill.amber { color: var(--color-warning); background: var(--color-warning-50); }
+    .distance-pill.gray { color: var(--color-offline); background: #f3f4f6; }
 
-    .detail-row {
+    .mesh-table-footer {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      padding: 11px 12px;
-      background: var(--color-background);
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-control);
-      font-size: 13px;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 12px 18px;
+      border-top: 1px solid var(--color-border);
     }
 
-    .legend-card {
-      padding: 12px;
-      border: 1px solid var(--color-border);
-      border-radius: var(--radius-card);
-      background: #fff;
+    @media (max-width: 1120px) {
+      .mesh-status-grid,
+      .mesh-workspace {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .mesh-side-panel {
+        grid-column: 1 / -1;
+      }
     }
 
-    @media (max-width: 1080px) {
-      .mesh-main,
-      .mesh-bottom {
+    @media (max-width: 720px) {
+      .mesh-status-grid,
+      .mesh-workspace {
         grid-template-columns: 1fr;
+      }
+
+      .mesh-canvas-wrap {
+        min-height: 380px;
+      }
+
+      #mesh-graph-canvas {
+        height: 360px;
       }
     }
   </style>
 </head>
-<body data-page="mesh">
+<body data-page="dashboard">
   <div id="navbar-root"></div>
-  <main class="page-shell mesh-layout">
-    <section class="metric-grid">
-      <div class="metric-card">
-        <div class="metric-label">รถออนไลน์</div>
-        <div id="mesh-online" class="metric-value">—</div>
-        <div id="mesh-online-sub" class="metric-sub">—</div>
+  <main class="page-shell dashboard-layout">
+    <section class="mesh-status-grid" aria-label="Mesh Network Status">
+      <div class="mesh-status-card">
+        <div class="mesh-status-icon green" id="mesh-online-icon"></div>
+        <div>
+          <div class="metric-label">รถออนไลน์</div>
+          <div id="mesh-online" class="metric-value">—</div>
+          <div id="mesh-online-sub" class="metric-sub">—</div>
+        </div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">สิ่งทั้งหมด</div>
-        <div id="mesh-total-links" class="metric-value">—</div>
-        <div class="metric-sub">total links</div>
+      <div class="mesh-status-card">
+        <div class="mesh-status-icon blue" id="mesh-direct-icon"></div>
+        <div>
+          <div class="metric-label">Direct Links</div>
+          <div id="mesh-direct-links" class="metric-value">—</div>
+          <div id="mesh-direct-sub" class="metric-sub">เชื่อมต่อสถานีฐานโดยตรง</div>
+        </div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">Direct Link</div>
-        <div id="mesh-direct-links" class="metric-value">—</div>
-        <div id="mesh-direct-sub" class="metric-sub">—</div>
+      <div class="mesh-status-card">
+        <div class="mesh-status-icon amber" id="mesh-relay-icon"></div>
+        <div>
+          <div class="metric-label">Relay Links</div>
+          <div id="mesh-relay-links" class="metric-value">—</div>
+          <div id="mesh-relay-sub" class="metric-sub">เชื่อมต่อผ่านรถคันอื่น</div>
+        </div>
       </div>
-      <div class="metric-card">
-        <div class="metric-label">Relay Link</div>
-        <div id="mesh-relay-links" class="metric-value">—</div>
-        <div id="mesh-relay-sub" class="metric-sub">—</div>
-      </div>
-      <div class="metric-card" style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+      <div class="mesh-status-card">
+        <div class="health-ring" id="mesh-health-ring">0</div>
         <div>
           <div class="metric-label">Mesh Health</div>
           <div id="mesh-health" class="metric-value">—</div>
-          <div class="metric-sub">score/100</div>
+          <div id="mesh-updated" class="metric-sub">อัปเดต —</div>
         </div>
-        <div id="mesh-health-donut" class="donut">0</div>
       </div>
     </section>
 
-    <section class="mesh-main">
+    <section class="mesh-workspace">
       <div class="card">
         <div class="card-header">
           <div>
-            <h1 class="card-title">โครงข่าย VIBE Mesh (เรียลไทม์)</h1>
-            <div id="mesh-updated" class="card-subtitle">อัปเดต —</div>
+            <h1 class="card-title">Mesh Network</h1>
+            <div class="card-subtitle">Green direct, orange/red relay, gray offline</div>
           </div>
           <button id="mesh-refresh-btn" class="button ghost" type="button">รีเฟรช</button>
         </div>
         <div class="mesh-canvas-wrap">
-          <canvas id="mesh-graph-canvas" width="900" height="430"></canvas>
-        </div>
-        <div class="card-body legend">
-          <span class="legend-item"><span class="link-swatch" style="border-color:var(--color-success);"></span>Direct Link</span>
-          <span class="legend-item"><span class="link-swatch dashed" style="border-color:var(--color-warning);"></span>Relay Link 1 hop</span>
-          <span class="legend-item"><span class="link-swatch dashed" style="border-color:#fbbf24;"></span>Relay Link 2+ hop</span>
-          <span class="legend-item"><span class="link-swatch dashed" style="border-color:var(--color-primary);"></span>Station link</span>
-          <span class="legend-item"><span id="legend-bus" class="item-icon" style="width:28px;height:28px;"></span>รถ</span>
-          <span class="legend-item"><span id="legend-antenna" class="item-icon" style="width:28px;height:28px;"></span>สถานีฐาน</span>
+          <canvas id="mesh-graph-canvas" width="1100" height="560"></canvas>
         </div>
       </div>
 
-      <div class="card">
+      <aside class="card mesh-side-panel">
         <div class="card-header">
-          <h2 class="card-title">ตำแหน่งรถ (บนแผนที่)</h2>
-        </div>
-        <div class="card-body">
-          <div id="mesh-mini-map" class="mini-map map-canvas"></div>
-          <div class="legend" style="margin-top:12px;">
-            <span class="legend-item"><span class="legend-dot" style="background:var(--color-success);"></span>ออนไลน์</span>
-            <span class="legend-item"><span class="legend-dot" style="background:var(--color-offline);"></span>ออฟไลน์</span>
-            <span class="legend-item"><span id="mesh-map-antenna" class="item-icon" style="width:24px;height:24px;"></span>สถานีฐาน</span>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <section class="mesh-bottom">
-      <div class="card">
-        <div class="card-header">
-          <h2 class="card-title">สถานะการเชื่อมต่อ</h2>
-          <div>
-            <button id="mesh-prev-page" class="button ghost" type="button">ก่อนหน้า</button>
-            <button id="mesh-next-page" class="button ghost" type="button">ถัดไป</button>
-          </div>
+          <h2 class="card-title">ระยะห่างระหว่างรถ</h2>
         </div>
         <div class="table-wrap">
           <table class="data-table">
             <thead>
               <tr>
-                <th>#</th>
-                <th>vehicle_id</th>
-                <th>connected_to</th>
-                <th>distance_m</th>
-                <th>hop</th>
-                <th>status</th>
-                <th>last_seen</th>
+                <th>จาก</th>
+                <th>ถึง</th>
+                <th>ระยะ</th>
+                <th>สถานะ</th>
               </tr>
             </thead>
-            <tbody id="mesh-links-body"></tbody>
+            <tbody id="vehicle-distance-body"></tbody>
           </table>
         </div>
-      </div>
-
-      <aside class="card">
-        <div class="card-header">
-          <h2 class="card-title">รายละเอียดเครือข่าย</h2>
-        </div>
-        <div class="card-body network-details" id="network-details"></div>
-        <div class="card-header">
-          <h2 class="card-title">คำอธิบายลิงก์</h2>
-        </div>
-        <div class="card-body panel-list" id="link-explanations"></div>
       </aside>
+    </section>
+
+    <section class="card">
+      <div class="card-header">
+        <h2 class="card-title">Connectivity Table</h2>
+        <div>
+          <button id="mesh-prev-page" class="button ghost" type="button">ก่อนหน้า</button>
+          <button id="mesh-next-page" class="button ghost" type="button">ถัดไป</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Vehicle</th>
+              <th>เชื่อมกับ</th>
+              <th>ระยะ</th>
+              <th>Hop</th>
+              <th>Link Type</th>
+              <th>สถานะ</th>
+              <th>Last seen</th>
+            </tr>
+          </thead>
+          <tbody id="mesh-links-body"></tbody>
+        </table>
+      </div>
+      <div class="mesh-table-footer">
+        <span id="mesh-page-label" class="metric-sub">—</span>
+      </div>
     </section>
   </main>
 

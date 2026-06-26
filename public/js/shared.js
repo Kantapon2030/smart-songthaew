@@ -261,12 +261,14 @@ function chartBarSvg(size = 18, color = 'currentColor') {
 }
 
 function formatDistanceMeters(meters) {
+  if (meters == null) return '—';
   const value = Number(meters);
   if (!Number.isFinite(value)) return '—';
   return value >= 1000 ? `${(value / 1000).toFixed(1)} กม.` : `${Math.round(value)} ม.`;
 }
 
 function formatDistanceKm(km) {
+  if (km == null) return '—';
   const value = Number(km);
   if (!Number.isFinite(value)) return '—';
   return value >= 1 ? `${value.toFixed(1)} กม.` : `${Math.round(value * 1000)} ม.`;
@@ -450,10 +452,10 @@ function renderSharedNavbar(options = {}) {
       <div class="nav-links" role="list">
         ${navLinkEl('/', 'หน้าหลัก', 'home', active)}
         ${navLinkEl('/routes.html', 'เส้นทาง', 'routes', active)}
+        ${navLinkEl('/dashboard.html', 'Dashboard', 'dashboard', active)}
         <button class="nav-link" id="nav-btn-announcements" type="button" aria-haspopup="dialog">ประกาศ</button>
         ${navLinkEl('/tracking.html', 'ประวัติการเดินทาง', 'tracking', active)}
         <button class="nav-link" id="nav-btn-help" type="button" aria-haspopup="dialog">ช่วยเหลือ</button>
-        ${options.mesh ? navLinkEl('/dashboard.html', 'VIBE Mesh', 'mesh', active) : ''}
       </div>
       <div class="nav-actions">
         <button class="language-pill" type="button">TH</button>
