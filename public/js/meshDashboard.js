@@ -34,6 +34,8 @@ async function refreshMeshDashboard() {
     meshData = await response.json();
     renderMeshSummary();
     renderVehicleDistances();
+    renderNodeList();
+    renderNetworkDetails();
     renderMeshTable();
     renderMeshGraph(performance.now());
   } catch (error) {
@@ -61,6 +63,10 @@ function renderMeshSummary() {
   document.getElementById('mesh-health-ring').textContent = health;
   document.getElementById('mesh-health-ring').style.setProperty('--value', health);
   document.getElementById('mesh-updated').textContent = `อัปเดต ${formatTime(meshData?.server_time)}`;
+  const modeBadge = document.getElementById('mesh-mode-badge');
+  modeBadge.textContent = meshData?.mode || 'waiting';
+  modeBadge.className = `small-badge ${meshData?.mode === 'telemetry' ? 'status-online' : meshData?.mode === 'estimated' ? 'status-warning' : 'status-offline'}`;
+  document.getElementById('mesh-link-summary').textContent = `${links.length} links • ${vehicles.length} vehicles • ${meshData?.health?.label || 'กำลังประเมิน'}`;
 }
 
 function startMeshAnimation() {
@@ -80,11 +86,9 @@ function renderMeshGraph(now = performance.now()) {
   const canvas = document.getElementById('mesh-graph-canvas');
   const ctx = canvas?.getContext('2d');
   if (!ctx) return;
-  const width = canvas.width;
-  const height = canvas.height;
+  const { width, height } = resizeCanvas(canvas, ctx);
   ctx.clearRect(0, 0, width, height);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, width, height);
+  drawGraphBackground(ctx, width, height);
 
   const nodes = meshNodes();
   if (!nodes.length) {
@@ -104,12 +108,13 @@ function layoutNodes(nodes, width, height) {
   const vehicles = nodes.filter(node => node.type === 'vehicle');
   const center = { x: width / 2, y: height / 2 };
   positions[station.id] = center;
-  const radius = Math.max(150, Math.min(width, height) * 0.34);
+  const radius = Math.max(170, Math.min(width, height) * 0.38);
   vehicles.forEach((node, index) => {
     const angle = ((Math.PI * 2) / Math.max(vehicles.length, 1)) * index - Math.PI / 2;
+    const hopOffset = Math.min(70, Number(node.hop || 0) * 18);
     positions[node.id] = {
-      x: center.x + Math.cos(angle) * radius,
-      y: center.y + Math.sin(angle) * radius,
+      x: center.x + Math.cos(angle) * (radius + hopOffset),
+      y: center.y + Math.sin(angle) * (radius + hopOffset),
     };
   });
   return positions;
@@ -129,7 +134,7 @@ function drawLink(ctx, positions, link, now) {
   ctx.beginPath();
   if (hop > 0 || offline) ctx.setLineDash([9, 6]);
   ctx.strokeStyle = color;
-  ctx.lineWidth = hop === 0 ? 3 : 2.5;
+  ctx.lineWidth = hop === 0 ? 4 : 3;
   ctx.moveTo(from.x, from.y);
   ctx.lineTo(to.x, to.y);
   ctx.stroke();
@@ -144,16 +149,16 @@ function drawDistanceLabel(ctx, from, to, label) {
   const x = (from.x + to.x) / 2;
   const y = (from.y + to.y) / 2;
   ctx.save();
-  ctx.font = '700 12px Inter, sans-serif';
+  ctx.font = '800 14px Inter, sans-serif';
   ctx.textAlign = 'center';
   const metrics = ctx.measureText(label);
   ctx.fillStyle = 'rgba(255,255,255,0.92)';
   ctx.strokeStyle = '#E2E8F0';
-  roundedRect(ctx, x - metrics.width / 2 - 8, y - 12, metrics.width + 16, 22, 11);
+  roundedRect(ctx, x - metrics.width / 2 - 10, y - 14, metrics.width + 20, 26, 13);
   ctx.fill();
   ctx.stroke();
   ctx.fillStyle = '#334155';
-  ctx.fillText(label, x, y + 4);
+  ctx.fillText(label, x, y + 5);
   ctx.restore();
 }
 
@@ -174,17 +179,17 @@ function drawNode(ctx, pos, node) {
   if (!pos) return;
   const station = node.type === 'ground_station';
   const color = station ? '#2563EB' : node.status === 'online' ? '#16A34A' : '#6B7280';
-  const radius = station ? 30 : 24;
+  const radius = station ? 38 : 31;
   ctx.save();
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
   ctx.fillStyle = '#fff';
   ctx.fill();
-  ctx.lineWidth = 4;
+  ctx.lineWidth = 5;
   ctx.strokeStyle = color;
   ctx.stroke();
   ctx.fillStyle = color;
-  ctx.font = station ? '850 12px Inter, sans-serif' : '850 11px Inter, sans-serif';
+  ctx.font = station ? '850 15px Inter, sans-serif' : '850 14px Inter, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText(station ? 'BASE' : `H${node.hop ?? '-'}`, pos.x, pos.y + 4);
 
@@ -196,8 +201,47 @@ function drawNode(ctx, pos, node) {
   }
 
   ctx.fillStyle = '#0F172A';
-  ctx.font = '800 12px Inter, sans-serif';
-  ctx.fillText(node.label || node.vehicle_id || node.id, pos.x, pos.y + radius + 18);
+  ctx.font = '850 15px Inter, sans-serif';
+  ctx.fillText(node.label || node.vehicle_id || node.id, pos.x, pos.y + radius + 22);
+  ctx.fillStyle = '#64748B';
+  ctx.font = '750 12px Inter, sans-serif';
+  ctx.fillText(station ? 'Ground Station' : `${node.status || 'unknown'} • ${formatTime(node.last_seen)}`, pos.x, pos.y + radius + 40);
+  ctx.restore();
+}
+
+function resizeCanvas(canvas, ctx) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.round(rect.width));
+  const height = Math.max(300, Math.round(rect.height));
+  const ratio = window.devicePixelRatio || 1;
+  const targetWidth = Math.round(width * ratio);
+  const targetHeight = Math.round(height * ratio);
+  if (canvas.width !== targetWidth || canvas.height !== targetHeight) {
+    canvas.width = targetWidth;
+    canvas.height = targetHeight;
+  }
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  return { width, height };
+}
+
+function drawGraphBackground(ctx, width, height) {
+  ctx.save();
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.strokeStyle = '#E2E8F0';
+  ctx.lineWidth = 1;
+  for (let x = 40; x < width; x += 40) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
+  for (let y = 40; y < height; y += 40) {
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+  }
   ctx.restore();
 }
 
@@ -235,6 +279,44 @@ function renderVehicleDistances() {
         <td>${distanceStatus(pair.distance_m)}</td>
       </tr>`;
   }).join('');
+}
+
+function renderNodeList() {
+  const root = document.getElementById('mesh-node-body');
+  const nodes = vehicleNodes();
+  if (!nodes.length) {
+    root.innerHTML = '<div class="empty-state">ยังไม่มีรถในโครงข่าย</div>';
+    return;
+  }
+  root.innerHTML = nodes.map(node => `
+    <div class="node-row">
+      <span class="node-dot ${node.status === 'online' ? 'online' : ''}"></span>
+      <span>
+        <strong>${node.vehicle_id || node.id}</strong>
+        <span class="item-meta" style="display:block;">Hop ${node.hop ?? '—'} • ${node.demo ? 'Demo' : 'Real'}</span>
+      </span>
+      <span class="small-badge ${node.status === 'online' ? 'status-online' : 'status-offline'}">${node.status || '—'}</span>
+    </div>`).join('');
+}
+
+function renderNetworkDetails() {
+  const root = document.getElementById('mesh-network-body');
+  const links = meshLinks();
+  const nodes = vehicleNodes();
+  const online = nodes.filter(node => node.status === 'online').length;
+  const avgDistance = links.map(link => Number(link.distance_m)).filter(Number.isFinite);
+  const avgHop = links.map(link => Number(link.hop)).filter(Number.isFinite);
+  const details = [
+    ['โหมด', meshData?.mode || 'waiting'],
+    ['รถออนไลน์', `${online}/${nodes.length}`],
+    ['ระยะลิงก์เฉลี่ย', avgDistance.length ? formatDistanceMeters(avgDistance.reduce((a, b) => a + b, 0) / avgDistance.length) : '—'],
+    ['Hop เฉลี่ย', avgHop.length ? (avgHop.reduce((a, b) => a + b, 0) / avgHop.length).toFixed(1) : '—'],
+  ];
+  root.innerHTML = details.map(([label, value]) => `
+    <div class="network-detail-row">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </div>`).join('');
 }
 
 function renderMeshTable() {
