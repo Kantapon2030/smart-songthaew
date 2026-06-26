@@ -3,359 +3,658 @@
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title>Admin Control — สองแถวสมาร์ท</title>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
+  <title>Admin Control — Smart Songthaew</title>
+  <meta name="description" content="แผงควบคุมผู้ดูแลระบบ Smart Songthaew"/>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Sarabun:wght@300;400;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet"/>
   <link href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" rel="stylesheet"/>
+  <link rel="stylesheet" href="/css/style.css"/>
   <style>
-    :root{
-      --blue:#2563EB;--blue-50:#EFF6FF;--blue-100:#DBEAFE;
-      --green:#059669;--green-50:#ECFDF5;
-      --amber:#D97706;--amber-50:#FFFBEB;
-      --red:#DC2626;--red-50:#FEF2F2;
-      --purple:#7C3AED;--purple-50:#F5F3FF;
-      --slate-50:#F8FAFC;--slate-100:#F1F5F9;--slate-200:#E2E8F0;
-      --slate-400:#94A3B8;--slate-500:#64748B;--slate-600:#475569;
-      --slate-700:#334155;--slate-800:#1E293B;
-      --sh-sm:0 1px 3px rgba(0,0,0,.07);--sh-md:0 4px 16px rgba(0,0,0,.08);
+    /* ── Admin-specific tokens ── */
+    :root {
+      --blue:      #2563EB; --blue-50:   #EFF6FF; --blue-100: #DBEAFE;
+      --green:     #059669; --green-50:  #ECFDF5;
+      --amber:     #D97706; --amber-50:  #FFFBEB;
+      --red:       #DC2626; --red-50:    #FEF2F2;
+      --purple:    #7C3AED; --purple-50: #F5F3FF;
+      --slate-50:  #F8FAFC; --slate-100:#F1F5F9; --slate-200:#E2E8F0;
+      --slate-400: #94A3B8; --slate-500:#64748B;  --slate-600:#475569;
+      --slate-700: #334155; --slate-800: #1E293B;
+      --mono: 'IBM Plex Mono', monospace;
     }
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
-    html,body{font-family:Inter,'Sarabun',sans-serif;background:var(--slate-50);color:var(--slate-800);}
 
-    /* Nav */
-    #nav{height:52px;position:sticky;top:0;z-index:100;background:white;
-      border-bottom:1px solid var(--slate-200);display:flex;align-items:center;
-      padding:0 20px;gap:10px;box-shadow:var(--sh-sm);}
-    .nav-logo{font-size:.9rem;font-weight:800;display:flex;align-items:center;gap:7px;}
-    .nav-badge{font-size:.6rem;font-weight:700;padding:2px 8px;border-radius:99px;
-      background:#FEF2F2;color:var(--red);border:1px solid #FECACA;}
-    .nav-badge.safe{background:var(--green-50);color:var(--green);border-color:#A7F3D0;}
-    .nav-gap{flex:1;}
-    .nav-link{text-decoration:none;font-size:.75rem;font-weight:700;padding:6px 12px;border-radius:9px;
-      background:var(--slate-100);border:1px solid var(--slate-200);color:var(--slate-600);transition:.12s;}
-    .nav-link:hover{background:var(--slate-200);}
-    #nc-time{font-family:'IBM Plex Mono',monospace;font-size:.7rem;color:var(--slate-400);}
-
-    /* Page */
-    #page{padding:20px;display:grid;grid-template-columns:1fr 1fr;gap:18px;}
-    @media(max-width:800px){#page{grid-template-columns:1fr;}}
-
-    /* Card */
-    .card{background:white;border:1px solid var(--slate-200);border-radius:16px;
-      box-shadow:var(--sh-sm);overflow:hidden;}
-    .card-full{grid-column:1/-1;}
-    .card-head{padding:14px 18px;border-bottom:1px solid var(--slate-100);
-      display:flex;align-items:center;justify-content:space-between;}
-    .card-title{font-size:.9rem;font-weight:700;color:var(--slate-700);display:flex;align-items:center;gap:7px;}
-    .card-sub{font-size:.66rem;color:var(--slate-400);}
-    .card-body{padding:18px;}
-
-    /* Demo control */
-    .demo-state{
-      display:flex;align-items:center;gap:14px;padding:14px 18px;
-      background:var(--purple-50);border-bottom:1px solid #DDD6FE;
+    html, body {
+      font-family: Inter, Sarabun, sans-serif;
+      background: var(--color-background, #F8FAFC);
+      color: var(--slate-800);
+      min-height: 100%;
     }
-    .demo-light{width:12px;height:12px;border-radius:50%;background:var(--slate-300);}
-    .demo-light.on{background:var(--purple);animation:blink .8s infinite;}
-    @keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
-    .demo-info{flex:1;}
-    .demo-info-title{font-size:.85rem;font-weight:700;}
-    .demo-info-sub{font-size:.68rem;color:var(--slate-500);}
-    .demo-master{display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid var(--slate-100);}
-    .demo-master-label{font-size:1rem;font-weight:800;color:var(--slate-800);}
-    .demo-mode-badge{font-size:.68rem;font-weight:800;padding:4px 9px;border-radius:99px;background:var(--slate-100);color:var(--slate-600);}
-    .demo-mode-badge.active{background:var(--green-50);color:var(--green);}
-    .switch{position:relative;display:inline-block;width:58px;height:32px;}
-    .switch input{opacity:0;width:0;height:0;}
-    .switch-slider{position:absolute;inset:0;background:var(--slate-300);border-radius:99px;cursor:pointer;transition:.2s;}
-    .switch-slider:before{content:'';position:absolute;width:24px;height:24px;left:4px;bottom:4px;border-radius:50%;background:white;transition:.2s;box-shadow:0 1px 3px #0003;}
-    .switch input:checked + .switch-slider{background:var(--green);}
-    .switch input:checked + .switch-slider:before{transform:translateX(26px);}
 
-    .demo-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;padding:16px 18px;}
-    .vehicle-count-ctrl{display:flex;align-items:center;gap:10px;padding:14px 18px;
-      border-top:1px solid var(--slate-100);}
-    .vcc-label{font-size:.78rem;font-weight:600;color:var(--slate-600);flex:1;}
-    .vcc-num{font-family:'IBM Plex Mono',monospace;font-size:1.4rem;font-weight:700;
-      color:var(--purple);min-width:32px;text-align:center;}
-    .vcc-btn{width:32px;height:32px;border-radius:8px;border:1px solid var(--slate-200);
-      background:var(--slate-100);color:var(--slate-700);font-size:1.1rem;font-weight:700;
-      cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.12s;}
-    .vcc-btn:hover{background:var(--slate-200);}
-
-    /* Buttons */
-    .btn{padding:10px 20px;border-radius:10px;border:none;font-family:'Sarabun',sans-serif;
-      font-size:.82rem;font-weight:700;cursor:pointer;transition:.12s;display:flex;
-      align-items:center;gap:6px;justify-content:center;}
-    .btn-primary{background:var(--blue);color:white;}
-    .btn-primary:hover{background:#1D4ED8;}
-    .btn-danger {background:var(--red);color:white;}
-    .btn-danger:hover{background:#B91C1C;}
-    .btn-purple {background:var(--purple);color:white;}
-    .btn-purple:hover{background:#6D28D9;}
-    .btn-outline{background:white;color:var(--slate-600);border:1px solid var(--slate-200);}
-    .btn-outline:hover{background:var(--slate-50);border-color:var(--slate-300);}
-    .btn-green {background:var(--green);color:white;}
-    .btn-green:hover{background:#047857;}
-    .btn-full{width:100%;}
-
-    /* Form */
-    .form-row{margin-bottom:14px;}
-    .form-label{display:block;font-size:.72rem;font-weight:700;color:var(--slate-600);
-      text-transform:uppercase;letter-spacing:.05em;margin-bottom:5px;}
-    .form-input{width:100%;padding:9px 12px;border:1px solid var(--slate-200);border-radius:9px;
-      font-family:'Sarabun',sans-serif;font-size:.85rem;color:var(--slate-800);
-      background:white;transition:.12s;}
-    .form-input:focus{outline:none;border-color:var(--blue);}
-    .form-input[type=range]{padding:0;border:none;background:transparent;}
-    .form-textarea{resize:vertical;min-height:80px;font-family:'Sarabun',sans-serif;}
-
-    /* Status row */
-    .status-row{display:flex;gap:10px;flex-wrap:wrap;padding:14px 18px;}
-    .status-pill{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:99px;
-      font-size:.72rem;font-weight:600;}
-    .pill-online{background:var(--green-50);color:var(--green);border:1px solid #A7F3D0;}
-    .pill-demo  {background:var(--purple-50);color:var(--purple);border:1px solid #DDD6FE;}
-    .pill-offline{background:var(--red-50);color:var(--red);border:1px solid #FECACA;}
-    .pill-dot{width:7px;height:7px;border-radius:50%;background:currentColor;}
-
-    /* Config save indicator */
-    #save-toast{
-      position:fixed;bottom:20px;right:20px;z-index:999;
-      background:#1E293B;color:white;padding:10px 18px;border-radius:10px;
-      font-size:.78rem;font-weight:600;opacity:0;transition:opacity .3s;
-      pointer-events:none;
+    /* ── Page layout ── */
+    #admin-page {
+      padding: 16px 20px 32px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
     }
-    #save-toast.show{opacity:1;}
 
-    /* Action log */
-    #action-log{
-      font-family:'IBM Plex Mono',monospace;font-size:.7rem;
-      max-height:180px;overflow-y:auto;padding:12px 14px;
-      display:flex;flex-direction:column;gap:3px;background:#FAFAFA;
+    @media (max-width: 800px) { #admin-page { grid-template-columns: 1fr; } }
+
+    /* ── Demo Mode Banner (full width, top) ── */
+    .demo-banner {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 18px;
+      background: linear-gradient(135deg, var(--purple-50), #fff);
+      border: 1px solid #DDD6FE;
+      border-radius: var(--radius-card, 12px);
+      box-shadow: 0 1px 3px rgba(0,0,0,.07);
     }
-    #action-log::-webkit-scrollbar{width:3px;}
-    #action-log::-webkit-scrollbar-thumb{background:var(--slate-300);border-radius:2px;}
-    .log-line{display:flex;gap:8px;}
-    .log-ts{color:var(--slate-400);flex-shrink:0;}
-    .log-ok{color:var(--green);}
-    .log-warn{color:var(--amber);}
-    .log-err{color:var(--red);}
+
+    .demo-pulse {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--slate-300);
+      flex: 0 0 auto;
+      transition: background .3s;
+    }
+
+    .demo-pulse.on {
+      background: var(--purple);
+      animation: pulse-ring .9s infinite;
+    }
+
+    @keyframes pulse-ring {
+      0%   { box-shadow: 0 0 0 0   rgba(124,58,237,.4); }
+      70%  { box-shadow: 0 0 0 8px rgba(124,58,237,0); }
+      100% { box-shadow: 0 0 0 0   rgba(124,58,237,0); }
+    }
+
+    .demo-banner-text { flex: 1; min-width: 0; }
+    .demo-banner-title {
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--slate-800);
+    }
+
+    .demo-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: var(--slate-100);
+      color: var(--slate-500);
+      margin-top: 2px;
+    }
+
+    .demo-badge.active {
+      background: #ECFDF5;
+      color: var(--green);
+    }
+
+    /* Switch for demo banner */
+    .admin-switch {
+      position: relative;
+      width: 52px;
+      height: 28px;
+      flex: 0 0 auto;
+    }
+
+    .admin-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+
+    .admin-switch-slider {
+      position: absolute;
+      inset: 0;
+      background: var(--slate-300);
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background .2s;
+    }
+
+    .admin-switch-slider::before {
+      content: '';
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: white;
+      box-shadow: 0 1px 3px rgba(0,0,0,.2);
+      transition: transform .2s;
+    }
+
+    .admin-switch input:checked + .admin-switch-slider { background: var(--green); }
+    .admin-switch input:checked + .admin-switch-slider::before { transform: translateX(24px); }
+
+    /* ── Admin Cards (use shared .card) ── */
+    .admin-card-full { grid-column: 1 / -1; }
+
+    /* ── Card sections ── */
+    .admin-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--slate-100);
+    }
+
+    .admin-card-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--slate-700);
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .admin-card-sub { font-size: 11px; color: var(--slate-400); }
+    .admin-card-body { padding: 16px; }
+
+    /* ── Speed / twin info ── */
+    .twin-info-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--slate-100);
+    }
+
+    .twin-id {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--purple);
+    }
+
+    .speed-row {
+      padding: 0 16px 14px;
+    }
+
+    .speed-label {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--slate-600);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      margin-bottom: 8px;
+    }
+
+    .speed-val {
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--purple);
+    }
+
+    .admin-range {
+      width: 100%;
+      accent-color: var(--purple);
+      cursor: pointer;
+    }
+
+    .demo-note {
+      margin: 0 16px 14px;
+      padding: 10px 12px;
+      background: var(--amber-50);
+      border: 1px solid #FDE68A;
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--slate-600);
+      line-height: 1.5;
+    }
+
+    /* ── Buttons ── */
+    .admin-btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: .12s;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .admin-btn-primary { background: var(--blue); color: white; }
+    .admin-btn-primary:hover { background: #1D4ED8; }
+    .admin-btn-danger  { background: var(--red); color: white; }
+    .admin-btn-danger:hover  { background: #B91C1C; }
+    .admin-btn-outline {
+      background: white;
+      color: var(--slate-600);
+      border: 1px solid var(--slate-200);
+    }
+    .admin-btn-outline:hover { background: var(--slate-50); }
+    .admin-btn-green   { background: var(--green); color: white; }
+    .admin-btn-green:hover   { background: #047857; }
+    .admin-btn-full { width: 100%; justify-content: center; }
+
+    /* ── Form elements ── */
+    .admin-form-row { margin-bottom: 12px; }
+
+    .admin-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--slate-600);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      margin-bottom: 5px;
+    }
+
+    .admin-input {
+      width: 100%;
+      padding: 8px 11px;
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 13px;
+      color: var(--slate-800);
+      background: white;
+      transition: border-color .12s, box-shadow .12s;
+    }
+
+    .admin-input:focus { outline: none; border-color: var(--blue); box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+    .admin-input[type=range] { padding: 0; border: none; background: transparent; }
+    .admin-textarea { resize: vertical; min-height: 76px; }
+
+    /* ── Status pills ── */
+    .status-row-admin {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 12px 16px;
+    }
+
+    .admin-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .pill-online  { background: #ECFDF5; color: var(--green);  border: 1px solid #A7F3D0; }
+    .pill-demo    { background: var(--purple-50); color: var(--purple); border: 1px solid #DDD6FE; }
+    .pill-offline { background: var(--red-50); color: var(--red); border: 1px solid #FECACA; }
+    .pill-dot     { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    /* ── Save toast ── */
+    #save-toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      z-index: 1999;
+      background: #1E293B;
+      color: white;
+      padding: 10px 18px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .3s;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    #save-toast.show { opacity: 1; }
+
+    /* ── Action log ── */
+    #action-log {
+      font-family: var(--mono);
+      font-size: 11px;
+      max-height: 160px;
+      overflow-y: auto;
+      padding: 10px 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #FAFAFA;
+      scrollbar-width: thin;
+    }
+
+    #action-log::-webkit-scrollbar { width: 3px; }
+    #action-log::-webkit-scrollbar-thumb { background: var(--slate-300); border-radius: 2px; }
+
+    .log-line { display: flex; gap: 8px; }
+    .log-ts   { color: var(--slate-400); flex-shrink: 0; }
+    .log-ok   { color: var(--green); }
+    .log-warn { color: var(--amber); }
+    .log-err  { color: var(--red); }
+
+    /* ── Time display ── */
+    #nc-time {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--slate-400);
+    }
+
+    /* ── Route editor modal ── */
+    .admin-modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.45);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .admin-modal-backdrop.open { display: flex; }
+
+    .admin-modal {
+      background: white;
+      border-radius: 16px;
+      width: 90vw;
+      max-width: 900px;
+      max-height: 90vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .admin-modal-sm {
+      max-width: 480px;
+    }
+
+    .admin-modal-head {
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--slate-200);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .admin-modal-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--slate-800);
+    }
+
+    .admin-modal-close {
+      background: none;
+      border: none;
+      font-size: 20px;
+      cursor: pointer;
+      color: var(--slate-400);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    .admin-modal-close:hover { background: var(--slate-100); }
+
+    .admin-modal-body { flex: 1; overflow: auto; }
+    .admin-modal-foot {
+      padding: 14px 18px;
+      border-top: 1px solid var(--slate-200);
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+    }
   </style>
 </head>
-<body>
+<body data-page="admin">
 
-<div id="save-toast">✓ บันทึกแล้ว</div>
+<!-- Navbar injected by shared.js -->
+<div id="navbar-root"></div>
 
-<nav id="nav">
-  <div class="nav-logo">⚙️ Admin Control <span class="nav-badge" id="nav-mode-badge">REAL</span></div>
-  <div class="nav-gap"></div>
-  <span id="nc-time"></span>
-  <a href="/dashboard.html" class="nav-link">📊 Dashboard</a>
-  <a href="/" class="nav-link">🗺 User View</a>
-  <span id="user-info" style="font-size:.7rem;color:var(--slate-500);margin-left:10px;"></span>
-  <button onclick="logout()" class="nav-link" style="background:var(--red-50);color:var(--red);border-color:#FECACA;">🚪 ออกจากระบบ</button>
-</nav>
+<!-- Save toast -->
+<div id="save-toast">
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#22c55e" stroke-width="2"/><path d="M8 12l3 3 5-5" stroke="#22c55e" stroke-width="2" stroke-linecap="round"/></svg>
+  บันทึกแล้ว
+</div>
 
-<div id="page">
+<div id="admin-page">
 
-  <!-- ── DEMO MODE CONTROL ── -->
+  <!-- ════════════════════════════
+       DEMO MODE BANNER (top, full-width)
+  ════════════════════════════ -->
+  <div class="demo-banner">
+    <div class="demo-pulse" id="demo-light"></div>
+    <div class="demo-banner-text">
+      <div class="demo-banner-title">
+        🧬 Digital Twin Control
+        <span class="demo-badge" id="demo-mode-badge">LIVE — real data only</span>
+      </div>
+      <div style="font-size:11px;color:var(--slate-500);margin-top:3px;" id="demo-state-sub">ระบบใช้ข้อมูลจาก ESP8266 จริง</div>
+    </div>
+    <label class="admin-switch" aria-label="เปิด/ปิด Demo Mode">
+      <input id="demo-mode-toggle" type="checkbox" onchange="toggleDemoMode(this.checked)"/>
+      <span class="admin-switch-slider"></span>
+    </label>
+  </div>
+
+  <!-- ════════════════════════════
+       DIGITAL TWIN CONTROL
+  ════════════════════════════ -->
   <div class="card">
-    <div class="card-head">
-      <div class="card-title">🧬 Digital Twin Control</div>
-      <div class="card-sub" id="demo-status-sub">ปิดอยู่</div>
+    <div class="admin-card-head">
+      <div class="admin-card-title">🤖 Twin &amp; Speed Control</div>
+      <div class="admin-card-sub" id="demo-status-sub">ปิดอยู่</div>
     </div>
 
-    <div class="demo-master">
-      <div>
-        <div class="demo-master-label">Demo Mode</div>
-        <span class="demo-mode-badge" id="demo-mode-badge">LIVE — real data only</span>
-      </div>
-      <label class="switch" aria-label="Toggle Demo Mode">
-        <input id="demo-mode-toggle" type="checkbox" onchange="toggleDemoMode(this.checked)">
-        <span class="switch-slider"></span>
-      </label>
+    <div class="twin-info-row">
+      <span style="font-size:12px;font-weight:600;color:var(--slate-500);">Digital Twin Vehicle</span>
+      <span class="twin-id" id="vcc-num">TWIN_01</span>
     </div>
 
-    <div class="demo-state">
-      <div class="demo-light" id="demo-light"></div>
-      <div class="demo-info">
-        <div class="demo-info-title" id="demo-state-title">Digital Twin ปิดอยู่</div>
-        <div class="demo-info-sub" id="demo-state-sub">ระบบใช้ข้อมูลจาก ESP8266 จริง</div>
-      </div>
-    </div>
-
-    <!-- Twin info -->
-    <div class="vehicle-count-ctrl">
-      <span class="vcc-label">Digital Twin Vehicle</span>
-      <span class="vcc-num" id="vcc-num">TWIN_01</span>
-    </div>
-
-    <!-- Speed Control -->
-    <div class="form-row" style="padding:0 18px 10px;">
-      <label class="form-label" style="margin-bottom:4px;display:flex;justify-content:space-between;">
+    <div class="speed-row">
+      <div class="speed-label">
         <span>ความเร็วรถจำลอง</span>
-        <span><span id="demo-speed-val">1.0</span>x</span>
-      </label>
-      <input class="form-input" type="range" id="demo-speed-range" min="0.5" max="5.0" step="0.5" value="1.0"
+        <span class="speed-val"><span id="demo-speed-val">1.0</span>×</span>
+      </div>
+      <input class="admin-range" type="range" id="demo-speed-range"
+        min="0.5" max="5.0" step="0.5" value="1.0"
         oninput="document.getElementById('demo-speed-val').textContent=parseFloat(this.value).toFixed(1)"
         onchange="changeDemoSpeed(this.value)"/>
     </div>
 
-    <div style="padding:0 18px 16px;">
-      <div style="font-size:.68rem;color:var(--slate-400);padding:10px 12px;
-        background:var(--amber-50);border:1px solid #FDE68A;border-radius:9px;">
-        ⚠️ เมื่อเปิด Digital Twin: รถ TWIN_01 จะวิ่งตามเส้นทางจริงด้วย GPS จำลอง<br/>
-        ทุกหน้าจะอัปเดตอัตโนมัติ • ETA คำนวณจาก Google Maps Traffic
-      </div>
+    <div class="demo-note">
+      ⚠️ เมื่อเปิด Digital Twin: รถ TWIN_01 จะวิ่งตามเส้นทางจริงด้วย GPS จำลอง<br/>
+      ทุกหน้าจะอัปเดตอัตโนมัติ · ETA คำนวณจาก Google Maps Traffic
     </div>
   </div>
 
-  <!-- ── SYSTEM CONFIG ── -->
+  <!-- ════════════════════════════
+       SYSTEM CONFIG
+  ════════════════════════════ -->
   <div class="card">
-    <div class="card-head">
-      <div class="card-title">⚙️ ตั้งค่าระบบ</div>
-      <button class="btn btn-primary" style="padding:5px 14px;font-size:.72rem;" onclick="saveConfig()">บันทึก</button>
+    <div class="admin-card-head">
+      <div class="admin-card-title">⚙️ ตั้งค่าระบบ</div>
+      <button class="admin-btn admin-btn-primary" onclick="saveConfig()">บันทึก</button>
     </div>
-    <div class="card-body">
-      <div class="form-row">
-        <label class="form-label">ชื่อเส้นทาง</label>
-        <input class="form-input" id="cfg-route" value="นครศรีธรรมราช ↔ พรหมคีรี" placeholder="ชื่อเส้นทาง"/>
+    <div class="admin-card-body">
+      <div class="admin-form-row">
+        <label class="admin-label">ชื่อเส้นทาง</label>
+        <input class="admin-input" id="cfg-route" value="นครศรีธรรมราช ↔ พรหมคีรี" placeholder="ชื่อเส้นทาง"/>
       </div>
-      <div class="form-row">
-        <label class="form-label">Offline Timeout (วินาที) — <span id="cfg-timeout-val">15</span>s</label>
-        <input class="form-input" type="range" id="cfg-timeout" min="5" max="60" value="15"
+      <div class="admin-form-row">
+        <label class="admin-label">
+          Offline Timeout (วินาที) — <span id="cfg-timeout-val">15</span>s
+        </label>
+        <input class="admin-input" type="range" id="cfg-timeout"
+          min="5" max="60" value="15"
           oninput="document.getElementById('cfg-timeout-val').textContent=this.value"/>
       </div>
-      <div class="form-row">
-        <label class="form-label">ประกาศถึงผู้ใช้ทุกหน้า (ว่างเปล่า = ไม่แสดง)</label>
-        <textarea class="form-input form-textarea" id="cfg-announcement"
+      <div class="admin-form-row">
+        <label class="admin-label">ประกาศถึงผู้ใช้ (ว่างเปล่า = ไม่แสดง)</label>
+        <textarea class="admin-input admin-textarea" id="cfg-announcement"
           placeholder="เช่น: รถกำลังวิ่งช้าเนื่องจากสภาพถนน"></textarea>
       </div>
     </div>
   </div>
 
-  <!-- ── ROUTE MANAGEMENT ── -->
-  <div class="card card-full">
-    <div class="card-head">
-      <div class="card-title">🗺️ จัดการเส้นทาง</div>
+  <!-- ════════════════════════════
+       ROUTE MANAGEMENT (full-width)
+  ════════════════════════════ -->
+  <div class="card admin-card-full">
+    <div class="admin-card-head">
+      <div class="admin-card-title">🗺️ จัดการเส้นทาง</div>
       <div style="display:flex;gap:8px;align-items:center;">
-        <button onclick="deleteAllRoutes()" title="ลบเส้นทางทั้งหมด"
-          style="padding:5px 12px;border:1px solid #FECACA;border-radius:8px;background:#FEF2F2;
-            color:#DC2626;font-size:.72rem;font-weight:700;cursor:pointer;">
-          🗑 ลบทั้งหมด</button>
-        <button class="btn btn-primary" style="padding:5px 14px;font-size:.72rem;" onclick="openRouteEditor()">+ สร้างเส้นทางใหม่</button>
+        <button class="admin-btn admin-btn-danger" onclick="deleteAllRoutes()">🗑 ลบทั้งหมด</button>
+        <button class="admin-btn admin-btn-primary" onclick="openRouteEditor()">+ สร้างเส้นทางใหม่</button>
       </div>
     </div>
-    <div class="card-body">
+    <div class="admin-card-body">
       <div id="routes-list" style="display:grid;gap:10px;">
         <div style="padding:20px;text-align:center;color:var(--slate-400);">กำลังโหลด...</div>
       </div>
     </div>
   </div>
 
-
-
-  <!-- ── ROUTE EDITOR MODAL ── -->
-  <div id="route-editor-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
-    <div style="background:white;border-radius:16px;width:90vw;max-width:900px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--slate-200);display:flex;align-items:center;justify-content:space-between;">
-        <div id="route-editor-title" style="font-size:1rem;font-weight:700;color:var(--slate-800);">🗺️ สร้างเส้นทางใหม่</div>
-        <button onclick="closeRouteEditor()" style="border:none;background:none;font-size:1.5rem;cursor:pointer;color:var(--slate-400);">&times;</button>
-      </div>
-      <div style="flex:1;overflow:hidden;">
-        <div id="route-editor-map" style="width:100%;height:400px;"></div>
-        <div style="padding:16px 20px;">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
-            <div>
-              <label style="display:block;font-size:.75rem;font-weight:600;color:var(--slate-600);margin-bottom:6px;">ชื่อเส้นทาง *</label>
-              <input type="text" id="route-name-input" placeholder="เช่น: โรงเรียนเตรียมอุดมฯ ↔ เซ็นทรัลนคร" style="width:100%;padding:10px 12px;border:1px solid var(--slate-200);border-radius:8px;font-family:'Sarabun',sans-serif;">
-            </div>
-            <div>
-              <label style="display:block;font-size:.75rem;font-weight:600;color:var(--slate-600);margin-bottom:6px;">รายละเอียด (optional)</label>
-              <input type="text" id="route-desc-input" placeholder="รายละเอียดเส้นทาง" style="width:100%;padding:10px 12px;border:1px solid var(--slate-200);border-radius:8px;font-family:'Sarabun',sans-serif;">
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:12px;padding:10px;background:var(--slate-50);border-radius:8px;">
-            <span style="font-size:.75rem;color:var(--slate-600);">📍 จุดที่เลือก:</span>
-            <span id="waypoint-count" style="font-weight:700;color:var(--blue);">0</span>
-            <span style="font-size:.75rem;color:var(--slate-600);">จุด</span>
-            <span style="margin-left:auto;font-size:.75rem;color:var(--slate-600);">ระยะทาง:</span>
-            <span id="route-distance" style="font-weight:700;color:var(--green);">0</span>
-            <span style="font-size:.75rem;color:var(--slate-600);">กม.</span>
-            <button onclick="clearWaypoints()" style="margin-left:8px;padding:4px 10px;border:1px solid #FECACA;border-radius:6px;background:#FEF2F2;color:#DC2626;font-size:.68rem;font-weight:600;cursor:pointer;">🗑 ล้างจุด</button>
-          </div>
-          <div style="margin-top:8px;font-size:.7rem;color:var(--slate-500);">
-            💡 คลิกบนแผนที่เพื่อเพิ่มจุด waypoint · คลิกขวาที่หมุดเพื่อลบ · ลากหมุดเพื่อย้าย
-          </div>
-        </div>
-      </div>
-      <div style="padding:16px 20px;border-top:1px solid var(--slate-200);display:flex;gap:10px;justify-content:flex-end;">
-        <button onclick="closeRouteEditor()" style="padding:10px 20px;border:1px solid var(--slate-200);border-radius:8px;background:white;font-family:'Sarabun',sans-serif;font-weight:600;cursor:pointer;color:var(--slate-600);">ยกเลิก</button>
-        <button onclick="saveRoute()" style="padding:10px 20px;border:none;border-radius:8px;background:var(--blue);color:white;font-family:'Sarabun',sans-serif;font-weight:600;cursor:pointer;">💾 บันทึกเส้นทาง</button>
-      </div>
+  <!-- ════════════════════════════
+       LIVE STATUS (full-width)
+  ════════════════════════════ -->
+  <div class="card admin-card-full">
+    <div class="admin-card-head">
+      <div class="admin-card-title">📡 สถานะระบบปัจจุบัน</div>
+      <button class="admin-btn admin-btn-outline" onclick="refreshStatus()">↻ รีเฟรช</button>
     </div>
-  </div>
-
-  <!-- ── REGISTER VEHICLE MODAL ── -->
-  <div id="register-vehicle-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
-    <div style="background:white;border-radius:16px;width:90vw;max-width:480px;overflow:hidden;">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--slate-200);display:flex;align-items:center;justify-content:space-between;">
-        <div style="font-size:1rem;font-weight:700;color:var(--slate-800);">🚐 ลงทะเบียนรถใหม่</div>
-        <button onclick="closeRegisterVehicle()" style="border:none;background:none;font-size:1.5rem;cursor:pointer;color:var(--slate-400);">&times;</button>
-      </div>
-      <div style="padding:20px;">
-        <div class="form-row">
-          <label class="form-label">Vehicle ID *</label>
-          <input class="form-input" id="reg-vehicle-id" placeholder="เช่น: songthaew_01 หรือ ST-01">
-          <div style="font-size:.65rem;color:var(--slate-400);margin-top:4px;">ใช้ตัวอักษร a-z, 0-9, _ หรือ - เท่านั้น (ต้องตรงกับ ESP8266)</div>
-        </div>
-        <div class="form-row">
-          <label class="form-label">เส้นทาง</label>
-          <select class="form-input" id="reg-route-id">
-            <option value="unassigned">ยังไม่กำหนดเส้นทาง</option>
-          </select>
-        </div>
-        <div class="form-row">
-          <label class="form-label">ชื่อ / รายละเอียด (optional)</label>
-          <input class="form-input" id="reg-description" placeholder="เช่น: รถสองแถวคันที่ 1">
-        </div>
-        <div class="form-row">
-          <label class="form-label">ประเภท</label>
-          <select class="form-input" id="reg-type">
-            <option value="real">real — รถจริง (ESP8266)</option>
-            <option value="manual">manual — เพิ่มด้วยมือ</option>
-          </select>
-        </div>
-        <div style="display:flex;gap:10px;margin-top:16px;">
-          <button onclick="closeRegisterVehicle()" class="btn btn-outline btn-full">ยกเลิก</button>
-          <button onclick="registerVehicle()" class="btn btn-green btn-full">✓ ลงทะเบียน</button>
-        </div>
-      </div>
+    <div class="status-row-admin" id="status-row">
+      <span class="admin-pill pill-offline"><span class="pill-dot"></span>กำลังโหลด...</span>
     </div>
-  </div>
-
-  <!-- ── LIVE STATUS ── -->
-  <div class="card card-full">
-    <div class="card-head">
-      <div class="card-title">📡 สถานะระบบปัจจุบัน</div>
-      <button class="btn btn-outline" style="padding:4px 12px;font-size:.7rem;" onclick="refreshStatus()">↻ รีเฟรช</button>
-    </div>
-    <div class="status-row" id="status-row">
-      <span class="status-pill pill-offline"><span class="pill-dot"></span>กำลังโหลด...</span>
-    </div>
-    <div style="padding:0 18px 4px;font-size:.68rem;color:var(--slate-400);">
-      Action Log
-    </div>
+    <div style="padding:0 16px 4px;font-size:10px;font-weight:700;color:var(--slate-400);text-transform:uppercase;letter-spacing:.05em;">Action Log</div>
     <div id="action-log">
       <div class="log-line"><span class="log-ts">--:--:--</span><span>รอการเชื่อมต่อ...</span></div>
     </div>
   </div>
 
+</div><!-- /admin-page -->
+
+<!-- ════════════════════════════
+     ROUTE EDITOR MODAL
+════════════════════════════ -->
+<div id="route-editor-modal" class="admin-modal-backdrop">
+  <div class="admin-modal">
+    <div class="admin-modal-head">
+      <div class="admin-modal-title" id="route-editor-title">🗺️ สร้างเส้นทางใหม่</div>
+      <button class="admin-modal-close" onclick="closeRouteEditor()" aria-label="ปิด">×</button>
+    </div>
+    <div class="admin-modal-body">
+      <div id="route-editor-map" style="width:100%;height:380px;"></div>
+      <div style="padding:14px 18px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
+          <div>
+            <label style="display:block;font-size:11px;font-weight:700;color:var(--slate-600);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">ชื่อเส้นทาง *</label>
+            <input type="text" id="route-name-input" class="admin-input" placeholder="เช่น: โรงเรียนฯ ↔ เซ็นทรัลนคร"/>
+          </div>
+          <div>
+            <label style="display:block;font-size:11px;font-weight:700;color:var(--slate-600);margin-bottom:5px;text-transform:uppercase;letter-spacing:.04em;">รายละเอียด (optional)</label>
+            <input type="text" id="route-desc-input" class="admin-input" placeholder="รายละเอียดเส้นทาง"/>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--slate-50);border-radius:8px;font-size:12px;">
+          <span style="color:var(--slate-500);">📍 จุดที่เลือก:</span>
+          <strong id="waypoint-count" style="color:var(--blue);">0</strong>
+          <span style="color:var(--slate-500);">จุด</span>
+          <span style="margin-left:auto;color:var(--slate-500);">ระยะทาง:</span>
+          <strong id="route-distance" style="color:var(--green);">0</strong>
+          <span style="color:var(--slate-500);">กม.</span>
+          <button onclick="clearWaypoints()" style="margin-left:6px;padding:3px 9px;border:1px solid #FECACA;border-radius:6px;background:#FEF2F2;color:#DC2626;font-size:11px;font-weight:700;cursor:pointer;">🗑 ล้าง</button>
+        </div>
+        <div style="margin-top:7px;font-size:11px;color:var(--slate-400);">
+          💡 คลิกบนแผนที่เพื่อเพิ่ม waypoint · คลิกขวาที่หมุดเพื่อลบ · ลากหมุดเพื่อย้าย
+        </div>
+      </div>
+    </div>
+    <div class="admin-modal-foot">
+      <button onclick="closeRouteEditor()" class="admin-btn admin-btn-outline">ยกเลิก</button>
+      <button onclick="saveRoute()" class="admin-btn admin-btn-primary">💾 บันทึกเส้นทาง</button>
+    </div>
+  </div>
 </div>
 
+<!-- ════════════════════════════
+     REGISTER VEHICLE MODAL
+════════════════════════════ -->
+<div id="register-vehicle-modal" class="admin-modal-backdrop">
+  <div class="admin-modal admin-modal-sm">
+    <div class="admin-modal-head">
+      <div class="admin-modal-title">🚐 ลงทะเบียนรถใหม่</div>
+      <button class="admin-modal-close" onclick="closeRegisterVehicle()" aria-label="ปิด">×</button>
+    </div>
+    <div class="admin-modal-body" style="padding:18px;">
+      <div class="admin-form-row">
+        <label class="admin-label">Vehicle ID *</label>
+        <input class="admin-input" id="reg-vehicle-id" placeholder="เช่น: songthaew_01 หรือ ST-01"/>
+        <div style="font-size:10px;color:var(--slate-400);margin-top:4px;">ใช้ a-z, 0-9, _ หรือ - (ต้องตรงกับ ESP8266)</div>
+      </div>
+      <div class="admin-form-row">
+        <label class="admin-label">เส้นทาง</label>
+        <select class="admin-input" id="reg-route-id">
+          <option value="unassigned">ยังไม่กำหนดเส้นทาง</option>
+        </select>
+      </div>
+      <div class="admin-form-row">
+        <label class="admin-label">ชื่อ / รายละเอียด (optional)</label>
+        <input class="admin-input" id="reg-description" placeholder="เช่น: รถสองแถวคันที่ 1"/>
+      </div>
+      <div class="admin-form-row">
+        <label class="admin-label">ประเภท</label>
+        <select class="admin-input" id="reg-type">
+          <option value="real">real — รถจริง (ESP8266)</option>
+          <option value="manual">manual — เพิ่มด้วยมือ</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:14px;">
+        <button onclick="closeRegisterVehicle()" class="admin-btn admin-btn-outline admin-btn-full">ยกเลิก</button>
+        <button onclick="registerVehicle()" class="admin-btn admin-btn-green admin-btn-full">✓ ลงทะเบียน</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/js/shared.js"></script>
+<script>
+  // Patch modal display for Leaflet modals (they use display:flex not class)
+  const _openRouteEditorOrig   = window.openRouteEditor;
+  const _closeRouteEditorOrig  = window.closeRouteEditor;
+  const _openRegOrig   = window.openRegisterVehicle;
+  const _closeRegOrig  = window.closeRegisterVehicle;
+
+  // The admin.js will define these; ensure backdrop uses .open class
+  document.addEventListener('DOMContentLoaded', () => {
+    // Patch modal open/close to use .open class instead of display style
+    ['route-editor-modal','register-vehicle-modal'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      // Observer: if style.display becomes flex, add class; if none, remove
+      const obs = new MutationObserver(() => {
+        if (el.style.display === 'flex' || el.style.display === 'block') {
+          el.classList.add('open');
+        } else if (el.style.display === 'none' || !el.style.display) {
+          el.classList.remove('open');
+        }
+      });
+      obs.observe(el, { attributes: true, attributeFilter: ['style'] });
+    });
+
+    // Clock
+    const timeEl = document.getElementById('nc-time');
+    if (timeEl) setInterval(() => {
+      timeEl.textContent = new Date().toLocaleTimeString('th-TH');
+    }, 1000);
+  });
+</script>
 <script src="/js/admin.js"></script>
 </body>
 </html>

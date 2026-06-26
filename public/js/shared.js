@@ -34,7 +34,7 @@ let _gmapsPromise = null;
 
 async function syncConfig() {
   try {
-    const next = await fetch('/api/config').then(response => response.json());
+    const next = await fetch('/api/config').then(r => r.json());
     const changed = JSON.stringify(next) !== JSON.stringify(window.SYS);
     Object.assign(window.SYS, next);
     renderAnnouncement(window.SYS.announcement);
@@ -52,7 +52,7 @@ async function loadGoogleMapsAPI() {
   if (_gmapsPromise) return _gmapsPromise;
   _gmapsPromise = (async () => {
     try {
-      const payload = await fetch('/api/maps/key').then(response => response.json());
+      const payload = await fetch('/api/maps/key').then(r => r.json());
       _gmapsKey = payload.key || '';
     } catch (_) {
       _gmapsKey = '';
@@ -66,10 +66,7 @@ async function loadGoogleMapsAPI() {
       script.src = `https://maps.googleapis.com/maps/api/js?key=${_gmapsKey}&libraries=marker,geometry&callback=__gmapsReady&loading=async`;
       script.async = true;
       script.defer = true;
-      window.__gmapsReady = () => {
-        delete window.__gmapsReady;
-        resolve();
-      };
+      window.__gmapsReady = () => { delete window.__gmapsReady; resolve(); };
       script.onerror = reject;
       document.head.appendChild(script);
     });
@@ -121,14 +118,10 @@ async function fetchV1Vehicles(routeId) {
 
 async function fetchV1FleetForLegacyViews(routeId) {
   const payload = await fetchV1Vehicles(routeId);
-  return Object.fromEntries((payload.vehicles || []).map(vehicle => [vehicle.vehicle_id, {
-    current: {
-      ...vehicle,
-      timestamp: (vehicle.last_seen || 0) * 1000,
-      routeId: vehicle.route_id,
-    },
-    routeId: vehicle.route_id,
-    type: vehicle.source,
+  return Object.fromEntries((payload.vehicles || []).map(v => [v.vehicle_id, {
+    current: { ...v, timestamp: (v.last_seen || 0) * 1000, routeId: v.route_id },
+    routeId: v.route_id,
+    type: v.source,
   }]));
 }
 
@@ -156,7 +149,7 @@ async function fetchVehicleLocations(routeId) {
   const serverTime = Date.now() / 1000;
   const vehicles = Object.entries(payload || {})
     .map(([id, entry]) => normalizeLegacyVehicle(id, entry, serverTime))
-    .filter(vehicle => Number.isFinite(vehicle.lat) && Number.isFinite(vehicle.lng));
+    .filter(v => Number.isFinite(v.lat) && Number.isFinite(v.lng));
   return { server_time: serverTime, vehicles };
 }
 
@@ -255,6 +248,18 @@ function pinSvg(size = 18, color = 'currentColor') {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M12 21s7-5.4 7-12A7 7 0 1 0 5 9c0 6.6 7 12 7 12Z" stroke="${color}" stroke-width="1.8"/><path d="M12 11.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Z" stroke="${color}" stroke-width="1.8"/></svg>`;
 }
 
+function clockSvg(size = 18, color = 'currentColor') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="${color}" stroke-width="1.8"/><path d="M12 7v5l3 3" stroke="${color}" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+}
+
+function checkCircleSvg(size = 18, color = 'currentColor') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="${color}" stroke-width="1.8"/><path d="M8 12l3 3 5-5" stroke="${color}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
+function chartBarSvg(size = 18, color = 'currentColor') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="12" width="4" height="9" rx="1" stroke="${color}" stroke-width="1.8"/><rect x="10" y="7" width="4" height="14" rx="1" stroke="${color}" stroke-width="1.8"/><rect x="17" y="3" width="4" height="18" rx="1" stroke="${color}" stroke-width="1.8"/></svg>`;
+}
+
 function formatDistanceMeters(meters) {
   const value = Number(meters);
   if (!Number.isFinite(value)) return '—';
@@ -279,9 +284,9 @@ function formatTime(value) {
 }
 
 function normalizeRouteList(payload) {
-  if (Array.isArray(payload?.routes)) return payload.routes.map(route => normalizeRouteRecord(route));
-  if (Array.isArray(payload)) return payload.map(route => normalizeRouteRecord(route));
-  return Object.entries(payload || {}).map(([id, route]) => normalizeRouteRecord(route, id));
+  if (Array.isArray(payload?.routes)) return payload.routes.map(r => normalizeRouteRecord(r));
+  if (Array.isArray(payload)) return payload.map(r => normalizeRouteRecord(r));
+  return Object.entries(payload || {}).map(([id, r]) => normalizeRouteRecord(r, id));
 }
 
 function normalizeRouteRecord(route = {}, id = '') {
@@ -292,7 +297,7 @@ function normalizeRouteRecord(route = {}, id = '') {
     route_id: routeId,
     routeId: route.routeId || routeId,
     color: route.color || '#2563EB',
-    places: places.map((place, index) => normalizeStopRecord(place, routeId, index)),
+    places: places.map((p, i) => normalizeStopRecord(p, routeId, i)),
   };
 }
 
@@ -306,19 +311,109 @@ function normalizeStopRecord(stop = {}, routeId = '', index = 0) {
   };
 }
 
-function routeStops(route) {
-  return route?.places || route?.stops || [];
-}
-
-function routeColor(route, fallback = '#2563EB') {
-  return route?.color || fallback;
-}
+function routeStops(route) { return route?.places || route?.stops || []; }
+function routeColor(route, fallback = '#2563EB') { return route?.color || fallback; }
 
 function isDemoVehicle(vehicle) {
   const id = vehicle?.vehicle_id || vehicle?.vehicleId || '';
   return vehicle?.demo === true || id.startsWith('DEMO') || id.startsWith('TWIN');
 }
 
+/* ─────────────────────────────────────────
+   Sparkline Canvas Utility
+───────────────────────────────────────── */
+function drawSparkline(canvas, data = [], color = '#2563eb') {
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (!data.length) return;
+
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data.map((v, i) => ({
+    x: (i / (data.length - 1 || 1)) * (w - 4) + 2,
+    y: h - 4 - ((v - min) / range) * (h - 8),
+  }));
+
+  // Fill gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, color + '40');
+  grad.addColorStop(1, color + '00');
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, h);
+  pts.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.lineTo(pts[pts.length - 1].x, h);
+  ctx.closePath();
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  // Line
+  ctx.beginPath();
+  ctx.moveTo(pts[0].x, pts[0].y);
+  pts.forEach(p => ctx.lineTo(p.x, p.y));
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  // Last dot
+  const last = pts[pts.length - 1];
+  ctx.beginPath();
+  ctx.arc(last.x, last.y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+}
+
+/* ─────────────────────────────────────────
+   Songthaew SVG Illustration
+───────────────────────────────────────── */
+function songthaewIllusSvg(width = 120, height = 60) {
+  return `<svg width="${width}" height="${height}" viewBox="0 0 120 60" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <!-- Chassis / undercarriage -->
+    <rect x="8" y="38" width="104" height="10" rx="3" fill="#B91C1C"/>
+    <!-- Cab (front) -->
+    <rect x="72" y="18" width="36" height="20" rx="4" fill="#DC2626"/>
+    <!-- Cab roof -->
+    <rect x="76" y="12" width="28" height="8" rx="3" fill="#EF4444"/>
+    <!-- Windshield -->
+    <rect x="88" y="20" width="16" height="10" rx="2" fill="#BAE6FD" opacity="0.8"/>
+    <!-- Passenger bench area -->
+    <rect x="10" y="18" width="60" height="20" rx="3" fill="#EF4444"/>
+    <!-- Bench roof supports -->
+    <rect x="14" y="14" width="3" height="6" rx="1" fill="#B91C1C"/>
+    <rect x="30" y="14" width="3" height="6" rx="1" fill="#B91C1C"/>
+    <rect x="46" y="14" width="3" height="6" rx="1" fill="#B91C1C"/>
+    <rect x="62" y="14" width="3" height="6" rx="1" fill="#B91C1C"/>
+    <!-- Canopy roof -->
+    <rect x="8" y="10" width="60" height="6" rx="3" fill="#FBBF24"/>
+    <!-- Bench seat -->
+    <rect x="14" y="30" width="52" height="5" rx="2" fill="#fff" opacity="0.25"/>
+    <!-- Passenger silhouettes -->
+    <circle cx="22" cy="27" r="4" fill="#fff" opacity="0.35"/>
+    <circle cx="36" cy="27" r="4" fill="#fff" opacity="0.35"/>
+    <circle cx="50" cy="27" r="4" fill="#fff" opacity="0.35"/>
+    <!-- Front wheel -->
+    <circle cx="90" cy="48" r="9" fill="#1E293B"/>
+    <circle cx="90" cy="48" r="5" fill="#475569"/>
+    <circle cx="90" cy="48" r="2" fill="#94A3B8"/>
+    <!-- Rear wheel -->
+    <circle cx="28" cy="48" r="9" fill="#1E293B"/>
+    <circle cx="28" cy="48" r="5" fill="#475569"/>
+    <circle cx="28" cy="48" r="2" fill="#94A3B8"/>
+    <!-- Exhaust pipe -->
+    <rect x="4" y="42" width="8" height="3" rx="1.5" fill="#475569"/>
+    <!-- Headlight -->
+    <rect x="106" y="24" width="6" height="4" rx="1" fill="#FEF3C7"/>
+  </svg>`;
+}
+
+/* ─────────────────────────────────────────
+   Shared Navbar
+───────────────────────────────────────── */
 function renderSharedNavbar(options = {}) {
   const active = options.active || document.body.dataset.page || 'home';
   const fixed = options.fixed === true;
@@ -326,9 +421,9 @@ function renderSharedNavbar(options = {}) {
   if (!target) return;
 
   target.innerHTML = `
-    <nav class="app-navbar ${fixed ? 'fixed' : ''}">
+    <nav class="app-navbar ${fixed ? 'fixed' : ''}" role="navigation" aria-label="เมนูหลัก">
       <a class="brand-link" href="/">
-        <span class="brand-icon">${busSvg(24, '#fff')}</span>
+        <span class="brand-icon">${busSvg(20, '#fff')}</span>
         <span class="brand-text"><span class="smart">Smart</span><span class="songthaew">Songthaew</span></span>
       </a>
       <div class="nav-route">
@@ -336,25 +431,170 @@ function renderSharedNavbar(options = {}) {
           <option value="">กำลังโหลดเส้นทาง...</option>
         </select>
       </div>
-      <div class="nav-links">
-        ${navLink('/', 'หน้าหลัก', 'home', active)}
-        ${navLink('/routes.html', 'เส้นทาง', 'routes', active)}
-        ${navLink('/operations.html#announcements', 'ประกาศ', 'announcements', active)}
-        ${navLink('/tracking.html', 'ประวัติการเดินทาง', 'tracking', active)}
-        ${navLink('/operations.html#help', 'ช่วยเหลือ', 'help', active)}
-        ${options.mesh ? navLink('/dashboard.html', 'VIBE Mesh', 'mesh', active) : ''}
+      <div class="nav-links" role="list">
+        ${navLinkEl('/', 'หน้าหลัก', 'home', active)}
+        ${navLinkEl('/routes.html', 'เส้นทาง', 'routes', active)}
+        <button class="nav-link" id="nav-btn-announcements" type="button" aria-haspopup="dialog">ประกาศ</button>
+        ${navLinkEl('/tracking.html', 'ประวัติการเดินทาง', 'tracking', active)}
+        <button class="nav-link" id="nav-btn-help" type="button" aria-haspopup="dialog">ช่วยเหลือ</button>
+        ${options.mesh ? navLinkEl('/dashboard.html', 'VIBE Mesh', 'mesh', active) : ''}
       </div>
       <div class="nav-actions">
         <button class="language-pill" type="button">TH</button>
-        <a class="icon-button" href="/admin.html" aria-label="ผู้ใช้งาน">${userSvg()}</a>
+        <a class="icon-button" href="/admin.html" aria-label="ผู้ดูแลระบบ">${userSvg()}</a>
       </div>
     </nav>`;
 
+  // Wire up modal buttons
+  document.getElementById('nav-btn-announcements')?.addEventListener('click', openAnnouncementModal);
+  document.getElementById('nav-btn-help')?.addEventListener('click', openHelpModal);
+
   hydrateRouteSelector(options.onRouteChange);
+  ensureModalsExist();
 }
 
-function navLink(href, label, id, active) {
-  return `<a class="nav-link ${active === id ? 'active' : ''}" href="${href}">${label}</a>`;
+function navLinkEl(href, label, id, active) {
+  return `<a class="nav-link ${active === id ? 'active' : ''}" href="${href}" role="listitem">${label}</a>`;
+}
+
+/* ─────────────────────────────────────────
+   Announcement Modal
+───────────────────────────────────────── */
+function ensureModalsExist() {
+  if (!document.getElementById('modal-announcement')) {
+    const overlay = document.createElement('div');
+    overlay.id = 'modal-announcement';
+    overlay.className = 'modal-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'modal-ann-title');
+    overlay.innerHTML = `
+      <div class="modal-panel" id="modal-ann-panel">
+        <div class="modal-panel-header">
+          <span class="modal-panel-title" id="modal-ann-title">ประกาศจากผู้ดูแลระบบ</span>
+          <button class="modal-panel-close" id="modal-ann-close" type="button" aria-label="ปิด">✕</button>
+        </div>
+        <div class="modal-panel-body" id="modal-ann-body">
+          <div style="text-align:center;padding:24px 0;color:var(--color-muted);">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" style="margin:0 auto 10px;display:block;opacity:.4"><path d="M18 9.5a6 6 0 1 0-12 0c0 7-2 7-2 8.5h16c0-1.5-2-1.5-2-8.5ZM9.75 20a2.4 2.4 0 0 0 4.5 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <p style="font-size:13px;">กำลังโหลดประกาศ...</p>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeModal('modal-announcement'); });
+    document.getElementById('modal-ann-close').addEventListener('click', () => closeModal('modal-announcement'));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal('modal-announcement'); });
+  }
+
+  if (!document.getElementById('modal-help')) {
+    const overlay = document.createElement('div');
+    overlay.id = 'modal-help';
+    overlay.className = 'modal-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-labelledby', 'modal-help-title');
+    overlay.innerHTML = `
+      <div class="modal-panel">
+        <div class="modal-panel-header">
+          <span class="modal-panel-title" id="modal-help-title">ช่วยเหลือ &amp; คำถามที่พบบ่อย</span>
+          <button class="modal-panel-close" id="modal-help-close" type="button" aria-label="ปิด">✕</button>
+        </div>
+        <div class="modal-panel-body">
+          <div style="margin-bottom:16px;">
+            <div style="font-size:12px;font-weight:800;color:var(--color-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">คำถามที่พบบ่อย</div>
+            ${buildFaq([
+              ['แอปนี้ทำงานอย่างไร?', 'Smart Songthaew ติดตามตำแหน่งรถสองแถวแบบเรียลไทม์ผ่าน GPS และแสดงบนแผนที่ คุณสามารถเลือกเส้นทาง ดูเวลาถึง (ETA) และวางแผนการเดินทางได้'],
+              ['ข้อมูลอัปเดตบ่อยแค่ไหน?', 'ตำแหน่งรถอัปเดตทุก 3-5 วินาที ETA คำนวณจาก Google Maps Traffic แบบเรียลไทม์'],
+              ['ทำไมไม่เห็นรถบนแผนที่?', 'ตรวจสอบว่าเลือกเส้นทางที่ถูกต้อง หากยังไม่เห็นรถ อาจยังไม่มีรถออนไลน์ในเส้นทางนั้นในขณะนี้'],
+              ['ใช้งานบนมือถือได้ไหม?', 'ได้เลย! แอปรองรับทุกอุปกรณ์ ทั้ง Android และ iOS ผ่านเว็บบราวเซอร์ ไม่ต้องติดตั้งแอปพลิเคชันเพิ่มเติม'],
+            ])}
+          </div>
+          <div style="border-top:1px solid var(--color-border);padding-top:14px;margin-top:4px;">
+            <div style="font-size:12px;font-weight:800;color:var(--color-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">ติดต่อผู้ดูแลระบบ</div>
+            <div style="padding:12px;background:var(--color-soft);border-radius:var(--radius-control);font-size:13px;color:var(--color-ink);">
+              <div style="font-weight:700;margin-bottom:4px;">ติดต่อผู้ดูแลระบบ</div>
+              <div style="color:var(--color-muted);">หากพบปัญหาการใช้งาน กรุณาติดต่อผ่านช่องทางด้านล่าง</div>
+              <a href="/admin.html" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:7px 12px;background:var(--color-primary);color:#fff;border-radius:var(--radius-control);font-size:12px;font-weight:700;text-decoration:none;">
+                ${userSvg(14, '#fff')} เข้าสู่ระบบผู้ดูแล
+              </a>
+            </div>
+          </div>
+          <div style="margin-top:14px;padding:10px 12px;background:var(--color-soft);border-radius:var(--radius-control);display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:12px;color:var(--color-muted);">เวอร์ชัน</span>
+            <span style="font-size:12px;font-weight:700;color:var(--color-ink);">Smart Songthaew v2.0</span>
+          </div>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', e => { if (e.target === overlay) closeModal('modal-help'); });
+    document.getElementById('modal-help-close').addEventListener('click', () => closeModal('modal-help'));
+  }
+}
+
+function buildFaq(items) {
+  return items.map(([q, a]) => `
+    <div class="faq-item">
+      <button class="faq-question" type="button" onclick="this.parentElement.classList.toggle('open')">
+        <span>${q}</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="flex:0 0 auto;transition:transform .2s;" class="faq-chevron"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="faq-answer" style="display:none;">${a}</div>
+    </div>`).join('');
+}
+
+// Toggle FAQ answer visibility
+document.addEventListener('click', e => {
+  const btn = e.target.closest('.faq-question');
+  if (!btn) return;
+  const item = btn.parentElement;
+  const answer = item.querySelector('.faq-answer');
+  const chevron = btn.querySelector('.faq-chevron');
+  if (!answer) return;
+  const open = item.classList.contains('open');
+  answer.style.display = open ? 'block' : 'none';
+  if (chevron) chevron.style.transform = open ? 'rotate(180deg)' : '';
+});
+
+function openAnnouncementModal() {
+  ensureModalsExist();
+  const overlay = document.getElementById('modal-announcement');
+  if (!overlay) return;
+  overlay.classList.add('open');
+  // Fetch announcement content
+  fetch('/api/config')
+    .then(r => r.json())
+    .then(cfg => {
+      const body = document.getElementById('modal-ann-body');
+      if (!body) return;
+      const text = cfg?.announcement || '';
+      if (text) {
+        body.innerHTML = `
+          <div style="padding:14px;background:var(--color-primary-50);border:1px solid var(--color-primary-100);border-radius:var(--radius-control);margin-bottom:12px;">
+            <div style="font-size:13px;line-height:1.6;color:var(--color-text);">${text}</div>
+          </div>
+          <div style="font-size:11px;color:var(--color-muted);">อัปเดต ${cfg?.updatedAt ? formatTime(cfg.updatedAt) : '—'}</div>`;
+      } else {
+        body.innerHTML = `
+          <div style="text-align:center;padding:28px 0;color:var(--color-muted);">
+            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" style="margin:0 auto 10px;display:block;opacity:.35"><path d="M18 9.5a6 6 0 1 0-12 0c0 7-2 7-2 8.5h16c0-1.5-2-1.5-2-8.5ZM9.75 20a2.4 2.4 0 0 0 4.5 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <p style="font-size:13px;font-weight:600;">ไม่มีประกาศในขณะนี้</p>
+          </div>`;
+      }
+    })
+    .catch(() => {
+      const body = document.getElementById('modal-ann-body');
+      if (body) body.innerHTML = `<div class="empty-state">ไม่สามารถโหลดประกาศได้</div>`;
+    });
+}
+
+function openHelpModal() {
+  ensureModalsExist();
+  document.getElementById('modal-help')?.classList.add('open');
+}
+
+function closeModal(id) {
+  document.getElementById(id)?.classList.remove('open');
 }
 
 async function hydrateRouteSelector(onRouteChange) {
@@ -364,10 +604,10 @@ async function hydrateRouteSelector(onRouteChange) {
     const payload = await fetchRoutes();
     const routes = normalizeRouteList(payload);
     select.innerHTML = routes.length
-      ? routes.map(route => `<option value="${route.route_id}">${route.name || route.route_id}</option>`).join('')
+      ? routes.map(r => `<option value="${r.route_id}">${r.name || r.route_id}</option>`).join('')
       : '<option value="">ไม่มีเส้นทาง</option>';
     const stored = sessionStorage.getItem('smartSongthaewRoute');
-    if (stored && routes.some(route => route.route_id === stored)) select.value = stored;
+    if (stored && routes.some(r => r.route_id === stored)) select.value = stored;
     select.addEventListener('change', () => {
       sessionStorage.setItem('smartSongthaewRoute', select.value);
       if (typeof onRouteChange === 'function') onRouteChange(select.value);
@@ -381,80 +621,61 @@ async function hydrateRouteSelector(onRouteChange) {
 
 function renderAnnouncement(text) {
   let el = document.getElementById('sys-announcement');
-  if (!text) {
-    if (el) el.remove();
-    return;
-  }
+  if (!text) { if (el) el.remove(); return; }
   if (!el) {
     el = document.createElement('div');
     el.id = 'sys-announcement';
-    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:1200;background:#0f172a;color:#fff;padding:10px 18px;font-size:14px;box-shadow:0 -6px 24px rgba(15,23,42,.18);';
+    el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:1200;background:#0f172a;color:#fff;padding:10px 18px;font-size:13px;font-weight:600;box-shadow:0 -6px 24px rgba(15,23,42,.18);display:flex;align-items:center;justify-content:space-between;gap:12px;';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = '✕';
+    closeBtn.style.cssText = 'background:none;border:none;color:#94a3b8;cursor:pointer;font-size:16px;flex:0 0 auto;';
+    closeBtn.addEventListener('click', () => el.remove());
+    el.appendChild(closeBtn);
     document.body.appendChild(el);
   }
-  el.textContent = text;
+  const textNode = el.firstChild;
+  if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+    textNode.textContent = text;
+  } else {
+    el.insertBefore(document.createTextNode(text), el.firstChild);
+  }
 }
 
-function getAuthToken() {
-  return localStorage.getItem('adminToken');
-}
-
-function setAuthToken(token) {
-  localStorage.setItem('adminToken', token);
-}
-
+/* ─────────────────────────────────────────
+   Auth helpers
+───────────────────────────────────────── */
+function getAuthToken()  { return localStorage.getItem('adminToken'); }
+function setAuthToken(t) { localStorage.setItem('adminToken', t); }
 function clearAuth() {
   localStorage.removeItem('adminToken');
   localStorage.removeItem('adminUsername');
 }
-
-function isLoggedIn() {
-  return Boolean(getAuthToken());
-}
-
+function isLoggedIn()  { return Boolean(getAuthToken()); }
 function authHeaders() {
-  const token = getAuthToken();
-  return token ? { Authorization: `Bearer ${token}` } : {};
+  const t = getAuthToken();
+  return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
 async function authFetch(url, options = {}) {
   const headers = { ...options.headers, ...authHeaders() };
   const response = await fetch(url, { ...options, headers });
-  if (response.status === 401) {
-    clearAuth();
-    window.location.href = '/login.html';
-    return null;
-  }
+  if (response.status === 401) { clearAuth(); window.location.href = '/login.html'; return null; }
   return response;
 }
 
 async function requireAuth() {
   const token = getAuthToken();
-  if (!token) {
-    window.location.href = '/login.html';
-    return false;
-  }
+  if (!token) { window.location.href = '/login.html'; return false; }
   try {
     const response = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
     const data = await response.json();
-    if (!data.ok) {
-      clearAuth();
-      window.location.href = '/login.html';
-      return false;
-    }
+    if (!data.ok) { clearAuth(); window.location.href = '/login.html'; return false; }
     return true;
-  } catch (_) {
-    clearAuth();
-    window.location.href = '/login.html';
-    return false;
-  }
+  } catch (_) { clearAuth(); window.location.href = '/login.html'; return false; }
 }
 
 async function fetchRoutes() {
-  try {
-    return await fetch('/api/routes').then(response => response.json());
-  } catch (_) {
-    return {};
-  }
+  try { return await fetch('/api/routes').then(r => r.json()); } catch (_) { return {}; }
 }
 
 async function createRoute(data) {
@@ -465,9 +686,7 @@ async function createRoute(data) {
   });
 }
 
-async function deleteRoute(id) {
-  return authFetch(`/api/routes/${id}`, { method: 'DELETE' });
-}
+async function deleteRoute(id) { return authFetch(`/api/routes/${id}`, { method: 'DELETE' }); }
 
 async function addVehicleToRoute(routeId, vehicleId, type = 'real') {
   return authFetch(`/api/routes/${routeId}/vehicles`, {
@@ -482,9 +701,5 @@ async function removeVehicleFromRoute(routeId, vehicleId) {
 }
 
 async function fetchRouteVehicles(routeId) {
-  try {
-    return await fetch(`/api/routes/${routeId}/vehicles`).then(response => response.json());
-  } catch (_) {
-    return {};
-  }
+  try { return await fetch(`/api/routes/${routeId}/vehicles`).then(r => r.json()); } catch (_) { return {}; }
 }
