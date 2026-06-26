@@ -616,6 +616,7 @@ app.get('/api/locations', async (req, res) => {
     for (const [id, val] of Object.entries(raw)) {
       // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
       if (!demoMode && isDemoVehicle(id, val)) continue;
+      if (demoMode && isDemoVehicle(id, val)) console.log(`[demo] including demo vehicle ${id}`);
       if (routeId && canonicalRouteId(val.routeId) !== canonicalRouteId(routeId) && !isDemoVehicle(id, val)) continue;
       if (val?.current) {
         result[id] = { current: demoMode ? val.current : currentForLiveMode(val.current), routeId: val.routeId, type: val.type };
@@ -1033,12 +1034,26 @@ function bearingCalc(la1,lo1,la2,lo2){
   return((Math.atan2(y,x)*180/Math.PI)+360)%360;
 }
 const DEMO_IDS = ['DEMO_1', 'DEMO_2', 'DEMO_3'];
+const DEMO_FALLBACK_COORDS = [
+  { lat: 8.4304, lng: 99.9631 },
+  { lat: 8.4580, lng: 99.9502 },
+  { lat: 8.4892, lng: 99.9378 },
+  { lat: 8.5201, lng: 99.9215 },
+  { lat: 8.5489, lng: 99.9087 },
+  { lat: 8.5812, lng: 99.8934 },
+  { lat: 8.6134, lng: 99.8821 },
+  { lat: 8.6445, lng: 99.8673 },
+  { lat: 8.6723, lng: 99.8512 },
+  { lat: 8.7001, lng: 99.8334 },
+];
 let _demoTimer = null;
 let _demoRouteId = 'route_nakhon_phromkhiri';
 let demoRouteCoords = [];
 let _demoRouteCoordFormat = 'unknown';
+let _demoRouteCoordSource = 'none';
 let _demoSpeedMultiplier = 1;
 let _demoVehicles = new Map();
+let _demoWriteLogCounts = new Map();
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -1061,6 +1076,7 @@ function buildVehiclePairs(nodes) {
 
 function initializeDemoFleet() {
   const len = demoRouteCoords.length;
+  console.log(`[DEMO] initializeDemoFleet coords=${len} source=${_demoRouteCoordSource} format=${_demoRouteCoordFormat}`);
   const indices = [
     0,
     Math.floor(len / 3),
@@ -1075,6 +1091,10 @@ function initializeDemoFleet() {
       battery: [93, 86, 79][index],
     }
   ]));
+  _demoWriteLogCounts = new Map(DEMO_IDS.map(id => [id, 0]));
+  for (const vehicle of _demoVehicles.values()) {
+    console.log(`[DEMO] ${vehicle.id} starts at segmentIndex=${vehicle.segmentIndex}`);
+  }
 }
 
 function moveDemoVehicle(vehicleId, timestamp, updates) {
@@ -1083,6 +1103,10 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   const currentIndex = vehicle.segmentIndex;
   const coord = demoRouteCoords[currentIndex];
   const nextCoord = demoRouteCoords[(currentIndex + 1) % demoRouteCoords.length];
+  if (!Number.isFinite(coord?.lat) || !Number.isFinite(coord?.lng)) {
+    console.error(`[DEMO] Invalid coord for ${vehicleId} segment=${currentIndex}:`, coord);
+    return null;
+  }
   const speed = Math.round((30 + Math.random() * 25) * _demoSpeedMultiplier);
   vehicle.speed = Math.max(30, Math.min(55, speed));
   vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
@@ -1112,10 +1136,16 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
   updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
   vehicle.segmentIndex = (currentIndex + 1) % demoRouteCoords.length;
+  const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
+  if (logCount < 3) {
+    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current segment=${currentIndex} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
+    _demoWriteLogCounts.set(vehicleId, logCount + 1);
+  }
   return current;
 }
 
 async function stopDemoFleet() {
+  console.log('[DEMO] stopDemoFleet clearing interval and removing demo fleet entries');
   clearInterval(_demoTimer); _demoTimer = null; _demoVehicles = new Map();
   const cleanup = { 'fleet/TWIN_01': null };
   DEMO_IDS.forEach(id => { cleanup[`fleet/${id}`] = null; });
@@ -1127,7 +1157,12 @@ async function demoFleetTick() {
   const timestamp = Date.now();
   const updates = {};
   DEMO_IDS.forEach(vehicleId => moveDemoVehicle(vehicleId, timestamp, updates));
+  console.log(`[DEMO] demoFleetTick updates=${Object.keys(updates).length} coordCount=${demoRouteCoords.length}`);
   await db.ref().update(updates);
+}
+
+function activeDemoIntervalCount() {
+  return _demoTimer ? 1 : 0;
 }
 
 function normalizeDemoRouteCoords(coords = []) {
@@ -1140,45 +1175,46 @@ function normalizeDemoRouteCoords(coords = []) {
   return { coords: normalized, format };
 }
 
-function selectDemoRoute(routes, requestedRouteId, configuredRouteId) {
+function findDemoRouteWithCoords(routes) {
   const entries = Object.entries(routes || {});
-  const preferredIds = [requestedRouteId, configuredRouteId, _demoRouteId].filter(Boolean);
-  for (const routeId of preferredIds) {
-    const canonical = canonicalRouteId(routeId);
-    const found = entries.find(([id, route]) =>
-      id === routeId ||
-      route.routeId === routeId ||
-      route.route_id === routeId ||
-      canonicalRouteId(id) === canonical ||
-      canonicalRouteId(route.routeId || route.route_id) === canonical
-    );
-    if (found) return found;
+  console.log(`[DEMO] Scanning ${entries.length} Firebase routes for coords length > 5`);
+  for (const [routeKey, route] of entries) {
+    const rawCoords = Array.isArray(route?.coords) ? route.coords : [];
+    const normalized = normalizeDemoRouteCoords(rawCoords);
+    const routeId = route?.route_id || route?.routeId || routeKey;
+    console.log(`[DEMO] route candidate routeId=${routeId} rawCoords=${rawCoords.length} validCoords=${normalized.coords.length} format=${normalized.format}`);
+    if (normalized.coords.length > 5) {
+      console.log(`[DEMO] selected routeId=${routeId} coordCount=${normalized.coords.length} firstCoord=${JSON.stringify(normalized.coords[0])}`);
+      return { routeKey, route, normalized };
+    }
   }
-  return entries.find(([, route]) => Array.isArray(route?.coords) && route.coords.length > 0);
+  return null;
 }
 
-async function startDemoFleet(requestedRouteId = null) {
+async function startDemoFleet() {
   const [routesSnap, configSnap] = await Promise.all([
     db.ref('routes').once('value'),
     db.ref('system/config').once('value'),
   ]);
   const routes = routesSnap.val() || {};
   const config = configSnap.val() || {};
-  const selected = selectDemoRoute(routes, requestedRouteId || config.demoRouteId, config.demoRouteId);
-  if (!selected) {
-    console.error('[DEMO] Cannot start: no route with coords found in Firebase routes');
-    throw new Error('No route with coords found for demo');
+  console.log(`[DEMO] startDemoFleet demoRouteIdConfig=${config.demoRouteId || '-'} assumption=routes is object keyed by routeId; coords may be [lat,lng] or {lat,lng}`);
+  const selected = findDemoRouteWithCoords(routes);
+  if (selected) {
+    const routeId = selected.route.route_id || selected.route.routeId || selected.routeKey;
+    demoRouteCoords = selected.normalized.coords;
+    _demoRouteCoordFormat = selected.normalized.format;
+    _demoRouteCoordSource = 'firebase';
+    _demoRouteId = routeId;
+  } else {
+    demoRouteCoords = DEMO_FALLBACK_COORDS.map(point => ({ ...point }));
+    _demoRouteCoordFormat = 'object-lat-lng';
+    _demoRouteCoordSource = 'fallback';
+    _demoRouteId = config.demoRouteId || _demoRouteId;
+    console.error('[DEMO] Using fallback hardcoded route');
+    console.log(`[DEMO] selected fallback routeId=${_demoRouteId} coordCount=${demoRouteCoords.length} firstCoord=${JSON.stringify(demoRouteCoords[0])}`);
   }
-  const [routeKey, route] = selected;
-  const normalized = normalizeDemoRouteCoords(route.coords || []);
-  if (!normalized.coords.length) {
-    console.error(`[DEMO] Cannot start: route ${routeKey} has no valid coords`);
-    throw new Error(`Route ${routeKey} has no valid coords`);
-  }
-  demoRouteCoords = normalized.coords;
-  _demoRouteCoordFormat = normalized.format;
-  _demoRouteId = route.route_id || route.routeId || routeKey;
-  console.log(`[DEMO] route=${_demoRouteId} coords=${demoRouteCoords.length} format=${_demoRouteCoordFormat}`);
+  console.log(`[DEMO] route=${_demoRouteId} coords=${demoRouteCoords.length} source=${_demoRouteCoordSource} format=${_demoRouteCoordFormat}`);
   await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
   initializeDemoFleet();
   clearInterval(_demoTimer);
@@ -1188,9 +1224,11 @@ async function startDemoFleet(requestedRouteId = null) {
 
 app.post('/api/demo/start', authMiddleware, async (req,res)=>{
   try {
-    await startDemoFleet(req.body?.routeId || req.body?.route_id || null);
-    return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS, coords: demoRouteCoords.length, coordFormat: _demoRouteCoordFormat });
+    console.log(`[DEMO] POST /api/demo/start requestedRoute=${req.body?.routeId || req.body?.route_id || '-'}`);
+    await startDemoFleet();
+    return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS, coords: demoRouteCoords.length, coordFormat: _demoRouteCoordFormat, coordSource: _demoRouteCoordSource });
   } catch (error) {
+    console.error('[DEMO] start failed:', error);
     return res.status(500).json({ error: error.message });
   }
 });
@@ -1217,6 +1255,36 @@ app.get('/api/demo/status', async (req,res)=>{
     return res.json({ running: demoMode && _demoTimer !== null, demoMode, vehicles: DEMO_IDS, ids: DEMO_IDS });
   } catch (error) {
     res.status(500).json({ error: 'Failed to read demo status' });
+  }
+});
+
+app.get('/api/demo/debug', async (_req, res) => {
+  try {
+    const [demoMode, fleetSnap] = await Promise.all([
+      getDemoMode(),
+      db.ref('fleet').once('value'),
+    ]);
+    const fleet = fleetSnap.val() || {};
+    const vehicles = {};
+    DEMO_IDS.forEach(id => {
+      const memory = _demoVehicles.get(id);
+      const current = fleet[id]?.current || {};
+      vehicles[id] = {
+        lat: Number.isFinite(Number(current.lat)) ? Number(current.lat) : null,
+        lng: Number.isFinite(Number(current.lng)) ? Number(current.lng) : null,
+        segmentIndex: memory?.segmentIndex ?? null,
+      };
+    });
+    return res.json({
+      demoMode,
+      coordCount: demoRouteCoords.length,
+      coordSource: _demoRouteCoordSource,
+      vehicles,
+      intervals: activeDemoIntervalCount(),
+    });
+  } catch (error) {
+    console.error('[DEMO] debug failed:', error);
+    return res.status(500).json({ error: 'Failed to read demo debug state' });
   }
 });
 
@@ -1635,7 +1703,13 @@ app.get('/api/v1/network', async (req, res) => {
     const nodes = Object.entries(fleetData)
       .filter(([vehicleId, vehicleData]) => demoMode || !isDemoVehicle(vehicleId, vehicleData))
       .map(([vehicleId, vehicleData]) => normalizeNetworkNode(vehicleId, vehicleData.current || {}, vehicleData, offlineTimeoutMs, demoMode))
-      .filter(node => !route_id || route_id === 'all' || node.route_id === canonicalRouteId(route_id))
+      .filter(node => {
+        if (demoMode && node.demo) {
+          console.log(`[demo] including demo vehicle ${node.id}`);
+          return true;
+        }
+        return !route_id || route_id === 'all' || node.route_id === canonicalRouteId(route_id);
+      })
       .filter(node => !direction || direction === 'all' || node.direction === direction)
       .filter(node => online_only !== 'true' || node.status === 'online');
 
@@ -1683,9 +1757,11 @@ app.listen(PORT, async () => {
   // If demoMode is enabled in config, auto-start the simulator
   try {
     const demoMode = await getDemoMode();
-    if (demoMode) {
-      console.log('🧬 [Boot] Demo Mode is enabled in Firebase. Starting simulator...');
+    if (demoMode && activeDemoIntervalCount() === 0) {
+      console.log('🧬 [Boot] Demo Mode is enabled in Firebase and no demo interval is active. Starting simulator...');
       await startDemoFleet();
+    } else {
+      console.log(`🧬 [Boot] Demo mode=${demoMode} activeIntervals=${activeDemoIntervalCount()}`);
     }
   } catch (err) {
     console.error('🧬 [Boot] Failed to check demo mode on startup:', err);
