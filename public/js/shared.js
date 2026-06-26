@@ -420,12 +420,28 @@ function renderSharedNavbar(options = {}) {
   const target = options.target || document.getElementById('navbar-root');
   if (!target) return;
 
+  const backButtonHtml = active === 'admin' ? `
+    <a href="/" style="
+      display:inline-flex; align-items:center; gap:6px;
+      padding:7px 14px; border-radius:8px;
+      background:#f1f5f9; color:#374151;
+      font-size:13px; font-weight:500;
+      text-decoration:none; border:1px solid #e2e8f0;
+      transition:background .15s;
+    " onmouseover="this.style.background='#e2e8f0'" 
+      onmouseout="this.style.background='#f1f5f9'">
+      ← กลับหน้าหลัก
+    </a>` : '';
+
   target.innerHTML = `
     <nav class="app-navbar ${fixed ? 'fixed' : ''}" role="navigation" aria-label="เมนูหลัก">
-      <a class="brand-link" href="/">
-        <span class="brand-icon">${busSvg(20, '#fff')}</span>
-        <span class="brand-text"><span class="smart">Smart</span><span class="songthaew">Songthaew</span></span>
-      </a>
+      <div style="display:inline-flex; align-items:center; gap:12px; min-width: 0;">
+        ${backButtonHtml}
+        <a class="brand-link" href="/">
+          <span class="brand-icon">${busSvg(20, '#fff')}</span>
+          <span class="brand-text"><span class="smart">Smart</span><span class="songthaew">Songthaew</span></span>
+        </a>
+      </div>
       <div class="nav-route">
         <select id="shared-route-select" aria-label="เลือกเส้นทาง">
           <option value="">กำลังโหลดเส้นทาง...</option>

@@ -217,6 +217,10 @@ async function checkAuth() {
   const isAuthed = await requireAuth();
   if (!isAuthed) return;
 
+  if (typeof renderSharedNavbar === 'function') {
+    renderSharedNavbar({ active: 'admin' });
+  }
+
   const username = localStorage.getItem('adminUsername') || 'Admin';
   const el = document.getElementById('user-info');
   if (el) el.textContent = `👤 ${username}`;

@@ -335,7 +335,7 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
   const lng = parseFloat(data.lng);
   const validCoord = hasValidGpsFix(data);
   const lastSeen = data.timestamp || 0;
-  const routeId = data.routeId || data.route_id || vehicleMeta?.routeId || 'unassigned';
+  const routeId = canonicalRouteId(data.routeId || data.route_id || vehicleMeta?.routeId || 'unassigned');
   const isDemo = isDemoVehicle(vehicleId, vehicleMeta) || String(routeId).toLowerCase().includes('demo');
   const isOnline = validCoord && (isDemo && demoMode || Date.now() - lastSeen < offlineThresholdMs);
   const node = {
@@ -616,7 +616,7 @@ app.get('/api/locations', async (req, res) => {
     for (const [id, val] of Object.entries(raw)) {
       // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
       if (!demoMode && isDemoVehicle(id, val)) continue;
-      if (routeId && val.routeId !== routeId) continue;
+      if (routeId && canonicalRouteId(val.routeId) !== canonicalRouteId(routeId) && !isDemoVehicle(id, val)) continue;
       if (val?.current) {
         result[id] = { current: demoMode ? val.current : currentForLiveMode(val.current), routeId: val.routeId, type: val.type };
       }
@@ -1073,22 +1073,31 @@ function buildVehiclePairs(nodes) {
 }
 
 function initializeDemoFleet() {
-  const offsets = [0.08, 0.42, 0.76];
-  _demoVehicles = offsets.map((offset, index) => ({
-    id: DEMO_IDS[index],
-    segment: Math.min(_demoRoute.length - 2, Math.floor(offset * (_demoRoute.length - 1))),
-    progress: (offset * (_demoRoute.length - 1)) % 1,
-    forward: index !== 1,
-    speed: [34, 43, 55][index],
-    targetSpeed: [38, 46, 52][index],
-    battery: [93, 86, 79][index]
-  }));
+  const len = _demoRoute.length;
+  const indices = [
+    0,
+    Math.floor((len - 1) / 3),
+    Math.floor((len - 1) * 2 / 3)
+  ];
+  _demoVehicles = indices.map((idx, index) => {
+    const forward = index !== 1;
+    const segment = forward ? idx : (len - 1 - idx);
+    return {
+      id: DEMO_IDS[index],
+      segment: Math.max(0, Math.min(len - 2, segment)),
+      progress: 0,
+      forward,
+      speed: [34, 43, 55][index],
+      targetSpeed: [38, 46, 52][index],
+      battery: [93, 86, 79][index]
+    };
+  });
 }
 
 function moveDemoVehicle(vehicle) {
   vehicle.targetSpeed = Math.max(30, Math.min(60, vehicle.targetSpeed + (Math.random() - 0.5) * 4));
   vehicle.speed += Math.max(-2, Math.min(2, vehicle.targetSpeed - vehicle.speed));
-  let remaining = ((vehicle.speed * _demoSpeedMultiplier * 2) / 3600) / 111;
+  let remaining = ((vehicle.speed * _demoSpeedMultiplier * 3) / 3600) / 111;
   while (remaining > 0) {
     const start = vehicle.forward ? vehicle.segment : _demoRoute.length - 1 - vehicle.segment;
     const end = vehicle.forward ? start + 1 : start - 1;
@@ -1133,7 +1142,7 @@ async function startDemoFleet() {
   await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
   initializeDemoFleet();
   clearInterval(_demoTimer);
-  _demoTimer = setInterval(demoFleetTick, 2000);
+  _demoTimer = setInterval(demoFleetTick, 3000);
   await demoFleetTick();
 }
 
@@ -1165,7 +1174,7 @@ app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
 app.get('/api/demo/status', async (req,res)=>{
   try {
     const demoMode = await getDemoMode();
-    return res.json({demoMode,running:demoMode && _demoTimer!==null,vehicles:demoMode ? DEMO_IDS.length : 0,ids:demoMode ? DEMO_IDS : []});
+    return res.json({ running: demoMode && _demoTimer !== null, demoMode, vehicles: DEMO_IDS, ids: DEMO_IDS });
   } catch (error) {
     res.status(500).json({ error: 'Failed to read demo status' });
   }
@@ -1586,7 +1595,7 @@ app.get('/api/v1/network', async (req, res) => {
     const nodes = Object.entries(fleetData)
       .filter(([vehicleId, vehicleData]) => demoMode || !isDemoVehicle(vehicleId, vehicleData))
       .map(([vehicleId, vehicleData]) => normalizeNetworkNode(vehicleId, vehicleData.current || {}, vehicleData, offlineTimeoutMs, demoMode))
-      .filter(node => !route_id || route_id === 'all' || node.route_id === route_id)
+      .filter(node => !route_id || route_id === 'all' || node.route_id === canonicalRouteId(route_id))
       .filter(node => !direction || direction === 'all' || node.direction === direction)
       .filter(node => online_only !== 'true' || node.status === 'online');
 
@@ -1630,6 +1639,17 @@ app.use((req, res) => {
 app.listen(PORT, async () => {
   // Initialize default data
   await initializeDefaultData();
+
+  // If demoMode is enabled in config, auto-start the simulator
+  try {
+    const demoMode = await getDemoMode();
+    if (demoMode) {
+      console.log('🧬 [Boot] Demo Mode is enabled in Firebase. Starting simulator...');
+      await startDemoFleet();
+    }
+  } catch (err) {
+    console.error('🧬 [Boot] Failed to check demo mode on startup:', err);
+  }
   
   console.log('\n🚐  Smart Songthaew Tracker — Server Ready');
   console.log(`    User:       http://localhost:${PORT}/`);
