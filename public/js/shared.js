@@ -24,7 +24,7 @@ window.SYS = {
   demoMode: false,
   demoVehicles: 1,
   routeName: 'นครศรีธรรมราช ↔ พรหมคีรี',
-  offlineTimeout: 30,
+  offlineTimeout: 90,
   announcement: '',
   updatedAt: null,
 };
@@ -95,8 +95,8 @@ function calculateBearing(la1, lo1, la2, lo2) {
 
 function isVehicleOnline(vehicle) {
   if (vehicle?.status) return vehicle.status === 'online' || vehicle.status === 'delayed';
-  if (vehicle?.last_seen) return (Date.now() / 1000 - vehicle.last_seen) <= 60;
-  const timeout = (window.SYS?.offlineTimeout ?? 30) * 1000;
+  const timeout = (window.SYS?.offlineTimeout ?? 90) * 1000;
+  if (vehicle?.last_seen) return (Date.now() / 1000 - vehicle.last_seen) <= timeout / 1000;
   return Boolean(vehicle?.timestamp && (Date.now() - vehicle.timestamp) < timeout);
 }
 
@@ -158,7 +158,8 @@ function normalizeLegacyVehicle(id, entry = {}, now = Date.now() / 1000) {
   const rawTimestamp = Number(current.server_received_at || current.serverReceivedAt || current.last_seen || current.lastSeen || 0);
   const timestampMs = Number(current.timestamp || 0);
   const lastSeen = rawTimestamp > 0 ? rawTimestamp : timestampMs > 10_000_000_000 ? timestampMs / 1000 : timestampMs;
-  const status = current.status || (lastSeen && now - lastSeen <= 60 ? 'online' : 'offline');
+  const timeoutSec = window.SYS?.offlineTimeout ?? 90;
+  const status = current.status || (lastSeen && now - lastSeen <= timeoutSec ? 'online' : 'offline');
   const heading = Number(current.heading ?? current.bearing ?? 0);
   return {
     vehicle_id: current.vehicle_id || current.vehicleId || id,

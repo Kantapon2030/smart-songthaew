@@ -36,9 +36,31 @@ struct BufferedPacket {
   unsigned long timestamp;
 };
 
+#define DEDUP_CACHE_SIZE 30
+#define DEDUP_EXPIRE_MS  30000UL
+#define DEDUP_PACKET_ID_LEN 48
+#define SEEN_VEHICLE_SIZE 20
+#define HEARTBEAT_INTERVAL_MS 30000UL
+#define SEEN_VEHICLE_EXPIRE_MS 90000UL
+
+struct DedupEntry {
+  char packetId[DEDUP_PACKET_ID_LEN];
+  uint32_t seenAtMs;
+};
+
+struct SeenVehicle {
+  char vehicleId[16];
+  float rssi;
+  float snr;
+  unsigned long lastSeenMs;
+  unsigned long lastHeartbeatMs;
+  bool used;
+};
+
 BufferedPacket packetBuffer[BUFFER_SIZE];
-char seenPackets[DEDUP_BUFFER][40];
-int seenIdx = 0;
+DedupEntry dedupCache[DEDUP_CACHE_SIZE];
+SeenVehicle seenVehicles[SEEN_VEHICLE_SIZE];
+int dedupHead = 0;
 
 bool wifiConnected = false;
 bool loraReady = false;
@@ -58,6 +80,7 @@ bool isVehiclePacket(JsonDocument& doc) {
 }
 
 bool isValidThailandCoord(float lat, float lng);
+int postToServer(String body);
 
 void beginLedPulse(unsigned long durationMs) {
   ledPulseActive = true;
@@ -234,17 +257,20 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   out["seq"] = packetSeq;
   out["boot_id"] = bootId;
   out["gps_timestamp"] = compact["ts"] | 0UL;
-  out["lat"] = compact["la"].is<const char*>() ? atof(compact["la"] | "0") : (compact["la"] | 0.0f);
-  out["lng"] = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
+  float lat = compact["la"].is<const char*>() ? atof(compact["la"] | "0") : (compact["la"] | 0.0f);
+  float lng = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
+  bool coordValid = isValidThailandCoord(lat, lng);
+  bool gpsFix = compact.containsKey("fx") ? ((compact["fx"] | 0) == 1) : coordValid;
+  if (gpsFix && coordValid) {
+    out["lat"] = lat;
+    out["lng"] = lng;
+  }
   out["speed"] = compact["sp"] | 0;
   out["battery"] = compact["bt"] | -1;
   out["hop"] = compact["hp"] | 0;
   out["packet_id"] = packetId;
   out["packet_hash"] = packetHash;
   out["ttl"] = compact["tt"] | 0;
-  bool gpsFix = compact.containsKey("fx")
-    ? ((compact["fx"] | 0) == 1)
-    : isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
 
   if (compact.containsKey("hd")) out["heading"] = compact["hd"].as<int>();
   if (compact.containsKey("ri")) out["routeId"] = expandRouteId(compact["ri"].as<const char*>());
@@ -266,7 +292,7 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
 
   out["source"] = "ground_station";
   out["relay_via"] = "lora";
-  out["gps_fix"] = gpsFix && isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
+  out["gps_fix"] = gpsFix && coordValid;
   out["received_rssi"] = LoRa.packetRssi();
   out["received_snr"] = LoRa.packetSnr();
   out["received_at"] = millis();
@@ -278,19 +304,99 @@ bool isValidThailandCoord(float lat, float lng) {
   return lat >= 5.5f && lat <= 20.5f && lng >= 97.5f && lng <= 105.7f;
 }
 
-bool alreadySeen(const char* packetId) {
+bool isDuplicate(const char* packetId) {
   if (packetId == nullptr || packetId[0] == '\0') return false;
-  for (int i = 0; i < DEDUP_BUFFER; i++) {
-    if (strncmp(seenPackets[i], packetId, sizeof(seenPackets[i])) == 0) return true;
+  uint32_t now = millis();
+
+  for (int i = 0; i < DEDUP_CACHE_SIZE; i++) {
+    if (dedupCache[i].packetId[0] == '\0') continue;
+
+    if (now - dedupCache[i].seenAtMs > DEDUP_EXPIRE_MS) {
+      dedupCache[i].packetId[0] = '\0';
+      dedupCache[i].seenAtMs = 0;
+      continue;
+    }
+
+    if (strcmp(dedupCache[i].packetId, packetId) == 0) return true;
   }
+
+  strncpy(dedupCache[dedupHead].packetId, packetId, DEDUP_PACKET_ID_LEN - 1);
+  dedupCache[dedupHead].packetId[DEDUP_PACKET_ID_LEN - 1] = '\0';
+  dedupCache[dedupHead].seenAtMs = now;
+  dedupHead = (dedupHead + 1) % DEDUP_CACHE_SIZE;
   return false;
 }
 
-void markSeen(const char* packetId) {
-  if (packetId == nullptr || packetId[0] == '\0' || alreadySeen(packetId)) return;
-  strncpy(seenPackets[seenIdx], packetId, sizeof(seenPackets[seenIdx]) - 1);
-  seenPackets[seenIdx][sizeof(seenPackets[seenIdx]) - 1] = '\0';
-  seenIdx = (seenIdx + 1) % DEDUP_BUFFER;
+int findSeenVehicleIndex(const char* vehicleId) {
+  if (vehicleId == nullptr || vehicleId[0] == '\0') return -1;
+  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (seenVehicles[i].used && strncmp(seenVehicles[i].vehicleId, vehicleId, sizeof(seenVehicles[i].vehicleId)) == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int seenVehicleSlotFor(const char* vehicleId) {
+  int index = findSeenVehicleIndex(vehicleId);
+  if (index >= 0) return index;
+
+  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (!seenVehicles[i].used) return i;
+  }
+
+  int oldest = 0;
+  for (int i = 1; i < SEEN_VEHICLE_SIZE; i++) {
+    if (seenVehicles[i].lastSeenMs < seenVehicles[oldest].lastSeenMs) oldest = i;
+  }
+  return oldest;
+}
+
+void noteVehicleSeen(const char* vehicleId, float rssi, float snr) {
+  if (vehicleId == nullptr || vehicleId[0] == '\0') return;
+  int index = seenVehicleSlotFor(vehicleId);
+  if (index < 0) return;
+
+  strncpy(seenVehicles[index].vehicleId, vehicleId, sizeof(seenVehicles[index].vehicleId) - 1);
+  seenVehicles[index].vehicleId[sizeof(seenVehicles[index].vehicleId) - 1] = '\0';
+  seenVehicles[index].rssi = rssi;
+  seenVehicles[index].snr = snr;
+  seenVehicles[index].lastSeenMs = millis();
+  seenVehicles[index].used = true;
+}
+
+void serviceVehicleHeartbeats() {
+  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+
+  unsigned long now = millis();
+  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (!seenVehicles[i].used) continue;
+    if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) {
+      seenVehicles[i].used = false;
+      seenVehicles[i].vehicleId[0] = '\0';
+      continue;
+    }
+    if (now - seenVehicles[i].lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) continue;
+
+    StaticJsonDocument<256> hb;
+    hb["vehicleId"] = seenVehicles[i].vehicleId;
+    hb["heartbeat"] = true;
+    hb["source"] = "ground_station";
+    hb["relay_via"] = "lora";
+    hb["routeId"] = ROUTE_ID;
+    hb["route_id"] = ROUTE_ID;
+    hb["direction"] = ROUTE_DIR;
+    hb["received_rssi"] = seenVehicles[i].rssi;
+    hb["received_snr"] = seenVehicles[i].snr;
+
+    String body;
+    serializeJson(hb, body);
+    seenVehicles[i].lastHeartbeatMs = now;
+    int code = postToServer(body);
+    Serial.printf("[HEARTBEAT] %s code:%d rssi:%.0f snr:%.1f\n",
+                  seenVehicles[i].vehicleId, code, seenVehicles[i].rssi, seenVehicles[i].snr);
+    yield();
+  }
 }
 
 int oldestBufferIndex() {
@@ -505,8 +611,10 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
 
   out["vehicleId"] = rx["vid"] | "";
   out["vehicle_id"] = rx["vid"] | "";
-  out["lat"] = lat;
-  out["lng"] = lng;
+  if (gpsFix) {
+    out["lat"] = lat;
+    out["lng"] = lng;
+  }
   out["speed"] = rx["spd"] | 0.0f;
   out["battery"] = rx["bat"] | -1;
   out["routeId"] = rx["rid"] | ROUTE_ID;
@@ -622,11 +730,12 @@ void onLoRaReceive(int packetSize) {
   }
 
   const char* packetId = compactPacket ? (postDoc["packet_id"] | "") : (rx["pid"] | "");
-  if (alreadySeen(packetId)) {
-    Serial.printf("[RX] duplicate %s dropped\n", packetId[0] ? packetId : "?");
+  const char* seenVehicleId = compactPacket ? (postDoc["vehicleId"] | "") : (rx["vid"] | "");
+  noteVehicleSeen(seenVehicleId, receivedRssi, receivedSnr);
+  if (isDuplicate(packetId)) {
+    Serial.printf("[DEDUP] skip duplicate: %s\n", packetId[0] ? packetId : "?");
     return;
   }
-  markSeen(packetId);
 
   int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
   bool ok = code >= 200 && code < 300;
@@ -678,6 +787,8 @@ void loop() {
     lastFlushMs = now;
     flushBuffer();
   }
+
+  serviceVehicleHeartbeats();
 
   yield();
 }

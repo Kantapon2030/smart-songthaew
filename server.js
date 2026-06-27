@@ -669,6 +669,38 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     return res.status(400).json({ error: 'vehicleId is required' });
   }
 
+  if (req.body.heartbeat === true) {
+    const ts = Date.now();
+    const lastSeen = Math.floor(ts / 1000);
+    const currentRef = db.ref(`fleet/${vehicleId}/current`);
+    const previous = (await currentRef.once('value')).val() || {};
+    const heartbeatRouteId = req.body.routeId || req.body.route_id || previous.routeId || previous.route_id || 'unassigned';
+    const patch = {
+      timestamp: ts,
+      server_received_at: lastSeen,
+      last_seen: lastSeen,
+      vehicle_id: vehicleId,
+      routeId: heartbeatRouteId,
+      route_id: heartbeatRouteId,
+      direction: req.body.direction || previous.direction || 'unknown',
+      source,
+      relay_via: req.body.relay_via || previous.relay_via || 'lora',
+      heartbeat: true,
+      gps_fix: previous.gps_fix === true,
+    };
+    if (received_rssi !== null) {
+      patch.received_rssi = received_rssi;
+      patch.rssi = received_rssi;
+    }
+    if (received_snr !== null) {
+      patch.received_snr = received_snr;
+      patch.snr = received_snr;
+    }
+    if (hop !== null) patch.hop = hop;
+    await currentRef.update(patch);
+    return res.status(200).json({ message: 'Heartbeat updated', status: 'heartbeat', timestamp: ts });
+  }
+
   const latF = parseFloat(lat);
   const lngF = parseFloat(lng);
 
@@ -1218,7 +1250,7 @@ app.get('/api/config', async (req, res) => {
       demoMode:       cfg.demoMode       ?? false,
       demoVehicles:   cfg.demoVehicles   ?? 3,
       routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
-      offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 30) ? cfg.offlineTimeout : 30,
+      offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 90) ? cfg.offlineTimeout : 90,
       announcement:   cfg.announcement  ?? '',
       updatedAt:      cfg.updatedAt      ?? null,
     });
@@ -1924,7 +1956,7 @@ app.get('/api/v1/network', async (req, res) => {
       status: 'online',
       label: configuredGroundStation.label || 'Ground Station'
     };
-    const offlineTimeoutMs = (sysConfig.offlineTimeout || 300) * 1000;
+    const offlineTimeoutMs = Math.max(90, Number(sysConfig.offlineTimeout) || 90) * 1000;
     const nodes = Object.entries(fleetData)
       .filter(([vehicleId, vehicleData]) => demoMode || !isDemoVehicle(vehicleId, vehicleData))
       .map(([vehicleId, vehicleData]) => normalizeNetworkNode(vehicleId, vehicleData.current || {}, vehicleData, offlineTimeoutMs, demoMode))

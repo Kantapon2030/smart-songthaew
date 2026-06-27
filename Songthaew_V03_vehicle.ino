@@ -637,23 +637,25 @@ String buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t pac
                        const char* relayFrom, int linkQualityValue, bool storeForward,
                        const String& relayChain, bool gpsFix) {
   StaticJsonDocument<256> doc;
-  char latText[12];
-  char lngText[12];
-  dtostrf(lat, 0, 6, latText);
-  dtostrf(lng, 0, 6, lngText);
 
   doc["id"] = shortVehicleId(vehicleId);
   doc["sq"] = packetSeq;
   doc["bi"] = packetBootId;
   doc["ts"] = packetGpsTs;
-  doc["la"] = serialized(latText);
-  doc["ln"] = serialized(lngText);
+  doc["fx"] = gpsFix ? 1 : 0;
+  if (gpsFix) {
+    char latText[12];
+    char lngText[12];
+    dtostrf(lat, 0, 6, latText);
+    dtostrf(lng, 0, 6, lngText);
+    doc["la"] = serialized(latText);
+    doc["ln"] = serialized(lngText);
+  }
   doc["sp"] = (int)round(speed);
   doc["bt"] = battery;
   doc["hp"] = hop;
   doc["pk"] = packetHash6(packetId);
   doc["tt"] = ttl;
-  if (measureJson(doc) < 190) doc["fx"] = gpsFix ? 1 : 0;
 
   if (measureJson(doc) < 140) {
     doc["hd"] = heading;
