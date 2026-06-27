@@ -48,6 +48,7 @@ unsigned long lastFlushMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
+String lastHttpResponse = "";
 bool ledPulseActive = false;
 
 bool isVehiclePacket(JsonDocument& doc) {
@@ -241,6 +242,9 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   out["packet_id"] = packetId;
   out["packet_hash"] = packetHash;
   out["ttl"] = compact["tt"] | 0;
+  bool gpsFix = compact.containsKey("fx")
+    ? ((compact["fx"] | 0) == 1)
+    : isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
 
   if (compact.containsKey("hd")) out["heading"] = compact["hd"].as<int>();
   if (compact.containsKey("ri")) out["routeId"] = expandRouteId(compact["ri"].as<const char*>());
@@ -262,7 +266,7 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
 
   out["source"] = "ground_station";
   out["relay_via"] = "lora";
-  out["gps_fix"] = isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
+  out["gps_fix"] = gpsFix && isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
   out["received_rssi"] = LoRa.packetRssi();
   out["received_snr"] = LoRa.packetSnr();
   out["received_at"] = millis();
@@ -330,6 +334,7 @@ void freeBufferSlot(int index) {
 
 int postToServer(String body) {
   lastHttpLatencyMs = 0;
+  lastHttpResponse = "";
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return -1;
 
   unsigned long started = millis();
@@ -342,11 +347,16 @@ int postToServer(String body) {
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(8000);
     code = http.POST(body);
+    lastHttpResponse = http.getString();
     http.end();
   }
 
   lastHttpLatencyMs = millis() - started;
   Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
+  if (lastHttpResponse.length() > 0) {
+    Serial.print("[HTTP_BODY] ");
+    Serial.println(lastHttpResponse.substring(0, 180));
+  }
   if (code < 200 || code >= 300) Serial.printf("[POST] fail code:%d\n", code);
   return code;
 }

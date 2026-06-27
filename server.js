@@ -739,6 +739,24 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       const previous = (await db.ref(`fleet/${vehicleId}/current`).once('value')).val();
       const decision = telemetryDecision(previous, { boot_id, seq, gps_time: gpsTime, gps_fix: gpsFix });
       if (!decision.accepted) {
+        if (!hasValidGPS) {
+          await db.ref(`fleet/${vehicleId}/current`).update({
+            timestamp: ts,
+            server_received_at: Math.floor(ts / 1000),
+            last_seen: Math.floor(ts / 1000),
+            gps_fix: false,
+            routeId: routeId || previous?.routeId || 'unassigned',
+            direction: direction || previous?.direction || 'unknown',
+            battery: batI,
+            speed: 0,
+            ...(hop !== null ? { hop } : {}),
+            ...(link_quality !== null ? { link_quality } : {}),
+            ...(rssiI !== null ? { rssi: rssiI } : {}),
+            ...(snr !== null ? { snr } : {}),
+            last_ignored_reason: decision.reason,
+          });
+          return res.status(200).json({ message: 'Telemetry heartbeat updated', status: 'heartbeat', reason: decision.reason, timestamp: ts });
+        }
         return res.status(200).json({ message: 'Telemetry ignored', status: 'ignored', reason: decision.reason, timestamp: ts });
       }
     }
@@ -752,7 +770,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     if (hasValidGPS) updates[`history/${today}/${vehicleId}/${ts}`] = data;
 
     // 3. Routes active
-    if (routeId && routeId !== 'unassigned') {
+    if (hasValidGPS && routeId && routeId !== 'unassigned') {
       updates[`routes_active/${today}/${routeId}/${vehicleId}`] = {
         lastActive: ts, lat: latF, lng: lngF,
       };
@@ -955,7 +973,24 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
     const previous = (await currentRef.once('value')).val();
     const packet = { boot_id: bootId, seq, gps_time: validGpsTime(gpsTime, receivedAt) ? gpsTime : null, gps_fix: gpsFix };
     const decision = telemetryDecision(previous, packet);
-    if (!decision.accepted) return res.json({ ok: true, status: 'ignored', reason: decision.reason });
+    if (!decision.accepted) {
+      if (!hasCoordinates) {
+        await currentRef.update({
+          timestamp: receivedAt * 1000,
+          server_received_at: receivedAt,
+          last_seen: receivedAt,
+          gps_fix: gpsFix,
+          route_id: previous?.route_id || previous?.routeId || 'unassigned',
+          routeId: previous?.routeId || previous?.route_id || 'unassigned',
+          direction: req.body.direction || previous?.direction || 'unknown',
+          battery: req.body.battery ?? previous?.battery ?? -1,
+          speed: previous?.speed ?? 0,
+          last_ignored_reason: decision.reason,
+        });
+        return res.json({ ok: true, status: 'heartbeat', reason: decision.reason, server_received_at: receivedAt, last_seen: receivedAt });
+      }
+      return res.json({ ok: true, status: 'ignored', reason: decision.reason });
+    }
 
     const routeId = canonicalRouteId(req.body.route_id || 'unassigned');
     const heading = Number(req.body.heading ?? req.body.bearing ?? previous?.heading ?? 0);

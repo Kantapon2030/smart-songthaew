@@ -635,7 +635,7 @@ String buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t pac
                        float lat, float lng, float speed, int heading, int battery,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
-                       const String& relayChain) {
+                       const String& relayChain, bool gpsFix) {
   StaticJsonDocument<256> doc;
   char latText[12];
   char lngText[12];
@@ -653,6 +653,7 @@ String buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t pac
   doc["hp"] = hop;
   doc["pk"] = packetHash6(packetId);
   doc["tt"] = ttl;
+  if (measureJson(doc) < 190) doc["fx"] = gpsFix ? 1 : 0;
 
   if (measureJson(doc) < 140) {
     doc["hd"] = heading;
@@ -967,7 +968,7 @@ void transmitPacket(const char* txMode = "auto") {
                                    gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
                                    gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
                                    ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
-                                   !hasRoute, "");
+                                   !hasRoute, "", gpsValid);
 
   bool sent = payload.length() <= MAX_LORA_PACKET_BYTES && sendRawPayload(payload.c_str());
   if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
@@ -1047,7 +1048,8 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
                                    doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
                                    doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
                                    hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
-                                   VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain);
+                                   VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
+                                   doc["fix"] | false);
 
   bool sent = payload.length() <= MAX_LORA_PACKET_BYTES && sendRawPayload(payload.c_str());
   if (!hasForwardPath() || !sent) queueCarryPayload(packetId, payload, sent ? "relay_wait" : "relay_tx_fail");
@@ -1111,7 +1113,12 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["hop"] = compact["hp"] | 0;
   expanded["ttl"] = compact["tt"] | (MAX_HOPS - (int)(compact["hp"] | 0));
   expanded["lq"] = compact["lq"] | 0;
-  expanded["fix"] = true;
+  float lat = expanded["lat"] | 0.0f;
+  float lng = expanded["lng"] | 0.0f;
+  bool gpsFix = compact.containsKey("fx")
+    ? ((compact["fx"] | 0) == 1)
+    : (lat >= 5.5f && lat <= 20.5f && lng >= 97.5f && lng <= 105.7f);
+  expanded["fix"] = gpsFix;
 
   if (compact["rf"].is<const char*>()) {
     String relayFrom = fullVehicleIdFromShort(compact["rf"] | "");
