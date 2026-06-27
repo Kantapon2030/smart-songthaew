@@ -464,21 +464,33 @@ function isValidCoord(lat, lng) {
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
 }
 
+function telemetryTimestampMs(data = {}) {
+  const timestamp = Number(data.timestamp);
+  if (Number.isFinite(timestamp) && timestamp > 0) {
+    return timestamp > 10_000_000_000 ? timestamp : timestamp * 1000;
+  }
+  const receivedAt = Number(data.server_received_at || data.serverReceivedAt || data.last_seen || data.lastSeen);
+  return Number.isFinite(receivedAt) && receivedAt > 0 ? receivedAt * 1000 : 0;
+}
+
 function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, demoMode) {
   const lat = parseFloat(data.lat);
   const lng = parseFloat(data.lng);
-  const validCoord = hasValidGpsFix(data);
-  const lastSeen = data.timestamp || 0;
+  const gpsFix = hasValidGpsFix(data);
+  const lastSeen = telemetryTimestampMs(data);
   const routeId = canonicalRouteId(data.routeId || data.route_id || vehicleMeta?.routeId || 'unassigned');
   const isDemo = isDemoVehicle(vehicleId, vehicleMeta) || String(routeId).toLowerCase().includes('demo');
-  const isOnline = validCoord && (isDemo && demoMode || Date.now() - lastSeen < offlineThresholdMs);
+  const recentlySeen = lastSeen > 0 && Date.now() - lastSeen < offlineThresholdMs;
+  const isOnline = (isDemo && demoMode) || recentlySeen;
   const node = {
     id: vehicleId,
     type: 'vehicle',
     vehicle_id: vehicleId,
-    lat: validCoord ? lat : null,
-    lng: validCoord ? lng : null,
+    lat: gpsFix ? lat : null,
+    lng: gpsFix ? lng : null,
     status: isOnline ? 'online' : 'offline',
+    gps_fix: gpsFix,
+    gps_status: gpsFix ? 'fixed' : 'no_fix',
     demo: isDemo,
     route_id: routeId,
     direction: data.direction || 'unknown',
@@ -497,7 +509,7 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     store_forward: data.store_forward === true,
     version_summary: Array.isArray(data.version_summary) ? data.version_summary : []
   };
-  if (!demoMode && !validCoord) {
+  if (!demoMode && !gpsFix) {
     delete node.lat;
     delete node.lng;
   }

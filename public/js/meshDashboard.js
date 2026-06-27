@@ -305,9 +305,10 @@ function drawNodeLabel(ctx, pos, angle, r, node) {
   const isBase  = node.type === 'ground_station';
   const online  = node.status === 'online';
   const name    = node.label || node.vehicle_id || node.id;
+  const gpsText = !isBase && online && !nodeHasGpsFix(node) ? ' · GPS no fix' : '';
   const subLine = isBase
     ? 'Ground Station'
-    : (online ? '● online' : '○ offline') + ' ' + formatTime(node.last_seen);
+    : (online ? '● online' : '○ offline') + gpsText + ' ' + formatTime(node.last_seen);
 
   // For the center base station, push label straight down
   // For orbiting vehicles, push in the direction of their angle (away from center)
@@ -425,9 +426,9 @@ function renderNodeList() {
       <span class="node-dot ${node.status === 'online' ? 'online' : ''}"></span>
       <span>
         <strong>${node.vehicle_id || node.id}</strong>
-        <span class="item-meta" style="display:block;">Hop ${node.hop ?? '—'} • ${node.demo ? 'Demo' : 'Real'}</span>
+        <span class="item-meta" style="display:block;">Hop ${node.hop ?? '—'} • ${node.demo ? 'Demo' : 'Real'}${gpsMeta(node)}</span>
       </span>
-      <span class="small-badge ${node.status === 'online' ? 'status-online' : 'status-offline'}">${node.status || '—'}</span>
+      <span style="display:inline-flex;gap:4px;align-items:center;justify-content:flex-end;flex-wrap:wrap;">${statusBadge(node.status, node.gps_fix)}</span>
     </div>`).join('');
 }
 
@@ -468,7 +469,7 @@ function renderMeshTable() {
       <td>${formatDistanceMeters(row.distance_m)}</td>
       <td>${row.hop}</td>
       <td>${row.linkType}</td>
-      <td>${statusBadge(row.status)}</td>
+      <td>${statusBadge(row.status, row.gps_fix)}</td>
       <td>${formatTime(row.last_seen)}</td>
     </tr>`).join('') : '<tr><td colspan="8" class="empty-state">ยังไม่มีข้อมูลรถ</td></tr>';
   const totalPages = Math.max(1, Math.ceil(rows.length / MESH_PAGE_SIZE));
@@ -487,15 +488,27 @@ function connectivityRows() {
       hop: link?.hop ?? node.hop ?? '—',
       linkType: link?.type || (node.status === 'offline' ? 'offline' : 'none'),
       status: node.status || link?.status || 'offline',
+      gps_fix: node.gps_fix,
       last_seen: node.last_seen,
     };
   });
 }
 
-function statusBadge(status) {
+function statusBadge(status, gpsFix = true) {
   const cls = status === 'online' || status === 'good' ? 'status-online' : status === 'fair' ? 'status-warning' : status === 'offline' ? 'status-offline' : 'status-danger';
   const label = { online: 'ออนไลน์', offline: 'ออฟไลน์', good: 'good', fair: 'fair', poor: 'poor' }[status] || status || '—';
-  return `<span class="small-badge ${cls}">${label}</span>`;
+  const gpsBadge = status === 'online' && gpsFix === false
+    ? '<span class="small-badge status-warning">รับ GPS ไม่ได้</span>'
+    : '';
+  return `<span class="small-badge ${cls}">${label}</span>${gpsBadge}`;
+}
+
+function nodeHasGpsFix(node) {
+  return node?.gps_fix !== false && Number.isFinite(Number(node?.lat)) && Number.isFinite(Number(node?.lng));
+}
+
+function gpsMeta(node) {
+  return nodeHasGpsFix(node) ? '' : ' • รับ GPS ไม่ได้';
 }
 
 function distanceClass(distance) {
