@@ -969,7 +969,13 @@
     }, 1000);
   });
 </script>
-<script src="https://unpkg.com/esptool-js/bundle.js"></script>
+<script type="module">
+  import * as esptool from 'https://unpkg.com/esptool-js/bundle.js';
+  window.esptool = esptool;
+  window.ESPLoader = esptool.ESPLoader;
+  window.Transport = esptool.Transport;
+  window.dispatchEvent(new Event('esptool-js-ready'));
+</script>
 <script src="/js/flashManager.js"></script>
 <script src="/js/admin.js"></script>
 </body>
