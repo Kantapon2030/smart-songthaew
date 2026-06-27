@@ -106,12 +106,12 @@ function layoutNodes(nodes, width, height) {
   const positions = {};
   const station = nodes.find(node => node.type === 'ground_station') || { id: 'GROUND_01' };
   const vehicles = nodes.filter(node => node.type === 'vehicle');
-  const center = { x: width / 2, y: height / 2 };
+  const center = { x: width / 2, y: height * 0.46 };
   positions[station.id] = center;
-  const radius = Math.max(170, Math.min(width, height) * 0.38);
+  const radius = Math.max(44, Math.min(width * 0.3, height * 0.28, 180));
   vehicles.forEach((node, index) => {
     const angle = ((Math.PI * 2) / Math.max(vehicles.length, 1)) * index - Math.PI / 2;
-    const hopOffset = Math.min(70, Number(node.hop || 0) * 18);
+    const hopOffset = Math.min(28, Number(node.hop || 0) * 10);
     positions[node.id] = {
       x: center.x + Math.cos(angle) * (radius + hopOffset),
       y: center.y + Math.sin(angle) * (radius + hopOffset),
