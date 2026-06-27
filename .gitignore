@@ -25,6 +25,8 @@ yarn-error.log*
 *.hex
 *.elf
 *.bin
+# Firmware binaries in public/firmware are committed for Vercel static serving.
+!public/firmware/*.bin
 build/
 *.cache
 

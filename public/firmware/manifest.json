@@ -1,0 +1,17 @@
+{
+  "version": "V03.1",
+  "buildDate": "2026-06-27",
+  "changelog": "Dedup fix, GPS guard, heartbeat, offline stability",
+  "boards": {
+    "vehicle": {
+      "filename": "Songthaew_V03_vehicle.ino.bin",
+      "description": "Vehicle Node — ติดตั้งบนรถ",
+      "flashOffset": "0x0"
+    },
+    "ground": {
+      "filename": "Songthaew_V03_ground.ino.bin",
+      "description": "Ground Station — สถานีฐาน",
+      "flashOffset": "0x0"
+    }
+  }
+}

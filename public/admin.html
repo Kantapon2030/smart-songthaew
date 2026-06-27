@@ -158,6 +158,37 @@
     .admin-card-sub { font-size: 11px; color: var(--slate-400); }
     .admin-card-body { padding: 16px; }
 
+    .admin-tabs {
+      grid-column: 1 / -1;
+      display: flex;
+      gap: 8px;
+      padding: 4px 0;
+      overflow-x: auto;
+    }
+
+    .admin-tab-btn {
+      border: 1px solid var(--slate-200);
+      background: white;
+      color: var(--slate-600);
+      border-radius: 8px;
+      padding: 8px 13px;
+      font-family: inherit;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .admin-tab-btn.active {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: white;
+    }
+
+    .admin-tab-panel { display: none; grid-column: 1 / -1; }
+    .admin-tab-panel.active { display: block; }
+    .admin-grid-panel.active { display: contents; }
+
     /* ── Speed / twin info ── */
     .twin-info-row {
       display: flex;
@@ -471,9 +502,127 @@
     .route-stop-inline { display: grid; grid-template-columns: 1fr .7fr .7fr auto; gap: 8px; margin-bottom: 10px; }
     .route-editor-empty { padding: 12px; border: 1px dashed var(--slate-200); border-radius: 10px; color: var(--slate-400); text-align: center; }
 
+    .firmware-panel { display: grid; gap: 12px; }
+    .firmware-head-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+    .firmware-warning {
+      padding: 9px 12px;
+      border: 1px solid #FDE68A;
+      background: var(--amber-50);
+      color: var(--amber);
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .firmware-summary { display: grid; gap: 8px; }
+    .firmware-info {
+      padding: 10px 12px;
+      border: 1px solid var(--blue-100);
+      background: var(--blue-50);
+      border-radius: 8px;
+      color: var(--slate-700);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .firmware-info p { margin: 0; }
+    .firmware-info .text-muted { color: var(--slate-500); margin-top: 3px; }
+    .firmware-info code { font-family: var(--mono); font-size: 11px; }
+    .fw-version-line { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; color: var(--slate-500); font-size: 12px; }
+    .fw-version { color: var(--slate-800); font-weight: 900; }
+
+    .fw-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 1fr) minmax(180px, 1fr) auto auto;
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      background: var(--slate-50);
+      font-size: 12px;
+    }
+
+    .fw-row strong { display: block; color: var(--slate-800); }
+    .fw-row span { color: var(--slate-500); }
+    .fw-row code { font-family: var(--mono); font-size: 11px; color: var(--slate-700); overflow-wrap: anywhere; }
+    .fw-file-ok { color: var(--green) !important; font-weight: 800; }
+    .fw-file-missing { color: var(--red) !important; font-weight: 800; }
+
+    .flash-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: space-between; }
+    .flash-board-table-wrap { overflow-x: auto; }
+    .flash-board-table { width: 100%; border-collapse: collapse; min-width: 720px; font-size: 12px; }
+
+    .flash-board-table th,
+    .flash-board-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--slate-100);
+      text-align: left;
+      vertical-align: middle;
+    }
+
+    .flash-board-table th {
+      color: var(--slate-500);
+      text-transform: uppercase;
+      letter-spacing: .04em;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .flash-board-table td small {
+      display: block;
+      margin-top: 2px;
+      color: var(--slate-400);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    .flash-select { min-width: 130px; }
+    .flash-id-input { min-width: 130px; }
+    .flash-muted { color: var(--slate-400); }
+
+    .flash-status {
+      display: inline-flex;
+      align-items: center;
+      padding: 5px 9px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 900;
+      white-space: nowrap;
+      background: var(--slate-100);
+      color: var(--slate-500);
+      border: 1px solid var(--slate-200);
+    }
+
+    .flash-status.ready { background: #FEF3C7; color: #92400E; border-color: #FDE68A; }
+    .flash-status.flashing { background: var(--blue-50); color: var(--blue); border-color: var(--blue-100); }
+    .flash-status.done { background: var(--green-50); color: var(--green); border-color: #A7F3D0; }
+    .flash-status.error { background: var(--red-50); color: var(--red); border-color: #FECACA; }
+    .flash-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .flash-console {
+      min-height: 220px;
+      max-height: 360px;
+      overflow: auto;
+      padding: 12px;
+      border-radius: 8px;
+      background: #111827;
+      color: #D1D5DB;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .firmware-empty { padding: 16px; color: var(--slate-400); text-align: center; font-size: 12px; }
+
     @media (max-width: 760px) {
       .route-list-card { grid-template-columns: 1fr; align-items: stretch; }
       .route-editor-grid, .route-stop-inline { grid-template-columns: 1fr; }
+      .fw-row { grid-template-columns: 1fr; align-items: stretch; }
+      .flash-toolbar { align-items: stretch; }
+      .flash-toolbar > div { display: flex; gap: 8px; flex-wrap: wrap; }
     }
   </style>
 </head>
@@ -511,6 +660,13 @@
   <!-- ════════════════════════════
        DIGITAL TWIN CONTROL
   ════════════════════════════ -->
+  <div class="admin-tabs" role="tablist" aria-label="Admin sections">
+    <button class="admin-tab-btn active" type="button" data-tab="overview" onclick="switchTab('overview')">Dashboard</button>
+    <button class="admin-tab-btn" type="button" data-tab="firmware" onclick="switchTab('firmware')">Firmware</button>
+  </div>
+
+  <div class="admin-tab-panel admin-grid-panel active" id="admin-tab-overview">
+
   <div class="card">
     <div class="admin-card-head">
       <div class="admin-card-title">🤖 Twin &amp; Speed Control</div>
@@ -603,6 +759,89 @@
     </div>
   </div>
 
+  </div><!-- /admin-tab-overview -->
+
+  <div class="admin-tab-panel" id="admin-tab-firmware">
+    <div class="firmware-panel">
+      <div class="card admin-card-full">
+        <div class="admin-card-head">
+          <div>
+            <div class="admin-card-title">Flash Manager</div>
+            <div class="admin-card-sub">ESP8266 firmware upload and Web Serial flashing</div>
+          </div>
+          <span class="admin-pill pill-demo">Chrome / Edge only</span>
+        </div>
+        <div class="admin-card-body firmware-panel">
+          <div id="flash-serial-warning" class="firmware-warning" hidden>
+            Web Serial is not available in this browser. Use Chrome or Edge on desktop to flash boards.
+          </div>
+          <div id="firmware-summary" class="firmware-summary">
+            <div class="firmware-empty">Loading firmware manifest...</div>
+          </div>
+          <div class="firmware-info">
+            <p>Firmware files managed via repository</p>
+            <p class="text-muted">To update firmware: build .bin in Arduino IDE, commit to <code>public/firmware/</code>, then push to deploy.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card admin-card-full">
+        <div class="admin-card-head">
+          <div>
+            <div class="admin-card-title">Connected Boards</div>
+            <div class="admin-card-sub">Add USB serial ports, assign each board type, then flash sequentially</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="flash-add-board-btn" class="admin-btn admin-btn-primary" type="button" onclick="flashRequestBoard()">+ Add Board</button>
+            <button class="admin-btn admin-btn-outline" type="button" onclick="flashScanBoards()">Scan Granted</button>
+          </div>
+        </div>
+        <div class="admin-card-body firmware-panel">
+          <datalist id="flash-vehicle-ids">
+            <option value="DEMO_1"></option>
+            <option value="DEMO_2"></option>
+            <option value="DEMO_3"></option>
+            <option value="BUS_01"></option>
+            <option value="BUS_02"></option>
+          </datalist>
+          <div class="flash-board-table-wrap">
+            <table class="flash-board-table">
+              <thead>
+                <tr>
+                  <th>Port</th>
+                  <th>Type</th>
+                  <th>ID</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody id="flash-board-list">
+                <tr><td colspan="5" class="firmware-empty">No serial boards added yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="flash-toolbar">
+            <span class="admin-card-sub">Flash queue runs one board at a time.</span>
+            <button id="flash-all-btn" class="admin-btn admin-btn-green" type="button" onclick="flashAllBoards()">Flash All Boards</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card admin-card-full">
+        <div class="admin-card-head">
+          <div class="admin-card-title">Console</div>
+          <div style="display:flex;gap:8px;">
+            <button class="admin-btn admin-btn-outline" type="button" onclick="clearFlashConsole()">Clear</button>
+            <button class="admin-btn admin-btn-outline" type="button" onclick="copyFlashConsole()">Copy</button>
+          </div>
+        </div>
+        <div class="admin-card-body">
+          <div id="flash-console" class="flash-console">Waiting for Flash Manager...</div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /admin-tab-firmware -->
+
 </div><!-- /admin-page -->
 
 <!-- ════════════════════════════
@@ -691,6 +930,15 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/js/shared.js"></script>
 <script>
+  function switchTab(tab) {
+    document.querySelectorAll('.admin-tab-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.tab === tab);
+    });
+    document.querySelectorAll('.admin-tab-panel').forEach(panel => {
+      panel.classList.toggle('active', panel.id === `admin-tab-${tab}`);
+    });
+  }
+
   // Patch modal display for Leaflet modals (they use display:flex not class)
   const _openRouteEditorOrig   = window.openRouteEditor;
   const _closeRouteEditorOrig  = window.closeRouteEditor;
@@ -721,6 +969,8 @@
     }, 1000);
   });
 </script>
+<script src="https://unpkg.com/esptool-js/bundle.js"></script>
+<script src="/js/flashManager.js"></script>
 <script src="/js/admin.js"></script>
 </body>
 </html>
