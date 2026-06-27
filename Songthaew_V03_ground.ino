@@ -1,375 +1,355 @@
+// Songthaew_V03_ground.ino
 /*
- * ============================================================
- * Smart Songthaew V03 Ground Station Firmware - VIBE LoRa Mesh
- * ESP8266/ESP32 + LoRa + WiFi/4G uplink
- * ============================================================
- *
- * Receives compact LoRa vehicle packets, adds ground metadata, and
- * forwards full legacy-compatible JSON to POST /api/update-location.
- */
+  Smart Songthaew VIBE Mesh - Ground Station Firmware V03
+
+  ESP8266 NodeMCU -> SX1276 Ra-02
+  D5 (GPIO14) -> SCK
+  D6 (GPIO12) -> MISO
+  D7 (GPIO13) -> MOSI
+  D8 (GPIO15) -> NSS/CS
+  D0 (GPIO16) -> RESET
+  D2 (GPIO4)  -> DIO0
+  3V3         -> VCC
+  GND         -> GND
+
+  Power: USB 5V -> NodeMCU USB port
+  WiFi: connects to WIFI_SSID from mesh_config.h
+*/
 
 #include <Arduino.h>
-#include <SPI.h>
+#include <ArduinoJson.h>
+#include <ESP8266HTTPClient.h>
+#include <ESP8266WiFi.h>
 #include <LoRa.h>
-#include <math.h>
+#include <SPI.h>
+#include <WiFiClientSecure.h>
 #include "mesh_config.h"
-
-#if defined(ESP8266)
-  #include <ESP8266WiFi.h>
-  #include <ESP8266HTTPClient.h>
-  #include <WiFiClient.h>
-  #include <WiFiClientSecure.h>
-#elif defined(ESP32)
-  #include <WiFi.h>
-  #include <HTTPClient.h>
-  #include <WiFiClient.h>
-  #include <WiFiClientSecure.h>
-#else
-  #error "Songthaew_V03_ground supports ESP8266 and ESP32."
-#endif
 
 struct BufferedPacket {
   String body;
   bool used;
+  unsigned long timestamp;
 };
 
-BufferedPacket buffer[VIBE_BUFFER_SIZE];
-byte bufferHead = 0;
-byte bufferCount = 0;
-String dedupIds[VIBE_DEDUP_CACHE_SIZE];
-byte dedupCursor = 0;
+BufferedPacket packetBuffer[BUFFER_SIZE];
 
+bool wifiConnected = false;
+bool loraReady = false;
+unsigned long lastWifiCheckMs = 0;
 unsigned long lastBeaconMs = 0;
-unsigned long lastWifiAttemptMs = 0;
 unsigned long lastFlushMs = 0;
+unsigned long lastLoRaRetryMs = 0;
+unsigned long lastHttpLatencyMs = 0;
 
-int keyPos(const String& json, const char* key) {
-  String token = "\"" + String(key) + "\":";
-  return json.indexOf(token);
+bool isVehiclePacket(JsonDocument& doc) {
+  const char* type = doc["type"] | "";
+  const char* compactType = doc["t"] | "";
+  return strcmp(type, "vehicle_data") == 0 || strcmp(compactType, "vd") == 0;
 }
 
-String rawField(const String& json, const char* key, const String& fallback = "") {
-  int pos = keyPos(json, key);
-  if (pos < 0) return fallback;
-  pos = json.indexOf(':', pos) + 1;
-  while (pos < (int)json.length() && json[pos] == ' ') pos++;
-  if (pos >= (int)json.length()) return fallback;
-
-  if (json[pos] == '"') {
-    int end = json.indexOf('"', pos + 1);
-    return end > pos ? json.substring(pos, end + 1) : fallback;
-  }
-  if (json[pos] == '[') {
-    int depth = 0;
-    bool inString = false;
-    for (int i = pos; i < (int)json.length(); i++) {
-      char c = json[i];
-      if (c == '"' && (i == 0 || json[i - 1] != '\\')) inString = !inString;
-      if (!inString && c == '[') depth++;
-      if (!inString && c == ']') {
-        depth--;
-        if (depth == 0) return json.substring(pos, i + 1);
-      }
+int oldestBufferIndex() {
+  int oldest = -1;
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (!packetBuffer[i].used) continue;
+    if (oldest < 0 || packetBuffer[i].timestamp < packetBuffer[oldest].timestamp) {
+      oldest = i;
     }
-    return fallback;
+  }
+  return oldest;
+}
+
+int firstFreeBufferIndex() {
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (!packetBuffer[i].used) return i;
+  }
+  return -1;
+}
+
+void bufferPacket(String body) {
+  int slot = firstFreeBufferIndex();
+  if (slot < 0) {
+    slot = oldestBufferIndex();
+    Serial.printf("[BUFFER] full, dropping oldest slot:%d\n", slot);
   }
 
-  int end = pos;
-  while (end < (int)json.length() && json[end] != ',' && json[end] != '}') end++;
-  return json.substring(pos, end);
+  if (slot < 0) return;
+  packetBuffer[slot].body = body;
+  packetBuffer[slot].used = true;
+  packetBuffer[slot].timestamp = millis();
+  Serial.printf("[BUFFER] queued slot:%d\n", slot);
 }
 
-String stringField(const String& json, const char* key, const String& fallback = "") {
-  String raw = rawField(json, key, fallback);
-  if (raw.length() >= 2 && raw[0] == '"' && raw[raw.length() - 1] == '"') {
-    return raw.substring(1, raw.length() - 1);
-  }
-  return raw.length() ? raw : fallback;
+void freeBufferSlot(int index) {
+  if (index < 0 || index >= BUFFER_SIZE) return;
+  packetBuffer[index].body = "";
+  packetBuffer[index].used = false;
+  packetBuffer[index].timestamp = 0;
 }
 
-float floatField(const String& json, const char* key, float fallback = 0) {
-  String raw = rawField(json, key, "");
-  return raw.length() ? raw.toFloat() : fallback;
-}
+int postToServer(String body) {
+  lastHttpLatencyMs = 0;
+  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return -1;
 
-long longField(const String& json, const char* key, long fallback = 0) {
-  String raw = rawField(json, key, "");
-  return raw.length() ? raw.toInt() : fallback;
-}
+  unsigned long started = millis();
+  WiFiClientSecure client;
+  client.setInsecure();
 
-bool seenPacket(const String& packetId) {
-  if (!packetId.length()) return false;
-  for (byte i = 0; i < VIBE_DEDUP_CACHE_SIZE; i++) {
-    if (dedupIds[i] == packetId) return true;
-  }
-  return false;
-}
-
-void rememberPacket(const String& packetId) {
-  if (!packetId.length() || seenPacket(packetId)) return;
-  dedupIds[dedupCursor] = packetId;
-  dedupCursor = (dedupCursor + 1) % VIBE_DEDUP_CACHE_SIZE;
-}
-
-float radiansF(float deg) {
-  return deg * PI / 180.0f;
-}
-
-float distanceMeters(float lat1, float lng1, float lat2, float lng2) {
-  const float earth = 6371000.0f;
-  float dLat = radiansF(lat2 - lat1);
-  float dLng = radiansF(lng2 - lng1);
-  float a = sin(dLat / 2) * sin(dLat / 2) +
-            cos(radiansF(lat1)) * cos(radiansF(lat2)) *
-            sin(dLng / 2) * sin(dLng / 2);
-  return earth * 2.0f * atan2(sqrt(a), sqrt(1.0f - a));
-}
-
-String expandNeighbors(const String& raw) {
-  if (!raw.length() || raw == "[]") return "[]";
-  String out = "[";
-  bool first = true;
-  int pos = 0;
-
-  while (true) {
-    int row = raw.indexOf("[\"", pos);
-    if (row < 0) break;
-    int idStart = row + 2;
-    int idEnd = raw.indexOf('"', idStart);
-    int comma1 = raw.indexOf(',', idEnd);
-    int comma2 = raw.indexOf(',', comma1 + 1);
-    int rowEnd = raw.indexOf(']', comma2 + 1);
-    if (idEnd < 0 || comma1 < 0 || comma2 < 0 || rowEnd < 0) break;
-
-    String id = raw.substring(idStart, idEnd);
-    String rssi = raw.substring(comma1 + 1, comma2);
-    String snr = raw.substring(comma2 + 1, rowEnd);
-    if (!first) out += ",";
-    out += "{\"vehicle_id\":\"" + id + "\",\"rssi\":" + rssi + ",\"snr\":" + snr + "}";
-    first = false;
-    pos = rowEnd + 1;
+  HTTPClient http;
+  int code = -1;
+  if (http.begin(client, SERVER_URL)) {
+    http.addHeader("Content-Type", "application/json");
+    http.setTimeout(8000);
+    code = http.POST(body);
+    http.end();
   }
 
-  out += "]";
-  return out;
+  lastHttpLatencyMs = millis() - started;
+  Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
+  return code;
 }
 
-String directionName(const String& compact) {
-  if (compact == "O") return "PROMKHIRI";
-  if (compact == "I") return "NAKHON";
-  return compact.length() ? compact : "unknown";
-}
+void flushBuffer() {
+  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
 
-String lastRelayFrom(const String& chain) {
-  int endQuote = chain.lastIndexOf('"');
-  if (endQuote <= 0) return "";
-  int startQuote = chain.lastIndexOf('"', endQuote - 1);
-  if (startQuote < 0) return "";
-  return chain.substring(startQuote + 1, endQuote);
-}
+  while (WiFi.status() == WL_CONNECTED) {
+    int index = oldestBufferIndex();
+    if (index < 0) return;
 
-bool wifiConnected() {
-  return WiFi.status() == WL_CONNECTED;
+    int code = postToServer(packetBuffer[index].body);
+    if (code >= 200 && code < 300) {
+      freeBufferSlot(index);
+    } else if (code >= 400 && code < 500) {
+      Serial.printf("[BUFFER] dropping bad packet code:%d slot:%d\n", code, index);
+      freeBufferSlot(index);
+    } else {
+      return;
+    }
+    yield();
+  }
+
+  wifiConnected = false;
 }
 
 void serviceWiFi() {
-  if (wifiConnected()) return;
   unsigned long now = millis();
-  if (now - lastWifiAttemptMs < WIFI_RECONNECT_INTERVAL_MS && lastWifiAttemptMs != 0) return;
-  lastWifiAttemptMs = now;
+  if (now - lastWifiCheckMs < WIFI_RETRY_MS && lastWifiCheckMs != 0) return;
+  lastWifiCheckMs = now;
+
+  wifiConnected = WiFi.status() == WL_CONNECTED;
+  if (wifiConnected) return;
+
   Serial.println("[WiFi] reconnecting");
   WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
-int postBody(const String& body) {
-  if (!wifiConnected() || strlen(SERVER_UPDATE_URL) == 0) return -1;
-
-  HTTPClient http;
-  int code = -1;
-  String url = String(SERVER_UPDATE_URL);
-
-  if (url.startsWith("https://")) {
-    WiFiClientSecure client;
-    client.setInsecure();
-    if (!http.begin(client, url)) return -1;
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(5000);
-    code = http.POST(body);
-    http.end();
-  } else {
-    WiFiClient client;
-    if (!http.begin(client, url)) return -1;
-    http.addHeader("Content-Type", "application/json");
-    http.setTimeout(5000);
-    code = http.POST(body);
-    http.end();
+void waitInitialWiFi() {
+  unsigned long started = millis();
+  while (millis() - started < WIFI_SETUP_TIMEOUT_MS) {
+    wifiConnected = WiFi.status() == WL_CONNECTED;
+    if (wifiConnected) {
+      Serial.printf("[WiFi] connected IP:%s\n", WiFi.localIP().toString().c_str());
+      return;
+    }
+    yield();
   }
-
-  return code;
+  wifiConnected = false;
+  Serial.println("[WiFi] setup timeout, continuing offline");
 }
 
-void bufferPacket(const String& body) {
-  byte slot = (bufferHead + bufferCount) % VIBE_BUFFER_SIZE;
-  if (bufferCount == VIBE_BUFFER_SIZE) {
-    slot = bufferHead;
-    bufferHead = (bufferHead + 1) % VIBE_BUFFER_SIZE;
-  } else {
-    bufferCount++;
+bool initLoRa() {
+  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("[LoRa] init failed, will retry");
+    return false;
   }
-  buffer[slot].body = body;
-  buffer[slot].used = true;
-  Serial.printf("[Buffer] queued %u/%u\n", bufferCount, VIBE_BUFFER_SIZE);
-}
-
-void flushBuffer() {
-  if (!wifiConnected() || bufferCount == 0) return;
-  unsigned long now = millis();
-  if (now - lastFlushMs < BUFFER_FLUSH_INTERVAL_MS) return;
-  lastFlushMs = now;
-
-  BufferedPacket& item = buffer[bufferHead];
-  if (!item.used) {
-    bufferHead = (bufferHead + 1) % VIBE_BUFFER_SIZE;
-    bufferCount--;
-    return;
-  }
-
-  int code = postBody(item.body);
-  if ((code >= 200 && code < 300) || (code >= 400 && code < 500)) {
-    item.used = false;
-    item.body = "";
-    bufferHead = (bufferHead + 1) % VIBE_BUFFER_SIZE;
-    bufferCount--;
-    Serial.printf("[Buffer] %s code:%d, remaining %u\n",
-                  code < 300 ? "flushed" : "dropped", code, bufferCount);
-  }
+  LoRa.setSignalBandwidth(LORA_BW);
+  LoRa.setSpreadingFactor(LORA_SF);
+  LoRa.setCodingRate4(LORA_CR);
+  LoRa.setSyncWord(LORA_SYNC);
+  LoRa.setTxPower(LORA_TX_DBM);
+  LoRa.enableCrc();
+  LoRa.receive();
+  Serial.println("[LoRa] ready");
+  return true;
 }
 
 void sendBeacon() {
-  String beacon = "{";
-  beacon += "\"t\":\"b\"";
-  beacon += ",\"type\":\"beacon\"";
-  beacon += ",\"sid\":\"" + String(GROUND_STATION_ID) + "\"";
-  beacon += ",\"station_id\":\"" + String(GROUND_STATION_ID) + "\"";
-  beacon += ",\"lat\":" + String(GROUND_LAT, 6);
-  beacon += ",\"lng\":" + String(GROUND_LNG, 6);
-  beacon += ",\"ts\":" + String(millis());
-  beacon += "}";
+  if (!loraReady) return;
+
+  StaticJsonDocument<160> doc;
+  doc["type"] = "beacon";
+  doc["sid"] = GROUND_ID;
+  doc["lat"] = GROUND_LAT;
+  doc["lng"] = GROUND_LNG;
+  doc["ts"] = millis();
+
+  char payload[160];
+  serializeJson(doc, payload, sizeof(payload));
 
   LoRa.idle();
   LoRa.beginPacket();
-  LoRa.print(beacon);
+  LoRa.print(payload);
   LoRa.endPacket();
   LoRa.receive();
-  Serial.println("[LoRa] beacon");
+  Serial.println("[BEACON] sent");
 }
 
-String buildServerBody(const String& rx, int receivedRssi, float receivedSnr) {
-  String vehicleId = stringField(rx, "v");
-  float lat = floatField(rx, "a", 0);
-  float lng = floatField(rx, "o", 0);
-  String chain = rawField(rx, "c", "[]");
-  String relayFrom = stringField(rx, "rf", lastRelayFrom(chain));
-  String neighbors = expandNeighbors(rawField(rx, "n", "[]"));
+void addRelayChain(JsonDocument& source, JsonDocument& target) {
+  JsonArray sourceChain;
+  if (source["relay_chain"].is<JsonArray>()) sourceChain = source["relay_chain"].as<JsonArray>();
+  if (source["rc"].is<JsonArray>()) sourceChain = source["rc"].as<JsonArray>();
+  if (sourceChain.isNull()) return;
 
-  String body = "{";
-  body += "\"vehicleId\":\"" + vehicleId + "\"";
-  body += ",\"vehicle_id\":\"" + vehicleId + "\"";
-  body += ",\"seq\":" + rawField(rx, "q", "0");
-  body += ",\"boot_id\":" + rawField(rx, "b", "\"\"");
-  body += ",\"packet_id\":" + rawField(rx, "p", "\"\"");
-  body += ",\"gps_fix\":" + String(longField(rx, "gf", 1) ? "true" : "false");
-  body += ",\"lat\":" + String(lat, 6);
-  body += ",\"lng\":" + String(lng, 6);
-  body += ",\"speed\":" + rawField(rx, "s", "0");
-  body += ",\"heading\":" + rawField(rx, "hd", "0");
-  body += ",\"battery\":" + rawField(rx, "bt", "-1");
-  body += ",\"routeId\":" + rawField(rx, "r", "\"unassigned\"");
-  body += ",\"route_id\":" + rawField(rx, "r", "\"unassigned\"");
-  body += ",\"direction\":\"" + directionName(stringField(rx, "d")) + "\"";
-  body += ",\"hop\":" + rawField(rx, "hp", "0");
-  body += ",\"relay_from\":\"" + relayFrom + "\"";
-  body += ",\"relay_chain\":" + chain;
-  body += ",\"neighbors\":" + neighbors;
-  body += ",\"link_quality\":" + rawField(rx, "lq", "0");
-  body += ",\"rssi\":" + rawField(rx, "rs", String(receivedRssi));
-  body += ",\"snr\":" + rawField(rx, "sn", String(receivedSnr, 1));
-  body += ",\"received_rssi\":" + String(receivedRssi);
-  body += ",\"received_snr\":" + String(receivedSnr, 1);
-  body += ",\"received_at\":" + String(millis());
-  body += ",\"source\":\"vibe-mesh\"";
-  body += "}";
+  JsonArray out = target.createNestedArray("relay_chain");
+  for (JsonVariant item : sourceChain) {
+    out.add(item.as<const char*>());
+  }
+}
+
+void addNeighbors(JsonDocument& source, JsonDocument& target) {
+  JsonArray out = target.createNestedArray("neighbors");
+  if (source["neighbors"].is<JsonArray>()) {
+    for (JsonVariant item : source["neighbors"].as<JsonArray>()) {
+      out.add(item);
+    }
+    return;
+  }
+
+  if (source["nb"].is<JsonArray>()) {
+    for (JsonVariant item : source["nb"].as<JsonArray>()) {
+      JsonObject neighbor = out.createNestedObject();
+      neighbor["vehicle_id"] = item["id"] | "";
+      neighbor["rssi"] = item["rs"] | 0;
+      neighbor["snr"] = item["sn"] | 0.0f;
+    }
+  }
+
+  if (out.size() == 0) target.remove("neighbors");
+}
+
+String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr) {
+  StaticJsonDocument<1024> out;
+  out["vehicleId"] = rx["vid"] | "";
+  out["vehicle_id"] = rx["vid"] | "";
+  out["lat"] = rx["lat"] | 0.0f;
+  out["lng"] = rx["lng"] | 0.0f;
+  out["speed"] = rx["spd"] | 0.0f;
+  out["battery"] = rx["bat"] | -1;
+  out["routeId"] = rx["rid"] | ROUTE_ID;
+  out["route_id"] = rx["rid"] | ROUTE_ID;
+  out["direction"] = rx["dir"] | ROUTE_DIR;
+  out["rssi"] = receivedRssi;
+  out["snr"] = receivedSnr;
+  out["hop"] = rx["hop"] | 0;
+  out["link_quality"] = rx["lq"] | 0;
+  out["seq"] = rx["seq"] | 0;
+  out["boot_id"] = rx["bid"] | "";
+  out["packet_id"] = rx["pid"] | "";
+  out["source"] = "vehicle";
+  out["gps_fix"] = rx["fix"] | true;
+  out["received_rssi"] = receivedRssi;
+  out["received_snr"] = receivedSnr;
+  out["received_at"] = millis();
+
+  if (rx["hdg"].is<int>()) out["heading"] = rx["hdg"];
+  if (rx["rf"].is<const char*>()) out["relay_from"] = rx["rf"];
+  if (rx["sats"].is<int>()) out["sats"] = rx["sats"];
+  if (rx["hdop"].is<float>()) out["hdop"] = rx["hdop"];
+
+  addRelayChain(rx, out);
+  addNeighbors(rx, out);
+
+  String body;
+  serializeJson(out, body);
   return body;
 }
 
-void receiveLoRa() {
-  int packetSize = LoRa.parsePacket();
-  if (!packetSize) return;
+void printReceiveLog(JsonDocument& rx, float rssi, float snr, int code) {
+  const char* vid = rx["vid"] | "?";
+  int hop = rx["hop"] | 0;
+  float lat = rx["lat"] | 0.0f;
+  float lng = rx["lng"] | 0.0f;
+  float spd = rx["spd"] | 0.0f;
+  int bat = rx["bat"] | -1;
 
-  String rx = "";
-  while (LoRa.available()) rx += (char)LoRa.read();
-  int rssi = LoRa.packetRssi();
-  float snr = LoRa.packetSnr();
+  Serial.println("--------------------");
+  Serial.printf("[RX] %s | hop:%d | rssi:%.0f | snr:%.1f\n", vid, hop, rssi, snr);
+  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%%\n", lat, lng, spd, bat);
+  if (code >= 200 && code < 300) {
+    Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
+  } else if (code >= 400 && code < 500) {
+    Serial.printf("-> HTTP %d drop (%lums)\n", code, lastHttpLatencyMs);
+  } else {
+    Serial.printf("-> buffered code:%d\n", code);
+  }
+  Serial.println("--------------------");
+}
 
-  if (stringField(rx, "t") != "g") return;
+void onLoRaReceive(int packetSize) {
+  if (packetSize <= 0) return;
 
-  String packetId = stringField(rx, "p");
-  if (seenPacket(packetId)) {
-    Serial.printf("[LoRa] duplicate %s ignored\n", packetId.c_str());
+  char payload[256];
+  int len = 0;
+  while (LoRa.available() && len < (int)sizeof(payload) - 1) {
+    payload[len++] = (char)LoRa.read();
+  }
+  payload[len] = '\0';
+
+  float receivedRssi = LoRa.packetRssi();
+  float receivedSnr = LoRa.packetSnr();
+
+  StaticJsonDocument<768> rx;
+  DeserializationError error = deserializeJson(rx, payload);
+  if (error) {
+    Serial.printf("[RX] invalid json: %s\n", error.c_str());
     return;
   }
-  rememberPacket(packetId);
 
-  String body = buildServerBody(rx, rssi, snr);
-  int code = postBody(body);
+  if (!isVehiclePacket(rx)) return;
+
+  String body = buildServerPayload(rx, receivedRssi, receivedSnr);
+  int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
   bool ok = code >= 200 && code < 300;
   bool badPacket = code >= 400 && code < 500;
-  if (!ok && !badPacket) bufferPacket(body);
-  if (badPacket) Serial.printf("[HTTP] drop bad packet %s code:%d\n", packetId.c_str(), code);
 
-  float lat = floatField(rx, "a", 0);
-  float lng = floatField(rx, "o", 0);
-  float dist = (lat != 0 && lng != 0) ? distanceMeters(lat, lng, GROUND_LAT, GROUND_LNG) : -1;
-  Serial.printf("[RX] %s dist:%.0fm hop:%ld rssi:%d snr:%.1f forward:%s\n",
-                stringField(rx, "v", "?").c_str(), dist, longField(rx, "hp", 0),
-                rssi, snr, ok ? "ok" : (badPacket ? "dropped" : "buffered"));
+  if (!ok && !badPacket) bufferPacket(body);
+  printReceiveLog(rx, receivedRssi, receivedSnr, code);
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
-  Serial.printf("\n=== Smart Songthaew V03 Ground %s ===\n", GROUND_STATION_ID);
+  Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  lastWifiAttemptMs = millis();
+  waitInitialWiFi();
 
-  LoRa.setPins(LORA_SS_PIN, LORA_RST_PIN, LORA_DIO0_PIN);
-  if (!LoRa.begin(LORA_FREQUENCY)) {
-    Serial.println("[LoRa] init failed");
-    while (true) yield();
-  }
-  LoRa.setSignalBandwidth(LORA_BANDWIDTH);
-  LoRa.setSpreadingFactor(LORA_SPREADING_FACTOR);
-  LoRa.setCodingRate4(LORA_CODING_RATE_DENOMINATOR);
-  LoRa.setSyncWord(LORA_SYNC_WORD);
-  LoRa.setTxPower(LORA_TX_POWER_DBM);
-  LoRa.enableCrc();
-  LoRa.receive();
-
-  Serial.println("[LoRa] ground receiver ready");
+  loraReady = initLoRa();
 }
 
 void loop() {
   serviceWiFi();
-  receiveLoRa();
-  flushBuffer();
+
+  if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
+    lastLoRaRetryMs = millis();
+    loraReady = initLoRa();
+  }
+
+  if (loraReady) {
+    int packetSize = LoRa.parsePacket();
+    if (packetSize > 0) onLoRaReceive(packetSize);
+  }
 
   unsigned long now = millis();
-  if (now - lastBeaconMs >= GROUND_BEACON_INTERVAL_MS) {
+  if (now - lastBeaconMs >= BEACON_INTERVAL_MS) {
     lastBeaconMs = now;
     sendBeacon();
+  }
+
+  if (now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+    lastFlushMs = now;
+    flushBuffer();
   }
 
   yield();

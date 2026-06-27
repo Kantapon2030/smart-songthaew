@@ -1,578 +1,495 @@
+// Songthaew_V03_vehicle.ino
 /*
- * ════════════════════════════════════════
- *  SMART SONGTHAEW — Vehicle Firmware V03
- * ════════════════════════════════════════
- *  ก่อน Flash ให้แก้ mesh_config.h บรรทัดแรก:
- *  #define VEHICLE_ID "BUS_01"
- *
- *  BUS_01 = รถคันที่ 1
- *  BUS_02 = รถคันที่ 2
- *  BUS_03 = รถคันที่ 3
- * ════════════════════════════════════════
- */
+  Smart Songthaew VIBE Mesh - Vehicle Firmware V03
 
-/*
- * ============================================================
- * Smart Songthaew V03 Vehicle Firmware - VIBE LoRa Mesh
- * ESP8266 + GPS6MV2 + optional INA219 + LoRa
- * ============================================================
- *
- * Vehicle nodes do not use WiFi. They broadcast compact JSON over LoRa.
- * The ground station expands compact LoRa aliases into the legacy
- * /api/update-location payload, keeping V02 server compatibility.
- *
- * Required libraries:
- * - LoRa by Sandeep Mistry
- * - TinyGPS++ by Mikal Hart, if USE_REAL_GPS is enabled
- * - Adafruit INA219, if USE_INA219 is enabled
- */
+  ESP8266 NodeMCU -> SX1276 Ra-02
+  D5 (GPIO14) -> SCK
+  D6 (GPIO12) -> MISO
+  D7 (GPIO13) -> MOSI
+  D8 (GPIO15) -> NSS/CS
+  D0 (GPIO16) -> RESET
+  D2 (GPIO4)  -> DIO0
+  3V3         -> VCC
+  GND         -> GND
+
+  ESP8266 NodeMCU -> NEO-6M GPS
+  D4 (GPIO2)  -> GPS TX (we receive)
+  3V3         -> VCC
+  GND         -> GND
+  GPS RX is not connected
+
+  Battery sense voltage divider:
+  BAT+ -> 330k ohm -> A0 -> 82k ohm -> GND
+  100nF capacitor across 82k ohm
+*/
 
 #include <Arduino.h>
-#include <SPI.h>
+#include <ArduinoJson.h>
 #include <LoRa.h>
+#include <SoftwareSerial.h>
+#include <SPI.h>
+#include <TinyGPS++.h>
 #include <math.h>
 #include "mesh_config.h"
 
-// Uncomment when the real modules are connected.
-// #define USE_REAL_GPS
-// #define USE_INA219
-
-#ifdef USE_REAL_GPS
-  #include <TinyGPS++.h>
-  #include <SoftwareSerial.h>
-  #define GPS_RX_PIN 4
-  #define GPS_TX_PIN 5
-  #define GPS_BAUD 9600
-  TinyGPSPlus gps;
-  SoftwareSerial gpsSerial(GPS_RX_PIN, GPS_TX_PIN);
-#endif
-
-#ifdef USE_INA219
-  #include <Wire.h>
-  #include <Adafruit_INA219.h>
-  Adafruit_INA219 ina219;
-  bool ina219Found = false;
-#endif
-
-const int NUM_WP = 5;
-const float ROUTE[NUM_WP][2] = {
-  {8.432450f, 99.959129f},
-  {8.432796f, 99.888032f},
-  {8.463119f, 99.864281f},
-  {8.508510f, 99.827826f},
-  {8.522536f, 99.825067f},
-};
-
-#define DEG_PER_KM (1.0f / 111.0f)
-#define ADC_REF_MV 3300.0f
-#define ADC_MAX 1024.0f
-#define R1_KOHM 100.0f
-#define R2_KOHM 47.0f
-
 struct Neighbor {
-  String id;
-  unsigned long lastHeardMs;
-  int rssi;
+  char vehicleId[16];
+  float rssi;
   float snr;
+  unsigned long lastSeen;
   float lat;
   float lng;
-  bool hasLocation;
+  int hop;
 };
 
-Neighbor neighbors[VIBE_NEIGHBOR_TABLE_SIZE];
-String dedupIds[VIBE_DEDUP_CACHE_SIZE];
-byte dedupCursor = 0;
+TinyGPSPlus gps;
+SoftwareSerial gpsSerial(GPS_RX_PIN, -1);
 
-float curLat = ROUTE[0][0];
-float curLng = ROUTE[0][1];
-int targetIdx = 1;
-bool isOutbound = true;
-int curSpeed = 30;
-int targetSpeed = 35;
-int stopTicks = 0;
-int battery = 92;
-float headingDeg = 0.0f;
-String direction = "O";
+Neighbor neighbors[MAX_NEIGHBORS];
+int neighborCount = 0;
 
-float measuredVoltMv = -1;
-float measuredCurrentMa = -1;
-float measuredPowerMw = -1;
+char seenPackets[DEDUP_BUFFER][32];
+int seenIdx = 0;
+
+char bootId[5] = "0000";
 uint32_t seq = 0;
-uint32_t txCount = 0;
-String bootId;
 
-unsigned long lastBroadcastMs = 0;
-unsigned long groundLastHeardMs = 0;
-int groundRssi = 0;
-float groundSnr = 0;
+float gpsLat = 0.0f;
+float gpsLng = 0.0f;
+float gpsSpeed = 0.0f;
+float gpsHeading = 0.0f;
+uint32_t gpsSats = 0;
+float gpsHdop = 99.9f;
+bool gpsValid = false;
 
-int keyPos(const String& json, const char* key) {
-  String token = "\"" + String(key) + "\":";
-  return json.indexOf(token);
+unsigned long lastTxMs = 0;
+unsigned long lastExpireMs = 0;
+unsigned long lastLoRaRetryMs = 0;
+bool loraReady = false;
+
+float toRadians(float degrees) {
+  return degrees * PI / 180.0f;
 }
 
-String rawField(const String& json, const char* key, const String& fallback = "") {
-  int pos = keyPos(json, key);
-  if (pos < 0) return fallback;
-  pos = json.indexOf(':', pos) + 1;
-  while (pos < (int)json.length() && json[pos] == ' ') pos++;
-  if (pos >= (int)json.length()) return fallback;
+float haversineDistance(float lat1, float lng1, float lat2, float lng2) {
+  const float radiusMeters = 6371000.0f;
+  float dLat = toRadians(lat2 - lat1);
+  float dLng = toRadians(lng2 - lng1);
+  float a = sin(dLat / 2.0f) * sin(dLat / 2.0f) +
+            cos(toRadians(lat1)) * cos(toRadians(lat2)) *
+            sin(dLng / 2.0f) * sin(dLng / 2.0f);
+  float c = 2.0f * atan2(sqrt(a), sqrt(1.0f - a));
+  return radiusMeters * c;
+}
 
-  if (json[pos] == '"') {
-    int end = json.indexOf('"', pos + 1);
-    return end > pos ? json.substring(pos, end + 1) : fallback;
+int linkQuality(float rssi, float snr) {
+  int lq = constrain(map((long)rssi, -120, -60, 0, 100), 0, 100);
+  if (snr < 0.0f) lq = constrain(lq - 10, 0, 100);
+  return lq;
+}
+
+bool sameId(const char* a, const char* b) {
+  return strncmp(a, b, 15) == 0;
+}
+
+bool neighborExpired(const Neighbor& neighbor, unsigned long now) {
+  return now - neighbor.lastSeen > NEIGHBOR_EXPIRE_MS;
+}
+
+int findNeighborIndex(const char* id) {
+  for (int i = 0; i < neighborCount; i++) {
+    if (sameId(neighbors[i].vehicleId, id)) return i;
   }
-  if (json[pos] == '[') {
-    int depth = 0;
-    bool inString = false;
-    for (int i = pos; i < (int)json.length(); i++) {
-      char c = json[i];
-      if (c == '"' && (i == 0 || json[i - 1] != '\\')) inString = !inString;
-      if (!inString && c == '[') depth++;
-      if (!inString && c == ']') {
-        depth--;
-        if (depth == 0) return json.substring(pos, i + 1);
+  return -1;
+}
+
+void updateNeighborWithHop(const char* id, float rssi, float snr, float lat, float lng, int hop) {
+  if (id == nullptr || id[0] == '\0' || sameId(id, VEHICLE_ID)) return;
+
+  int index = findNeighborIndex(id);
+  if (index < 0) {
+    if (neighborCount < MAX_NEIGHBORS) {
+      index = neighborCount++;
+    } else {
+      unsigned long oldestSeen = neighbors[0].lastSeen;
+      index = 0;
+      for (int i = 1; i < MAX_NEIGHBORS; i++) {
+        if (neighbors[i].lastSeen < oldestSeen) {
+          oldestSeen = neighbors[i].lastSeen;
+          index = i;
+        }
       }
     }
-    return fallback;
   }
 
-  int end = pos;
-  while (end < (int)json.length() && json[end] != ',' && json[end] != '}') end++;
-  return json.substring(pos, end);
+  strncpy(neighbors[index].vehicleId, id, sizeof(neighbors[index].vehicleId) - 1);
+  neighbors[index].vehicleId[sizeof(neighbors[index].vehicleId) - 1] = '\0';
+  neighbors[index].rssi = rssi;
+  neighbors[index].snr = snr;
+  neighbors[index].lastSeen = millis();
+  neighbors[index].lat = lat;
+  neighbors[index].lng = lng;
+  neighbors[index].hop = hop;
 }
 
-String stringField(const String& json, const char* key, const String& fallback = "") {
-  String raw = rawField(json, key, fallback);
-  if (raw.length() >= 2 && raw[0] == '"' && raw[raw.length() - 1] == '"') {
-    return raw.substring(1, raw.length() - 1);
-  }
-  return raw.length() ? raw : fallback;
-}
-
-float floatField(const String& json, const char* key, float fallback = 0) {
-  String raw = rawField(json, key, "");
-  return raw.length() ? raw.toFloat() : fallback;
-}
-
-long longField(const String& json, const char* key, long fallback = 0) {
-  String raw = rawField(json, key, "");
-  return raw.length() ? raw.toInt() : fallback;
-}
-
-float radiansF(float deg) {
-  return deg * PI / 180.0f;
-}
-
-float distanceMeters(float lat1, float lng1, float lat2, float lng2) {
-  const float earth = 6371000.0f;
-  float dLat = radiansF(lat2 - lat1);
-  float dLng = radiansF(lng2 - lng1);
-  float a = sin(dLat / 2) * sin(dLat / 2) +
-            cos(radiansF(lat1)) * cos(radiansF(lat2)) *
-            sin(dLng / 2) * sin(dLng / 2);
-  return earth * 2.0f * atan2(sqrt(a), sqrt(1.0f - a));
-}
-
-int linkQuality(int rssi, float snr) {
-  int rssiScore = map(constrain(rssi, -125, -45), -125, -45, 0, 70);
-  int snrScore = map(constrain((int)(snr * 10), -200, 100), -200, 100, 0, 30);
-  return constrain(rssiScore + snrScore, 0, 100);
-}
-
-bool seenPacket(const String& packetId) {
-  if (!packetId.length()) return false;
-  for (byte i = 0; i < VIBE_DEDUP_CACHE_SIZE; i++) {
-    if (dedupIds[i] == packetId) return true;
-  }
-  return false;
-}
-
-void rememberPacket(const String& packetId) {
-  if (!packetId.length() || seenPacket(packetId)) return;
-  dedupIds[dedupCursor] = packetId;
-  dedupCursor = (dedupCursor + 1) % VIBE_DEDUP_CACHE_SIZE;
-}
-
-bool isGroundFresh() {
-  return groundLastHeardMs > 0 && millis() - groundLastHeardMs < NEIGHBOR_EXPIRE_MS;
+void updateNeighbor(const char* id, float rssi, float snr, float lat, float lng) {
+  updateNeighborWithHop(id, rssi, snr, lat, lng, 0);
 }
 
 void expireNeighbors() {
   unsigned long now = millis();
-  for (byte i = 0; i < VIBE_NEIGHBOR_TABLE_SIZE; i++) {
-    if (neighbors[i].id.length() && now - neighbors[i].lastHeardMs > NEIGHBOR_EXPIRE_MS) {
-      neighbors[i] = Neighbor();
+  for (int i = 0; i < neighborCount; i++) {
+    if (neighborExpired(neighbors[i], now)) {
+      neighbors[i] = neighbors[neighborCount - 1];
+      neighborCount--;
+      i--;
     }
   }
 }
 
-void updateNeighbor(const String& id, int rssi, float snr, float lat, float lng, bool hasLocation) {
-  if (!id.length() || id == VEHICLE_ID) return;
-  int slot = -1;
-  for (byte i = 0; i < VIBE_NEIGHBOR_TABLE_SIZE; i++) {
-    if (neighbors[i].id == id) slot = i;
-    if (slot < 0 && !neighbors[i].id.length()) slot = i;
-  }
-  if (slot < 0) {
-    unsigned long oldest = ULONG_MAX;
-    for (byte i = 0; i < VIBE_NEIGHBOR_TABLE_SIZE; i++) {
-      if (neighbors[i].lastHeardMs < oldest) {
-        oldest = neighbors[i].lastHeardMs;
-        slot = i;
-      }
-    }
-  }
-  neighbors[slot].id = id;
-  neighbors[slot].lastHeardMs = millis();
-  neighbors[slot].rssi = rssi;
-  neighbors[slot].snr = snr;
-  neighbors[slot].lat = lat;
-  neighbors[slot].lng = lng;
-  neighbors[slot].hasLocation = hasLocation;
-}
-
-String relayChainAppend(String chain, const String& id) {
-  if (!chain.length() || chain == "[]") return "[\"" + id + "\"]";
-  if (chain.indexOf("\"" + id + "\"") >= 0) return chain;
-  int end = chain.lastIndexOf(']');
-  if (end < 0) return "[\"" + id + "\"]";
-  return chain.substring(0, end) + ",\"" + id + "\"]";
-}
-
-bool chainContains(const String& chain, const String& id) {
-  return chain.indexOf("\"" + id + "\"") >= 0;
-}
-
-String chooseNextHop(const String& chain = "") {
-  if (isGroundFresh()) return "GROUND";
-
-  float ownDistance = distanceMeters(curLat, curLng, GROUND_LAT, GROUND_LNG);
-  int bestScore = -1;
-  String bestId = "";
+Neighbor* findBestRelay() {
+  Neighbor* best = nullptr;
+  float bestDistance = 999999999.0f;
   unsigned long now = millis();
 
-  for (byte i = 0; i < VIBE_NEIGHBOR_TABLE_SIZE; i++) {
-    Neighbor& n = neighbors[i];
-    if (!n.id.length() || now - n.lastHeardMs > NEIGHBOR_EXPIRE_MS || !n.hasLocation) continue;
-    if (chainContains(chain, n.id)) continue;
-    float neighborDistance = distanceMeters(n.lat, n.lng, GROUND_LAT, GROUND_LNG);
-    if (neighborDistance + MIN_CLOSER_TO_GROUND_METERS >= ownDistance) continue;
-    int score = linkQuality(n.rssi, n.snr) + (int)((ownDistance - neighborDistance) / 50.0f);
-    if (score > bestScore) {
-      bestScore = score;
-      bestId = n.id;
+  for (int i = 0; i < neighborCount; i++) {
+    if (neighborExpired(neighbors[i], now)) continue;
+    if (sameId(neighbors[i].vehicleId, GROUND_ID)) continue;
+    if (neighbors[i].lat == 0.0f && neighbors[i].lng == 0.0f) continue;
+
+    float distance = haversineDistance(neighbors[i].lat, neighbors[i].lng, GROUND_LAT, GROUND_LNG);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = &neighbors[i];
     }
   }
-
-  return bestId.length() ? bestId : "GROUND";
+  return best;
 }
 
-String compactNeighbors() {
-  String out = "[";
-  bool first = true;
+Neighbor* findGroundStation() {
+  int index = findNeighborIndex(GROUND_ID);
+  if (index < 0) return nullptr;
+  if (neighborExpired(neighbors[index], millis())) return nullptr;
+  return &neighbors[index];
+}
+
+bool isGroundStationNearby() {
+  return findGroundStation() != nullptr;
+}
+
+bool alreadySeen(const char* packetId) {
+  if (packetId == nullptr || packetId[0] == '\0') return false;
+  for (int i = 0; i < DEDUP_BUFFER; i++) {
+    if (strncmp(seenPackets[i], packetId, sizeof(seenPackets[i])) == 0) return true;
+  }
+  return false;
+}
+
+void markSeen(const char* packetId) {
+  if (packetId == nullptr || packetId[0] == '\0' || alreadySeen(packetId)) return;
+  strncpy(seenPackets[seenIdx], packetId, sizeof(seenPackets[seenIdx]) - 1);
+  seenPackets[seenIdx][sizeof(seenPackets[seenIdx]) - 1] = '\0';
+  seenIdx = (seenIdx + 1) % DEDUP_BUFFER;
+}
+
+void buildPacketId(char* out, size_t outSize) {
+  snprintf(out, outSize, "%s_%lu_%s", VEHICLE_ID, (unsigned long)seq, bootId);
+}
+
+void addNeighborArray(JsonDocument& doc) {
+  if (neighborCount == 0) return;
+
+  JsonArray nb = doc.createNestedArray("nb");
   unsigned long now = millis();
-  for (byte i = 0; i < VIBE_NEIGHBOR_TABLE_SIZE; i++) {
-    Neighbor& n = neighbors[i];
-    if (!n.id.length() || now - n.lastHeardMs > NEIGHBOR_EXPIRE_MS) continue;
-    String item = String(first ? "" : ",") + "[\"" + n.id + "\"," + String(n.rssi) + "," + String(n.snr, 1) + "]";
-    if (out.length() + item.length() + 1 > 70) break;
-    out += item;
-    first = false;
+  int added = 0;
+  for (int i = 0; i < neighborCount && added < 2; i++) {
+    if (neighborExpired(neighbors[i], now)) continue;
+    JsonObject item = nb.createNestedObject();
+    item["id"] = neighbors[i].vehicleId;
+    item["rs"] = (int)neighbors[i].rssi;
+    item["sn"] = neighbors[i].snr;
+    added++;
   }
-  out += "]";
-  return out;
+  if (added == 0) doc.remove("nb");
 }
 
-void sendLoRa(const String& payload) {
-  if (payload.length() > VIBE_PACKET_MAX_BYTES) {
-    Serial.printf("[LoRa] Drop oversized packet: %u bytes\n", payload.length());
-    return;
+bool packetFits(JsonDocument& doc) {
+  if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
+
+  if (doc.containsKey("nb")) {
+    doc.remove("nb");
+    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
   }
+  if (doc.containsKey("sats")) {
+    doc.remove("sats");
+    doc.remove("hdop");
+    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
+  }
+  if (doc.containsKey("src")) {
+    doc.remove("src");
+    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
+  }
+  if (doc.containsKey("type")) {
+    doc.remove("type");
+    doc["t"] = "vd";
+    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
+  }
+  if (doc.containsKey("rssi")) {
+    doc.remove("rssi");
+    doc.remove("snr");
+    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
+  }
+  return measureJson(doc) <= MAX_LORA_PACKET_BYTES;
+}
+
+bool serializeMeshPacket(JsonDocument& doc, char* out, size_t outSize) {
+  if (!packetFits(doc)) return false;
+  size_t len = serializeJson(doc, out, outSize);
+  return len > 0 && len <= MAX_LORA_PACKET_BYTES;
+}
+
+bool sendJson(JsonDocument& doc) {
+  if (!loraReady) return false;
+
+  char payload[MAX_LORA_PACKET_BYTES + 1];
+  if (!serializeMeshPacket(doc, payload, sizeof(payload))) {
+    Serial.println("[TX] drop oversized packet");
+    return false;
+  }
+
   LoRa.idle();
   LoRa.beginPacket();
   LoRa.print(payload);
-  LoRa.endPacket();
+  int result = LoRa.endPacket();
   LoRa.receive();
-  Serial.printf("[LoRa] TX %uB %s\n", payload.length(), payload.c_str());
+  return result == 1;
 }
 
-void measurePower() {
-  #ifdef USE_INA219
-  if (ina219Found) {
-    measuredVoltMv = ina219.getBusVoltage_V() * 1000.0f;
-    measuredCurrentMa = ina219.getCurrent_mA();
-    measuredPowerMw = ina219.getPower_mW();
-    return;
-  }
-  #endif
-
-  int adc = analogRead(A0);
-  float vAtPin = (adc / ADC_MAX) * ADC_REF_MV;
-  measuredVoltMv = vAtPin * (R1_KOHM + R2_KOHM) / R2_KOHM;
-  measuredCurrentMa = 117.0f + random(0, 30);
-  measuredPowerMw = (measuredVoltMv / 1000.0f) * measuredCurrentMa;
+float readBattery() {
+  int raw = analogRead(BAT_PIN);
+  float vOut = (raw / 1023.0f) * BAT_VCC;
+  float vBat = vOut * (BAT_R1 + BAT_R2) / BAT_R2;
+  float percent = ((vBat * 100.0f) - 330.0f) * 100.0f / (420.0f - 330.0f);
+  return constrain(percent, 0.0f, 100.0f);
 }
 
-void runSimulation() {
-  if (stopTicks > 0) {
-    stopTicks--;
-    curSpeed = 0;
-  } else {
-    int dice = random(0, 100);
-    if (dice < 5) {
-      stopTicks = random(5, 16);
-      targetSpeed = 0;
-    } else if (dice < 25) {
-      targetSpeed = random(15, 26);
-    } else {
-      targetSpeed = random(30, 46);
-    }
-
-    if (curSpeed < targetSpeed) curSpeed = min(curSpeed + 3, targetSpeed);
-    if (curSpeed > targetSpeed) curSpeed = max(curSpeed - 3, targetSpeed);
-
-    if (curSpeed > 0) {
-      float tLat = ROUTE[targetIdx][0];
-      float tLng = ROUTE[targetIdx][1];
-      float dLat = tLat - curLat;
-      float dLng = tLng - curLng;
-      float dist = sqrt(dLat * dLat + dLng * dLng);
-      float step = ((float)curSpeed / 3600.0f) * DEG_PER_KM * 5.0f;
-      headingDeg = atan2(dLng, dLat) * 180.0f / PI;
-      if (headingDeg < 0) headingDeg += 360.0f;
-
-      if (dist <= step) {
-        curLat = tLat;
-        curLng = tLng;
-        stopTicks = random(10, 31);
-        curSpeed = 0;
-        if (isOutbound) {
-          targetIdx++;
-          if (targetIdx >= NUM_WP) {
-            targetIdx = NUM_WP - 2;
-            isOutbound = false;
-          }
-        } else {
-          targetIdx--;
-          if (targetIdx < 0) {
-            targetIdx = 1;
-            isOutbound = true;
-          }
-        }
-      } else {
-        curLat += (dLat / dist) * step;
-        curLng += (dLng / dist) * step;
-      }
-    }
+void readGPS() {
+  while (gpsSerial.available()) {
+    gps.encode(gpsSerial.read());
   }
 
-  direction = isOutbound ? "O" : "I";
-  if (random(0, 50) == 0) battery--;
-  if (battery < 10) battery = 92;
-}
-
-void readGps() {
-  #ifdef USE_REAL_GPS
-  while (gpsSerial.available()) gps.encode(gpsSerial.read());
-  if (gps.location.isValid() && gps.location.age() < 3000) {
-    curLat = (float)gps.location.lat();
-    curLng = (float)gps.location.lng();
-    curSpeed = gps.speed.isValid() ? (int)gps.speed.kmph() : 0;
-    headingDeg = gps.course.isValid() ? (float)gps.course.deg() : headingDeg;
-    direction = headingDeg < 180.0f ? "O" : "I";
+  gpsValid = gps.location.isValid() && gps.location.age() < 2000;
+  if (gpsValid) {
+    gpsLat = gps.location.lat();
+    gpsLng = gps.location.lng();
   }
-  #else
-  runSimulation();
-  #endif
+  gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
+  gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
+  gpsSats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+  gpsHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
 }
 
-bool hasGpsFix() {
-  #ifdef USE_REAL_GPS
-  return gps.location.isValid() && gps.location.age() < 3000;
-  #else
-  return true;
-  #endif
-}
-
-String buildGpsPacket(const String& packetId, long packetSeq, const String& nextHop, int hop,
-                      const String& relayFrom, const String& chain, bool includeNeighbors) {
-  int bestRssi = isGroundFresh() ? groundRssi : 0;
-  float bestSnr = isGroundFresh() ? groundSnr : 0;
-  int lq = isGroundFresh() ? linkQuality(groundRssi, groundSnr) : 0;
-
-  String json = "{";
-  json += "\"t\":\"g\"";
-  json += ",\"v\":\"" + String(VEHICLE_ID) + "\"";
-  json += ",\"q\":" + String(packetSeq);
-  json += ",\"b\":\"" + bootId + "\"";
-  json += ",\"p\":\"" + packetId + "\"";
-  json += ",\"a\":" + String(curLat, 6);
-  json += ",\"o\":" + String(curLng, 6);
-  json += ",\"s\":" + String(curSpeed);
-  json += ",\"hd\":" + String((int)headingDeg);
-  json += ",\"bt\":" + String(battery);
-  json += ",\"r\":\"" + String(ROUTE_ID) + "\"";
-  json += ",\"d\":\"" + direction + "\"";
-  json += ",\"hp\":" + String(hop);
-  json += ",\"lq\":" + String(lq);
-  if (nextHop != "GROUND") json += ",\"nh\":\"" + nextHop + "\"";
-  if (!hasGpsFix()) json += ",\"gf\":0";
-  if (bestRssi != 0) json += ",\"rs\":" + String(bestRssi);
-  if (bestSnr != 0) json += ",\"sn\":" + String(bestSnr, 1);
-  if (relayFrom.length()) json += ",\"rf\":\"" + relayFrom + "\"";
-  if (chain.length() && chain != "[]") json += ",\"c\":" + chain;
-  if (includeNeighbors) json += ",\"n\":" + compactNeighbors();
-  json += "}";
-  return json;
-}
-
-String buildRelayPacket(const String& rx, const String& nextHop, int rssi, float snr) {
-  String chain = relayChainAppend(rawField(rx, "c", "[]"), VEHICLE_ID);
-  int hop = (int)longField(rx, "hp", 0) + 1;
-  String vehicleId = stringField(rx, "v");
-
-  String json = "{";
-  json += "\"t\":\"g\"";
-  json += ",\"v\":\"" + vehicleId + "\"";
-  json += ",\"q\":" + rawField(rx, "q", "0");
-  json += ",\"b\":" + rawField(rx, "b", "\"\"");
-  json += ",\"p\":" + rawField(rx, "p", "\"\"");
-  json += ",\"a\":" + rawField(rx, "a", "0");
-  json += ",\"o\":" + rawField(rx, "o", "0");
-  json += ",\"s\":" + rawField(rx, "s", "0");
-  json += ",\"hd\":" + rawField(rx, "hd", "0");
-  json += ",\"bt\":" + rawField(rx, "bt", "-1");
-  json += ",\"r\":" + rawField(rx, "r", "\"unassigned\"");
-  json += ",\"d\":" + rawField(rx, "d", "\"unknown\"");
-  json += ",\"hp\":" + String(hop);
-  if (nextHop != "GROUND") json += ",\"nh\":\"" + nextHop + "\"";
-  if (nextHop == "GROUND") json += ",\"rf\":\"" + String(VEHICLE_ID) + "\"";
-  json += ",\"c\":" + chain;
-  json += ",\"lq\":" + String(linkQuality(rssi, snr));
-  json += ",\"rs\":" + String(rssi);
-  json += ",\"sn\":" + String(snr, 1);
-  if (longField(rx, "gf", 1) == 0) json += ",\"gf\":0";
-  json += "}";
-  return json;
-}
-
-void broadcastOwnGps() {
-  readGps();
-  measurePower();
-  expireNeighbors();
+void transmitPacket() {
+  Neighbor* ground = findGroundStation();
+  Neighbor* relay = ground == nullptr ? findBestRelay() : nullptr;
+  bool direct = ground != nullptr;
+  int hop = direct ? 0 : (relay ? constrain(relay->hop + 1, 1, MAX_HOPS) : 0);
+  float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
+  float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
 
   seq++;
-  txCount++;
-  String packetId = String(VEHICLE_ID) + "-" + bootId + "-" + String(seq);
-  rememberPacket(packetId);
+  char packetId[32];
+  buildPacketId(packetId, sizeof(packetId));
+  markSeen(packetId);
 
-  String nextHop = chooseNextHop();
-  String packet = buildGpsPacket(packetId, seq, nextHop, 0, "", "[]", true);
-  if (packet.length() > VIBE_PACKET_MAX_BYTES) {
-    packet = buildGpsPacket(packetId, seq, nextHop, 0, "", "[]", false);
+  StaticJsonDocument<512> doc;
+  doc["type"] = "vehicle_data";
+  doc["vid"] = VEHICLE_ID;
+  doc["pid"] = packetId;
+  doc["seq"] = seq;
+  doc["bid"] = bootId;
+  doc["lat"] = gpsValid ? gpsLat : 0.0f;
+  doc["lng"] = gpsValid ? gpsLng : 0.0f;
+  doc["spd"] = gpsSpeed;
+  doc["hdg"] = (int)gpsHeading;
+  doc["bat"] = (int)round(readBattery());
+  doc["rid"] = ROUTE_ID;
+  doc["dir"] = ROUTE_DIR;
+  doc["hop"] = hop;
+  doc["src"] = "vehicle";
+  doc["lq"] = linkQuality(bestRssi, bestSnr);
+  doc["fix"] = gpsValid;
+  if (bestRssi != 0.0f) doc["rssi"] = (int)bestRssi;
+  if (bestSnr != 0.0f) doc["snr"] = bestSnr;
+  if (gpsSats > 0) doc["sats"] = gpsSats;
+  if (gpsHdop < 99.0f) doc["hdop"] = gpsHdop;
+  if (!direct && relay != nullptr) doc["to"] = relay->vehicleId;
+  addNeighborArray(doc);
+
+  bool sent = sendJson(doc);
+  Serial.printf("[TX] %s hop:%d rssi:%.0f %s\n",
+                VEHICLE_ID, hop, bestRssi, sent ? "sent" : "failed");
+}
+
+bool chainContainsSelf(JsonVariantConst rc) {
+  if (!rc.is<JsonArrayConst>()) return false;
+  for (JsonVariantConst item : rc.as<JsonArrayConst>()) {
+    const char* id = item.as<const char*>();
+    if (id != nullptr && sameId(id, VEHICLE_ID)) return true;
   }
-  sendLoRa(packet);
-
-  Serial.printf("[GPS] %s seq:%lu %.6f,%.6f %dkm/h hop:0 next:%s ground:%s\n",
-                VEHICLE_ID, (unsigned long)seq, curLat, curLng, curSpeed,
-                nextHop.c_str(), isGroundFresh() ? "yes" : "no");
+  return false;
 }
 
-void handleBeacon(const String& rx, int rssi, float snr) {
-  groundLastHeardMs = millis();
-  groundRssi = rssi;
-  groundSnr = snr;
-  Serial.printf("[Mesh] Beacon %s rssi:%d snr:%.1f lq:%d\n",
-                stringField(rx, "sid", "GROUND").c_str(), rssi, snr, linkQuality(rssi, snr));
-}
-
-void handleGpsPacket(const String& rx, int rssi, float snr) {
-  String packetId = stringField(rx, "p");
-  String sourceVehicle = stringField(rx, "v");
-  if (!packetId.length() || sourceVehicle == VEHICLE_ID || seenPacket(packetId)) return;
-  rememberPacket(packetId);
-
-  float lat = floatField(rx, "a", 0);
-  float lng = floatField(rx, "o", 0);
-  bool hasLocation = lat != 0 && lng != 0;
-  updateNeighbor(sourceVehicle, rssi, snr, lat, lng, hasLocation);
-
-  String nextHop = stringField(rx, "nh", "GROUND");
-  int hop = (int)longField(rx, "hp", 0);
-  if (nextHop != VEHICLE_ID || hop >= VIBE_MAX_HOPS) return;
-
-  String chain = relayChainAppend(rawField(rx, "c", "[]"), VEHICLE_ID);
-  String relayNext = chooseNextHop(chain);
-  String relayPacket = buildRelayPacket(rx, relayNext, rssi, snr);
-  if (relayPacket.length() <= VIBE_PACKET_MAX_BYTES) {
-    sendLoRa(relayPacket);
-    Serial.printf("[Relay] %s via %s hop:%d next:%s\n",
-                  packetId.c_str(), VEHICLE_ID, hop + 1, relayNext.c_str());
+void appendSelfToChain(JsonDocument& doc) {
+  JsonArray chain;
+  if (doc["rc"].is<JsonArray>()) {
+    chain = doc["rc"].as<JsonArray>();
   } else {
-    Serial.printf("[Relay] Drop oversized relay %s %uB\n", packetId.c_str(), relayPacket.length());
+    chain = doc.createNestedArray("rc");
+  }
+
+  for (JsonVariant item : chain) {
+    const char* id = item.as<const char*>();
+    if (id != nullptr && sameId(id, VEHICLE_ID)) return;
+  }
+  chain.add(VEHICLE_ID);
+}
+
+bool shouldRelay(JsonDocument& doc, int hop) {
+  const char* sourceVid = doc["vid"] | "";
+  const char* relayFrom = doc["rf"] | "";
+  const char* relayTo = doc["to"] | "";
+
+  if (sameId(sourceVid, VEHICLE_ID)) return false;
+  if (sameId(relayFrom, VEHICLE_ID)) return false;
+  if (relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) return false;
+  if (chainContainsSelf(doc["rc"])) return false;
+  if (hop >= MAX_HOPS) return false;
+  if (isGroundStationNearby()) return false;
+  return true;
+}
+
+void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
+  doc["hop"] = hop + 1;
+  doc["rf"] = VEHICLE_ID;
+  doc["rssi"] = (int)rssi;
+  doc["snr"] = snr;
+  doc["lq"] = linkQuality(rssi, snr);
+  doc.remove("nb");
+  doc.remove("to");
+  appendSelfToChain(doc);
+
+  bool sent = sendJson(doc);
+  Serial.printf("[RELAY] %s hop:%d rssi:%.0f %s\n",
+                (const char*)(doc["vid"] | "?"), hop + 1, rssi, sent ? "sent" : "failed");
+}
+
+void handleBeacon(JsonDocument& doc, float rssi, float snr) {
+  const char* stationId = doc["sid"] | GROUND_ID;
+  float lat = doc["lat"] | GROUND_LAT;
+  float lng = doc["lng"] | GROUND_LNG;
+  updateNeighbor(stationId, rssi, snr, lat, lng);
+  Serial.printf("[RX] beacon %s rssi:%.0f snr:%.1f\n", stationId, rssi, snr);
+}
+
+void handleVehicleData(JsonDocument& doc, float rssi, float snr) {
+  const char* vid = doc["vid"] | "";
+  const char* pid = doc["pid"] | "";
+  float lat = doc["lat"] | 0.0f;
+  float lng = doc["lng"] | 0.0f;
+  int hop = doc["hop"] | 0;
+
+  updateNeighborWithHop(vid, rssi, snr, lat, lng, hop);
+  Serial.printf("[RX] from %s hop:%d rssi:%.0f\n", vid[0] ? vid : "?", hop, rssi);
+
+  if (alreadySeen(pid)) return;
+  markSeen(pid);
+
+  if (shouldRelay(doc, hop)) {
+    relayVehiclePacket(doc, hop, rssi, snr);
   }
 }
 
-void receiveLoRa() {
-  int packetSize = LoRa.parsePacket();
-  if (!packetSize) return;
+void onLoRaReceive(int packetSize) {
+  if (packetSize <= 0) return;
 
-  String rx = "";
-  while (LoRa.available()) rx += (char)LoRa.read();
-  int rssi = LoRa.packetRssi();
+  char payload[256];
+  int len = 0;
+  while (LoRa.available() && len < (int)sizeof(payload) - 1) {
+    payload[len++] = (char)LoRa.read();
+  }
+  payload[len] = '\0';
+
+  float rssi = LoRa.packetRssi();
   float snr = LoRa.packetSnr();
-  String type = stringField(rx, "t");
 
-  if (type == "b") handleBeacon(rx, rssi, snr);
-  if (type == "g") handleGpsPacket(rx, rssi, snr);
+  StaticJsonDocument<512> doc;
+  DeserializationError error = deserializeJson(doc, payload);
+  if (error) {
+    Serial.printf("[RX] invalid json: %s\n", error.c_str());
+    return;
+  }
+
+  const char* type = doc["type"] | "";
+  const char* compactType = doc["t"] | "";
+  if (strcmp(type, "beacon") == 0 || strcmp(compactType, "b") == 0) {
+    handleBeacon(doc, rssi, snr);
+  } else if (strcmp(type, "vehicle_data") == 0 || strcmp(compactType, "vd") == 0) {
+    handleVehicleData(doc, rssi, snr);
+  }
+}
+
+bool initLoRa() {
+  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("[LoRa] init failed, will retry");
+    return false;
+  }
+  LoRa.setSignalBandwidth(LORA_BW);
+  LoRa.setSpreadingFactor(LORA_SF);
+  LoRa.setCodingRate4(LORA_CR);
+  LoRa.setSyncWord(LORA_SYNC);
+  LoRa.setTxPower(LORA_TX_DBM);
+  LoRa.enableCrc();
+  LoRa.receive();
+  Serial.println("[LoRa] ready");
+  return true;
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(200);
-  randomSeed(analogRead(A0) ^ micros());
-  bootId = String(random(0x1000, 0xFFFF), HEX);
-  bootId.toUpperCase();
-
-  Serial.printf("\n=== Smart Songthaew V03 Vehicle %s ===\n", VEHICLE_ID);
-
-  #ifdef USE_REAL_GPS
   gpsSerial.begin(GPS_BAUD);
-  #endif
 
-  #ifdef USE_INA219
-  ina219Found = ina219.begin();
-  if (ina219Found) ina219.setCalibration_32V_2A();
-  #endif
+  randomSeed(analogRead(BAT_PIN) ^ micros() ^ ESP.getChipId());
+  snprintf(bootId, sizeof(bootId), "%04X", (unsigned int)random(0, 0x10000));
+  seq = 0;
 
-  LoRa.setPins(LORA_SS_PIN, LORA_RST_PIN, LORA_DIO0_PIN);
-  if (!LoRa.begin(LORA_FREQUENCY)) {
-    Serial.println("[LoRa] init failed");
-    while (true) yield();
-  }
-  LoRa.setSignalBandwidth(LORA_BANDWIDTH);
-  LoRa.setSpreadingFactor(LORA_SPREADING_FACTOR);
-  LoRa.setCodingRate4(LORA_CODING_RATE_DENOMINATOR);
-  LoRa.setSyncWord(LORA_SYNC_WORD);
-  LoRa.setTxPower(LORA_TX_POWER_DBM);
-  LoRa.enableCrc();
-  LoRa.receive();
-
-  Serial.println("[LoRa] mesh radio ready");
+  Serial.printf("\nSmart Songthaew Vehicle V03 | %s | boot:%s\n", VEHICLE_ID, bootId);
+  loraReady = initLoRa();
 }
 
 void loop() {
-  receiveLoRa();
+  readGPS();
 
-  #ifdef USE_REAL_GPS
-  readGps();
-  #endif
+  if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
+    lastLoRaRetryMs = millis();
+    loraReady = initLoRa();
+  }
+
+  if (loraReady) {
+    int packetSize = LoRa.parsePacket();
+    if (packetSize > 0) onLoRaReceive(packetSize);
+  }
 
   unsigned long now = millis();
-  if (now - lastBroadcastMs >= VEHICLE_BROADCAST_INTERVAL_MS) {
-    lastBroadcastMs = now;
-    broadcastOwnGps();
+  if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
+    lastExpireMs = now;
+    expireNeighbors();
+  }
+
+  if (now - lastTxMs >= TX_INTERVAL_MS) {
+    lastTxMs = now;
+    transmitPacket();
   }
 
   yield();
