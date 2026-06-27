@@ -464,6 +464,73 @@ function isValidCoord(lat, lng) {
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
 }
 
+function linkPairKey(from, to) {
+  return [String(from || ''), String(to || '')].sort().join('|');
+}
+
+function deduplicateLinks(links) {
+  const seen = new Set();
+  return links.filter(link => {
+    const key = linkPairKey(link.from, link.to);
+    if (!link.from || !link.to || link.from === link.to || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function resolveUpstream(nodeA, nodeB) {
+  const hopA = Number.isFinite(Number(nodeA?.hop)) ? Number(nodeA.hop) : Number.MAX_SAFE_INTEGER;
+  const hopB = Number.isFinite(Number(nodeB?.hop)) ? Number(nodeB.hop) : Number.MAX_SAFE_INTEGER;
+  if (hopA !== hopB) {
+    return hopA < hopB
+      ? { from: nodeB.id, to: nodeA.id }
+      : { from: nodeA.id, to: nodeB.id };
+  }
+
+  const rssiA = Number(nodeA?.received_rssi ?? nodeA?.rssi);
+  const rssiB = Number(nodeB?.received_rssi ?? nodeB?.rssi);
+  if (Number.isFinite(rssiA) && Number.isFinite(rssiB) && rssiA !== rssiB) {
+    return rssiA > rssiB
+      ? { from: nodeB.id, to: nodeA.id }
+      : { from: nodeA.id, to: nodeB.id };
+  }
+
+  const seenA = Number(nodeA?.last_seen || 0);
+  const seenB = Number(nodeB?.last_seen || 0);
+  if (seenA !== seenB) {
+    return seenA > seenB
+      ? { from: nodeB.id, to: nodeA.id }
+      : { from: nodeA.id, to: nodeB.id };
+  }
+
+  return String(nodeA.id) < String(nodeB.id)
+    ? { from: nodeB.id, to: nodeA.id }
+    : { from: nodeA.id, to: nodeB.id };
+}
+
+function sanitizeRelayChain(chain, senderId, nodeIds = new Set()) {
+  if (!Array.isArray(chain)) return [];
+  const seen = new Set([senderId]);
+  const clean = [];
+
+  for (const item of chain) {
+    const node = String(item || '').trim();
+    if (!node || node === senderId) {
+      console.warn(`[NETWORK] relay_chain loop detected: ${(chain || []).join('->')} (sender: ${senderId})`);
+      return null;
+    }
+    if (seen.has(node)) {
+      console.warn(`[NETWORK] relay_chain duplicate detected: ${(chain || []).join('->')} (sender: ${senderId})`);
+      return null;
+    }
+    if (nodeIds.size && !nodeIds.has(node)) continue;
+    seen.add(node);
+    clean.push(node);
+  }
+
+  return clean;
+}
+
 function telemetryTimestampMs(data = {}) {
   const timestamp = Number(data.timestamp);
   if (Number.isFinite(timestamp) && timestamp > 0) {
@@ -517,62 +584,103 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
 }
 
 function buildEstimatedLinks(nodes, groundStation) {
+  const MAX_LINK_DISTANCE_M = 15000;
   const links = [];
   const onlineNodes = nodes.filter(n => n.status === 'online' && Number.isFinite(n.lat) && Number.isFinite(n.lng));
   if (onlineNodes.length === 0) return links;
 
-  const sorted = [...onlineNodes].sort((a, b) => {
-    const da = haversineDistanceMeters(a, groundStation);
-    const db = haversineDistanceMeters(b, groundStation);
-    return da - db;
-  });
-
-  sorted.forEach((node, idx) => {
+  onlineNodes.forEach(node => {
+    if (!groundStation || !Number.isFinite(groundStation.lat) || !Number.isFinite(groundStation.lng)) return;
     const distToGround = haversineDistanceMeters(node, groundStation);
-    if (distToGround <= 15000 || idx === 0) {
+    if (distToGround <= MAX_LINK_DISTANCE_M) {
       links.push({
         from: node.id,
         to: groundStation.id,
         type: 'direct',
         distance_m: Math.round(distToGround),
         hop: 0,
-        status: distToGround < 8000 ? 'good' : distToGround < 12000 ? 'fair' : 'poor',
+        status: distToGround < 5000 ? 'good' : distToGround < 10000 ? 'fair' : 'weak',
         source: 'estimated',
         rssi: null, snr: null, latency_ms: null,
         last_seen: node.last_seen
       });
-      node._hop = 0;
-    } else {
-      const nearest = sorted.slice(0, idx).find(n => n._hop !== undefined);
-      if (nearest) {
-        const distToNearest = haversineDistanceMeters(node, nearest);
-        links.push({
-          from: node.id,
-          to: nearest.id,
-          type: 'relay',
-          distance_m: Math.round(distToNearest),
-          hop: (nearest._hop || 0) + 1,
-          status: distToNearest < 8000 ? 'fair' : 'poor',
-          source: 'estimated',
-          rssi: null, snr: null, latency_ms: null,
-          last_seen: node.last_seen
-        });
-        node._hop = (nearest._hop || 0) + 1;
-      }
     }
   });
-  return links;
+
+  for (let i = 0; i < onlineNodes.length; i++) {
+    for (let j = i + 1; j < onlineNodes.length; j++) {
+      const a = onlineNodes[i];
+      const b = onlineNodes[j];
+      const dist = haversineDistanceMeters(a, b);
+      if (dist > MAX_LINK_DISTANCE_M) continue;
+      const direction = resolveUpstream(a, b);
+      links.push({
+        from: direction.from,
+        to: direction.to,
+        type: 'relay',
+        distance_m: Math.round(dist),
+        hop: Math.max(Number(a.hop || 0), Number(b.hop || 0)),
+        status: dist < 3000 ? 'good' : dist < 8000 ? 'fair' : 'weak',
+        source: 'estimated',
+        rssi: null, snr: null, latency_ms: null,
+        last_seen: Math.max(Number(a.last_seen || 0), Number(b.last_seen || 0))
+      });
+    }
+  }
+
+  return deduplicateLinks(links);
 }
 
 function buildRealTelemetryLinks(nodes, groundStation) {
   const links = [];
+  const addedPairs = new Set();
+  const nodeIds = new Set(nodes.map(node => node.id));
+  const addLink = link => {
+    const key = linkPairKey(link.from, link.to);
+    if (!link.from || !link.to || link.from === link.to || addedPairs.has(key)) return;
+    addedPairs.add(key);
+    links.push(link);
+  };
+
   nodes.forEach(node => {
     if (node.status !== 'online') return;
-    if (node.relay_from) {
+    const chain = sanitizeRelayChain(node.relay_chain, node.id, nodeIds);
+    if (chain === null) return;
+    const relayPath = chain.length ? [node.id, ...chain] : node.relay_from ? [node.id, node.relay_from] : [];
+
+    if (relayPath.length > 1) {
+      for (let i = 0; i < relayPath.length - 1; i++) {
+        const from = relayPath[i];
+        const to = relayPath[i + 1];
+        addLink({
+          from,
+          to,
+          type: 'relay',
+          distance_m: null,
+          hop: i + 1,
+          status: node.link_quality >= 70 ? 'good' : node.link_quality >= 40 ? 'fair' : 'poor',
+          source: 'telemetry',
+          rssi: node.rssi, snr: node.snr, latency_ms: null,
+          last_seen: node.last_seen
+        });
+      }
+      const lastRelay = relayPath[relayPath.length - 1];
+      addLink({
+        from: lastRelay,
+        to: groundStation.id,
+        type: 'relay',
+        distance_m: null,
+        hop: node.hop || relayPath.length - 1,
+        status: node.link_quality >= 70 ? 'good' : node.link_quality >= 40 ? 'fair' : 'poor',
+        source: 'telemetry',
+        rssi: node.rssi, snr: node.snr, latency_ms: null,
+        last_seen: node.last_seen
+      });
+    } else if (node.relay_from) {
       const dist = Number.isFinite(node.lat) && Number.isFinite(node.lng)
         ? haversineDistanceMeters(node, groundStation)
         : null;
-      links.push({
+      addLink({
         from: node.id,
         to: node.relay_from,
         type: 'relay',
@@ -585,7 +693,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
       });
     } else if (Number.isFinite(node.lat) && Number.isFinite(node.lng)) {
       const distToGround = haversineDistanceMeters(node, groundStation);
-      links.push({
+      addLink({
         from: node.id,
         to: groundStation.id,
         type: 'direct',
@@ -598,7 +706,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
       });
     }
   });
-  return links;
+  return deduplicateLinks(links);
 }
 
 function calculateMeshHealth(nodes, links) {

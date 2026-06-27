@@ -979,11 +979,28 @@ void transmitPacket(const char* txMode = "auto") {
                 VEHICLE_ID, txMode, hop, payload.length(), bestRssi, sent ? "sent" : "failed");
 }
 
-bool chainContainsSelf(JsonVariantConst rc) {
-  if (!rc.is<JsonArrayConst>()) return false;
-  for (JsonVariantConst item : rc.as<JsonArrayConst>()) {
+bool wouldCreateLoop(JsonVariantConst relayChain, const char* myId) {
+  if (!relayChain.is<JsonArrayConst>()) return false;
+  String myShort = shortVehicleId(myId);
+  for (JsonVariantConst item : relayChain.as<JsonArrayConst>()) {
     const char* id = item.as<const char*>();
-    if (id != nullptr && sameId(id, VEHICLE_ID)) return true;
+    if (id == nullptr || id[0] == '\0') continue;
+    if (sameId(id, myId) || String(id) == myShort) return true;
+  }
+  return false;
+}
+
+bool wouldCreateLoopCompact(const String& rcCompact, const char* myId) {
+  if (rcCompact.length() == 0) return false;
+
+  String myShort = shortVehicleId(myId);
+  int start = 0;
+  while (start < (int)rcCompact.length()) {
+    int comma = rcCompact.indexOf(',', start);
+    String entry = comma >= 0 ? rcCompact.substring(start, comma) : rcCompact.substring(start);
+    start = comma >= 0 ? comma + 1 : rcCompact.length();
+    entry.trim();
+    if (entry == myShort || entry == String(myId)) return true;
   }
   return false;
 }
@@ -1012,9 +1029,18 @@ bool shouldRelay(JsonDocument& doc, int hop) {
   if (sameId(sourceVid, VEHICLE_ID)) return false;
   if (sameId(relayFrom, VEHICLE_ID)) return false;
   if (relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) return false;
-  if (chainContainsSelf(doc["rc"])) return false;
-  if (hop >= MAX_HOPS) return false;
-  if (ttl <= 0) return false;
+  if (wouldCreateLoop(doc["rc"], VEHICLE_ID)) {
+    Serial.printf("[RELAY] skip loop: packet from %s already passed through me\n", sourceVid[0] ? sourceVid : "?");
+    return false;
+  }
+  if (hop >= MAX_HOPS) {
+    Serial.println("[RELAY] skip: max hops reached");
+    return false;
+  }
+  if (ttl <= 0) {
+    Serial.println("[RELAY] skip: TTL expired");
+    return false;
+  }
   if (isGroundStationNearby()) return true;
 
   float sourceLat = doc["lat"] | 0.0f;
@@ -1031,6 +1057,10 @@ bool shouldRelay(JsonDocument& doc, int hop) {
 void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   int ttl = doc["ttl"] | (MAX_HOPS - hop);
   if (ttl <= 0) return;
+  if (wouldCreateLoop(doc["rc"], VEHICLE_ID)) {
+    Serial.println("[RELAY] skip loop before forward");
+    return;
+  }
 
   doc["hop"] = hop + 1;
   doc["ttl"] = ttl - 1;
@@ -1128,8 +1158,12 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   }
 
   if (compact["rc"].is<const char*>()) {
-    JsonArray chain = expanded.createNestedArray("rc");
     String rc = compact["rc"] | "";
+    if (wouldCreateLoopCompact(rc, VEHICLE_ID)) {
+      Serial.printf("[RELAY] skip compact loop: %s\n", rc.c_str());
+      return false;
+    }
+    JsonArray chain = expanded.createNestedArray("rc");
     int start = 0;
     while (start < rc.length()) {
       int comma = rc.indexOf(',', start);
