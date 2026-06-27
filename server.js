@@ -160,6 +160,24 @@ async function initializeDefaultData() {
         createdAt: Date.now(),
         updatedAt: Date.now()
       };
+      defaultRoute.id = 'route_nakhon_phromkhiri';
+      defaultRoute.shortName = 'นคร-พรหม';
+      defaultRoute.color = '#2563EB';
+      defaultRoute.active = true;
+      defaultRoute.directions = {
+        outbound: {
+          label: 'ขาไป (นครฯ → พรหมคีรี)',
+          coords: normalizeCoordsList(defaultRoute.coords),
+          stops: normalizeStopList(defaultRoute.stops, defaultRoute.id, 'outbound'),
+        },
+        inbound: {
+          label: 'ขากลับ (พรหมคีรี → นครฯ)',
+          coords: normalizeCoordsList(defaultRoute.coords).reverse(),
+          stops: normalizeStopList(defaultRoute.stops, defaultRoute.id, 'inbound').reverse(),
+        },
+      };
+      delete defaultRoute.coords;
+      delete defaultRoute.stops;
       await db.ref('routes/route_nakhon_phromkhiri').set(defaultRoute);
       console.log('[Init] Default route created: นครศรีธรรมราช ↔ พรหมคีรี');
     }
@@ -191,6 +209,122 @@ function validLatLng(lat, lng) {
     lat >= 5.5 && lat <= 20.5 &&
     lng >= 97.5 && lng <= 105.7
   );
+}
+
+function normalizeCoordPoint(point) {
+  const lat = Array.isArray(point) ? Number(point[0]) : Number(point?.lat);
+  const lng = Array.isArray(point) ? Number(point[1]) : Number(point?.lng);
+  return validLatLng(lat, lng) ? { lat, lng } : null;
+}
+
+function normalizeCoordsList(coords = []) {
+  return (Array.isArray(coords) ? coords : [])
+    .map(normalizeCoordPoint)
+    .filter(Boolean);
+}
+
+function normalizeStopList(stops = [], routeId = '', dir = 'outbound') {
+  return (Array.isArray(stops) ? stops : [])
+    .map((stop, index) => {
+      const point = normalizeCoordPoint(stop);
+      if (!point) return null;
+      return {
+        id: String(stop?.id || stop?.place_id || `${dir}_stop_${index + 1}`),
+        name: String(stop?.name || `Stop ${index + 1}`),
+        lat: point.lat,
+        lng: point.lng,
+      };
+    })
+    .filter(Boolean);
+}
+
+function normalizeRouteDirection(direction = {}, fallback = {}, routeId = '', dir = 'outbound') {
+  const fallbackLabel = dir === 'inbound' ? 'ขากลับ' : 'ขาไป';
+  return {
+    label: String(direction?.label || fallback?.label || fallbackLabel),
+    coords: normalizeCoordsList(direction?.coords ?? fallback?.coords ?? []),
+    stops: normalizeStopList(direction?.stops ?? fallback?.stops ?? [], routeId, dir),
+  };
+}
+
+function routeVehicleCount(fleet = {}, routeId = '') {
+  return Object.values(fleet || {}).filter(v => (v?.routeId || v?.route_id) === routeId).length;
+}
+
+function normalizeRouteForApi(route = {}, routeId = '', vehicleCount = 0) {
+  const id = String(route?.id || route?.routeId || route?.route_id || routeId || '');
+  const outbound = normalizeRouteDirection(route?.directions?.outbound, {
+    coords: route?.coords,
+    stops: route?.stops || route?.places,
+  }, id, 'outbound');
+  const inbound = normalizeRouteDirection(route?.directions?.inbound, {}, id, 'inbound');
+  const stopCount = outbound.stops.length + inbound.stops.length;
+  return {
+    ...route,
+    id,
+    routeId: id,
+    route_id: id,
+    name: String(route?.name || id || 'Untitled route'),
+    shortName: String(route?.shortName || route?.short_name || '').slice(0, 10),
+    color: route?.color || '#2563EB',
+    active: route?.active !== false,
+    directions: { outbound, inbound },
+    coords: outbound.coords,
+    stops: outbound.stops,
+    vehicleCount,
+    stopCount,
+  };
+}
+
+function sanitizeRouteId(value) {
+  const clean = String(value || '')
+    .trim()
+    .replace(/[^\w-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return clean || `route_${Date.now()}`;
+}
+
+function buildRouteForWrite(body = {}, routeId = '', existing = {}) {
+  const now = Date.now();
+  const merged = { ...existing, ...body, id: routeId };
+  const normalized = normalizeRouteForApi(merged, routeId);
+  const route = {
+    id: routeId,
+    name: normalized.name,
+    shortName: normalized.shortName,
+    color: normalized.color,
+    active: normalized.active,
+    directions: normalized.directions,
+    createdAt: existing?.createdAt || body?.createdAt || now,
+    updatedAt: now,
+  };
+  if (body.description !== undefined || existing.description !== undefined) {
+    route.description = body.description ?? existing.description ?? '';
+  }
+  return route;
+}
+
+function buildRoutePatch(body = {}) {
+  const updates = { updatedAt: Date.now() };
+  ['name', 'shortName', 'color', 'active', 'description'].forEach(field => {
+    if (body[field] !== undefined) {
+      updates[field] = field === 'shortName' ? String(body[field]).slice(0, 10) : body[field];
+    }
+  });
+  if (body.coords !== undefined) updates['directions/outbound/coords'] = normalizeCoordsList(body.coords);
+  if (body.stops !== undefined) updates['directions/outbound/stops'] = normalizeStopList(body.stops, '', 'outbound');
+  for (const dir of ['outbound', 'inbound']) {
+    const direction = body?.directions?.[dir];
+    if (!direction) continue;
+    if (direction.label !== undefined) updates[`directions/${dir}/label`] = String(direction.label);
+    if (direction.coords !== undefined) updates[`directions/${dir}/coords`] = normalizeCoordsList(direction.coords);
+    if (direction.stops !== undefined) updates[`directions/${dir}/stops`] = normalizeStopList(direction.stops, '', dir);
+  }
+  return updates;
+}
+
+function validRouteDir(dir) {
+  return dir === 'outbound' || dir === 'inbound';
 }
 
 const LEGACY_SUNSET = '2026-09-30';
@@ -1179,9 +1313,13 @@ function findDemoRouteWithCoords(routes) {
   const entries = Object.entries(routes || {});
   console.log(`[DEMO] Scanning ${entries.length} Firebase routes for coords length > 5`);
   for (const [routeKey, route] of entries) {
-    const rawCoords = Array.isArray(route?.coords) ? route.coords : [];
+    const rawCoords = Array.isArray(route?.directions?.outbound?.coords)
+      ? route.directions.outbound.coords
+      : Array.isArray(route?.coords)
+        ? route.coords
+        : [];
     const normalized = normalizeDemoRouteCoords(rawCoords);
-    const routeId = route?.route_id || route?.routeId || routeKey;
+    const routeId = route?.id || route?.route_id || route?.routeId || routeKey;
     console.log(`[DEMO] route candidate routeId=${routeId} rawCoords=${rawCoords.length} validCoords=${normalized.coords.length} format=${normalized.format}`);
     if (normalized.coords.length > 5) {
       console.log(`[DEMO] selected routeId=${routeId} coordCount=${normalized.coords.length} firstCoord=${JSON.stringify(normalized.coords[0])}`);
@@ -1201,7 +1339,7 @@ async function startDemoFleet() {
   console.log(`[DEMO] startDemoFleet demoRouteIdConfig=${config.demoRouteId || '-'} assumption=routes is object keyed by routeId; coords may be [lat,lng] or {lat,lng}`);
   const selected = findDemoRouteWithCoords(routes);
   if (selected) {
-    const routeId = selected.route.route_id || selected.route.routeId || selected.routeKey;
+    const routeId = selected.route.id || selected.route.route_id || selected.route.routeId || selected.routeKey;
     demoRouteCoords = selected.normalized.coords;
     _demoRouteCoordFormat = selected.normalized.format;
     _demoRouteCoordSource = 'firebase';
@@ -1342,127 +1480,135 @@ app.get('/api/auth/verify', authMiddleware, (req, res) => {
 //  ROUTE MANAGEMENT APIs (Protected)
 // ============================================================
 
-// GET /api/routes - List all routes
+// GET /api/routes - List all routes with full Firebase schema
 app.get('/api/routes', async (req, res) => {
   try {
-    const snap = await db.ref('routes').once('value');
-    const routes = snap.val() || {};
-    
-    // Add vehicle count to each route
-    const fleetSnap = await db.ref('fleet').once('value');
+    const [routesSnap, fleetSnap] = await Promise.all([
+      db.ref('routes').once('value'),
+      db.ref('fleet').once('value'),
+    ]);
+    const routes = routesSnap.val() || {};
     const fleet = fleetSnap.val() || {};
-    
+    const activeOnly = String(req.query.active || '').toLowerCase() === 'true';
     const result = {};
     for (const [id, route] of Object.entries(routes)) {
-      const vehicleCount = Object.values(fleet).filter(v => v.routeId === id).length;
-      result[id] = { ...route, vehicleCount };
+      const normalized = normalizeRouteForApi(route, id, routeVehicleCount(fleet, id));
+      if (activeOnly && normalized.active === false) continue;
+      result[id] = normalized;
     }
-    
     res.json(result);
   } catch (e) {
+    console.error('[ROUTE] Failed to fetch routes:', e);
     res.status(500).json({ error: 'Failed to fetch routes' });
+  }
+});
+
+// GET /api/routes/:id - Get one route with directions and stops
+app.get('/api/routes/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const [routeSnap, fleetSnap] = await Promise.all([
+      db.ref(`routes/${id}`).once('value'),
+      db.ref('fleet').once('value'),
+    ]);
+    if (!routeSnap.exists()) return res.status(404).json({ error: 'Route not found' });
+    res.json(normalizeRouteForApi(routeSnap.val(), id, routeVehicleCount(fleetSnap.val() || {}, id)));
+  } catch (e) {
+    console.error(`[ROUTE] Failed to fetch route ${id}:`, e);
+    res.status(500).json({ error: 'Failed to fetch route' });
   }
 });
 
 // POST /api/routes - Create new route (admin only)
 app.post('/api/routes', authMiddleware, async (req, res) => {
-  const { name, description, coords, stops } = req.body;
-  
-  if (!name || !coords || !Array.isArray(coords)) {
-    return res.status(400).json({ error: 'Name and coords array required' });
-  }
-  
   try {
-    const routeId = 'route_' + Date.now();
-    const route = {
-      name,
-      description: description || '',
-      coords,
-      stops: stops || [],
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    };
-    
+    if (!req.body?.name) return res.status(400).json({ error: 'name required' });
+    const routeId = sanitizeRouteId(req.body.id || req.body.routeId || req.body.route_id || `route_${Date.now()}`);
+    const existingSnap = await db.ref(`routes/${routeId}`).once('value');
+    if (existingSnap.exists()) return res.status(409).json({ error: 'Route id already exists' });
+    const route = buildRouteForWrite(req.body, routeId);
     await db.ref(`routes/${routeId}`).set(route);
-    res.json({ ok: true, routeId, route });
+    console.log(`[ROUTE] Created ${routeId}`);
+    res.status(201).json({ ok: true, routeId, route: normalizeRouteForApi(route, routeId) });
   } catch (e) {
+    console.error('[ROUTE] Failed to create route:', e);
     res.status(500).json({ error: 'Failed to create route' });
   }
 });
 
-// DELETE /api/routes/:id - Delete route (admin only)
-app.delete('/api/routes/:id', authMiddleware, async (req, res) => {
-  const { id } = req.params;
-  
-  try {
-    // Unassign all vehicles from this route
-    const fleetSnap = await db.ref('fleet').once('value');
-    const fleet = fleetSnap.val() || {};
-    
-    const updates = {};
-    for (const [vid, v] of Object.entries(fleet)) {
-      if (v.routeId === id) {
-        updates[`fleet/${vid}/routeId`] = null;
-      }
-    }
-    
-    // Delete route
-    updates[`routes/${id}`] = null;
-    
-    await db.ref().update(updates);
-    res.json({ ok: true });
-  } catch (e) {
-    res.status(500).json({ error: 'Failed to delete route' });
-  }
-});
-
-// PATCH /api/routes/:id - Edit route (admin only)
+// PATCH /api/routes/:id - Edit route (admin only, partial merge)
 app.patch('/api/routes/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-  const { name, description, coords, stops } = req.body;
-
   try {
-    const snap = await db.ref(`routes/${id}`).once('value');
+    const ref = db.ref(`routes/${id}`);
+    const snap = await ref.once('value');
     if (!snap.exists()) return res.status(404).json({ error: 'Route not found' });
-
-    const patch = { updatedAt: Date.now() };
-    if (name)        patch.name        = name;
-    if (description !== undefined) patch.description = description;
-    if (coords)      patch.coords      = coords;
-    if (stops)       patch.stops       = stops;
-
-    await db.ref(`routes/${id}`).update(patch);
+    const patch = buildRoutePatch(req.body || {});
+    await ref.update(patch);
+    const updatedSnap = await ref.once('value');
     console.log(`[ROUTE] Updated ${id}:`, Object.keys(patch));
-    res.json({ ok: true, routeId: id });
+    res.json({ ok: true, routeId: id, route: normalizeRouteForApi(updatedSnap.val(), id) });
   } catch (e) {
+    console.error(`[ROUTE] Failed to update route ${id}:`, e);
     res.status(500).json({ error: 'Failed to update route' });
   }
 });
 
-// DELETE /api/routes/:id - Delete route (admin only)
+// DELETE /api/routes/:id - Delete route and unassign all vehicles (admin only)
 app.delete('/api/routes/:id', authMiddleware, async (req, res) => {
   const { id } = req.params;
-
   try {
-    // Unassign all vehicles from this route
     const fleetSnap = await db.ref('fleet').once('value');
     const fleet = fleetSnap.val() || {};
-
     const updates = {};
     for (const [vid, v] of Object.entries(fleet)) {
-      if (v.routeId === id) {
+      if ((v?.routeId || v?.route_id) === id) {
         updates[`fleet/${vid}/routeId`] = 'unassigned';
       }
     }
-
-    // Delete route
     updates[`routes/${id}`] = null;
-
     await db.ref().update(updates);
     console.log(`[ROUTE] Deleted route ${id}`);
     res.json({ ok: true });
   } catch (e) {
+    console.error(`[ROUTE] Failed to delete route ${id}:`, e);
     res.status(500).json({ error: 'Failed to delete route' });
+  }
+});
+
+// POST /api/routes/:id/directions/:dir/coords - Replace direction coords (admin only)
+app.post('/api/routes/:id/directions/:dir/coords', authMiddleware, async (req, res) => {
+  const { id, dir } = req.params;
+  if (!validRouteDir(dir)) return res.status(400).json({ error: 'Direction must be outbound or inbound' });
+  if (!Array.isArray(req.body?.coords)) return res.status(400).json({ error: 'coords array required' });
+  try {
+    const ref = db.ref(`routes/${id}`);
+    const snap = await ref.once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'Route not found' });
+    const coords = normalizeCoordsList(req.body.coords);
+    await ref.update({ [`directions/${dir}/coords`]: coords, updatedAt: Date.now() });
+    res.json({ ok: true, routeId: id, direction: dir, coords });
+  } catch (e) {
+    console.error(`[ROUTE] Failed to replace coords for ${id}/${dir}:`, e);
+    res.status(500).json({ error: 'Failed to replace coords' });
+  }
+});
+
+// POST /api/routes/:id/directions/:dir/stops - Replace direction stops (admin only)
+app.post('/api/routes/:id/directions/:dir/stops', authMiddleware, async (req, res) => {
+  const { id, dir } = req.params;
+  if (!validRouteDir(dir)) return res.status(400).json({ error: 'Direction must be outbound or inbound' });
+  if (!Array.isArray(req.body?.stops)) return res.status(400).json({ error: 'stops array required' });
+  try {
+    const ref = db.ref(`routes/${id}`);
+    const snap = await ref.once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'Route not found' });
+    const stops = normalizeStopList(req.body.stops, id, dir);
+    await ref.update({ [`directions/${dir}/stops`]: stops, updatedAt: Date.now() });
+    res.json({ ok: true, routeId: id, direction: dir, stops });
+  } catch (e) {
+    console.error(`[ROUTE] Failed to replace stops for ${id}/${dir}:`, e);
+    res.status(500).json({ error: 'Failed to replace stops' });
   }
 });
 

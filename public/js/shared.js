@@ -127,7 +127,7 @@ async function fetchV1FleetForLegacyViews(routeId) {
 
 async function fetchPassengerRoutes() {
   try {
-    const response = await fetch('/api/routes');
+    const response = await fetch('/api/routes?active=true');
     if (!response.ok) throw new Error(`routes ${response.status}`);
     return { routes: normalizeRouteList(await response.json()) };
   } catch (error) {
@@ -293,13 +293,39 @@ function normalizeRouteList(payload) {
 
 function normalizeRouteRecord(route = {}, id = '') {
   const routeId = id || route.route_id || route.routeId || route.id || '';
-  const places = Array.isArray(route.places) && route.places.length ? route.places : route.stops || [];
+  const outbound = normalizeDirectionRecord(route?.directions?.outbound, routeId, 'outbound', {
+    coords: route.coords,
+    stops: route.stops || route.places,
+  });
+  const inbound = normalizeDirectionRecord(route?.directions?.inbound, routeId, 'inbound');
+  const places = outbound.stops.length ? outbound.stops : (Array.isArray(route.places) ? route.places : route.stops || []);
   return {
     ...route,
+    id: route.id || routeId,
     route_id: routeId,
     routeId: route.routeId || routeId,
     color: route.color || '#2563EB',
+    active: route.active !== false,
+    directions: { outbound, inbound },
+    coords: outbound.coords,
+    stops: outbound.stops,
     places: places.map((p, i) => normalizeStopRecord(p, routeId, i)),
+  };
+}
+
+function normalizeCoordRecord(point) {
+  const lat = Array.isArray(point) ? Number(point[0]) : Number(point?.lat);
+  const lng = Array.isArray(point) ? Number(point[1]) : Number(point?.lng);
+  return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+}
+
+function normalizeDirectionRecord(direction = {}, routeId = '', dir = 'outbound', fallback = {}) {
+  const coordsSource = direction?.coords ?? fallback?.coords ?? [];
+  const stopsSource = direction?.stops ?? fallback?.stops ?? [];
+  return {
+    label: direction?.label || fallback?.label || (dir === 'inbound' ? 'ขากลับ' : 'ขาไป'),
+    coords: (Array.isArray(coordsSource) ? coordsSource : []).map(normalizeCoordRecord).filter(Boolean),
+    stops: (Array.isArray(stopsSource) ? stopsSource : []).map((p, i) => normalizeStopRecord(p, routeId, i)),
   };
 }
 
@@ -313,7 +339,20 @@ function normalizeStopRecord(stop = {}, routeId = '', index = 0) {
   };
 }
 
-function routeStops(route) { return route?.places || route?.stops || []; }
+function routeDirection(route, dir = 'outbound') {
+  return route?.directions?.[dir] || (dir === 'outbound' ? { coords: route?.coords || [], stops: route?.places || route?.stops || [] } : { coords: [], stops: [] });
+}
+
+function directionCoords(route, dir = 'outbound') {
+  return (routeDirection(route, dir)?.coords || []).map(normalizeCoordRecord).filter(Boolean);
+}
+
+function directionStopsForRoute(route, dir = 'outbound') {
+  const stops = routeDirection(route, dir)?.stops || [];
+  return stops.map((p, i) => normalizeStopRecord(p, route?.route_id || route?.id || '', i));
+}
+
+function routeStops(route) { return directionStopsForRoute(route, 'outbound').length ? directionStopsForRoute(route, 'outbound') : (route?.places || route?.stops || []); }
 function routeColor(route, fallback = '#2563EB') { return route?.color || fallback; }
 
 function isDemoVehicle(vehicle) {
@@ -699,6 +738,14 @@ async function fetchRoutes() {
 async function createRoute(data) {
   return authFetch('/api/routes', {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+}
+
+async function updateRoute(id, data) {
+  return authFetch(`/api/routes/${id}`, {
+    method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });

@@ -35,6 +35,14 @@ function bindPassengerControls() {
     button.addEventListener('click', () => {
       currentDirection = button.dataset.direction;
       document.querySelectorAll('.direction-row button').forEach(item => item.classList.toggle('active', item === button));
+      const route = routesById[currentRouteId];
+      if (route) {
+        drawRoute(route);
+        drawStops(route);
+        selectedDestination = directionStops(route)[0] || null;
+        if (selectedDestination) setDestination(selectedDestination, false);
+        renderPopularDestinations();
+      }
       renderRecommendedStops();
       requestSelectedEta(true);
     });
@@ -42,7 +50,7 @@ function bindPassengerControls() {
 
   document.getElementById('destination-search').addEventListener('input', renderPopularDestinations);
   document.getElementById('show-route-btn').addEventListener('click', () => {
-    const destination = selectedDestination || routeStops(routesById[currentRouteId])[0];
+    const destination = selectedDestination || directionStops(routesById[currentRouteId])[0];
     if (destination) setDestination(destination);
   });
   document.getElementById('swap-route-btn').addEventListener('click', () => {
@@ -101,10 +109,14 @@ function changeRoute(routeId) {
   if (localSelect) localSelect.value = routeId;
   if (sharedSelect && sharedSelect.value !== routeId) sharedSelect.value = routeId;
   sessionStorage.setItem('smartSongthaewRoute', routeId);
+  if (!directionCoords(route, currentDirection).length && directionCoords(route, 'outbound').length) {
+    currentDirection = 'outbound';
+  }
+  renderDirectionButtons(route);
 
   drawRoute(route);
   drawStops(route);
-  selectedDestination = routeStops(route)[0] || null;
+  selectedDestination = directionStops(route)[0] || routeStops(route)[0] || null;
   if (selectedDestination) setDestination(selectedDestination, false);
   renderPopularDestinations();
   renderRecommendedStops();
@@ -113,7 +125,7 @@ function changeRoute(routeId) {
 
 function drawRoute(route) {
   if (routeLine) routeLine.setMap(null);
-  const path = (route.coords || []).map(([lat, lng]) => ({ lat, lng }));
+  const path = directionCoords(route, currentDirection).map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }));
   routeLine = new google.maps.Polyline({
     path,
     map,
@@ -131,7 +143,7 @@ function drawRoute(route) {
 function drawStops(route) {
   stopMarkers.forEach(marker => { marker.map = null; });
   stopMarkers = [];
-  routeStops(route).forEach(stop => {
+  directionStops(route).forEach(stop => {
     if (!Number.isFinite(Number(stop.lat)) || !Number.isFinite(Number(stop.lng))) return;
     const marker = new google.maps.marker.AdvancedMarkerElement({
       map,
@@ -148,7 +160,7 @@ function drawStops(route) {
 function renderPopularDestinations() {
   const route = routesById[currentRouteId];
   const query = document.getElementById('destination-search').value.trim().toLowerCase();
-  const stops = routeStops(route).filter(stop => !query || String(stop.name).toLowerCase().includes(query)).slice(0, 8);
+  const stops = directionStops(route).filter(stop => !query || String(stop.name).toLowerCase().includes(query)).slice(0, 8);
   const root = document.getElementById('popular-destinations');
   root.innerHTML = stops.length ? stops.map((stop, index) => `
     <button class="destination-button ${selectedDestination?.name === stop.name ? 'active' : ''}" type="button" data-index="${index}">
@@ -184,8 +196,21 @@ async function renderRecommendedStops() {
 }
 
 function directionStops(route) {
+  const directional = directionStopsForRoute(route, currentDirection);
+  if (directional.length) return directional;
   const stops = [...routeStops(route)];
   return currentDirection === 'inbound' ? stops.reverse() : stops;
+}
+
+function renderDirectionButtons(route) {
+  document.querySelectorAll('.direction-row button').forEach(button => {
+    const dir = button.dataset.direction;
+    const direction = routeDirection(route, dir);
+    const hasData = directionCoords(route, dir).length || directionStopsForRoute(route, dir).length;
+    button.textContent = direction?.label || (dir === 'inbound' ? 'ขากลับ' : 'ขาไป');
+    button.disabled = !hasData;
+    button.classList.toggle('active', dir === currentDirection);
+  });
 }
 
 async function updateStopEtas(stops) {

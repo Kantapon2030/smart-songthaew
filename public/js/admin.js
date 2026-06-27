@@ -598,6 +598,435 @@ async function loadRoutes() {
 }
 
 // ── Fleet Management ──────────────────────────────────────────
+// Full Firebase route editor (new schema)
+let adminRouteEditingId = null;
+let adminRouteModel = null;
+let adminRouteMaps = {};
+let adminRouteLayers = {};
+let adminRouteDragged = null;
+let adminRouteClickMode = { outbound: 'waypoint', inbound: 'waypoint' };
+
+function htmlEscape(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+function jsEscape(value) {
+  return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\r?\n/g, ' ');
+}
+
+function emptyAdminDirection(dir) {
+  return { label: dir === 'inbound' ? 'ขากลับ' : 'ขาไป', coords: [], stops: [] };
+}
+
+function emptyAdminRoute() {
+  return {
+    name: '',
+    shortName: '',
+    color: '#2563EB',
+    active: true,
+    directions: {
+      outbound: { ...emptyAdminDirection('outbound') },
+      inbound: { ...emptyAdminDirection('inbound') },
+    },
+  };
+}
+
+function normalizeAdminRoute(route = {}, id = '') {
+  const normalized = normalizeRouteRecord(route, id);
+  return {
+    id: normalized.id || normalized.route_id || id,
+    name: normalized.name || '',
+    shortName: normalized.shortName || '',
+    color: normalized.color || '#2563EB',
+    active: normalized.active !== false,
+    directions: {
+      outbound: {
+        label: normalized.directions?.outbound?.label || 'ขาไป',
+        coords: directionCoords(normalized, 'outbound'),
+        stops: directionStopsForRoute(normalized, 'outbound'),
+      },
+      inbound: {
+        label: normalized.directions?.inbound?.label || 'ขากลับ',
+        coords: directionCoords(normalized, 'inbound'),
+        stops: directionStopsForRoute(normalized, 'inbound'),
+      },
+    },
+  };
+}
+
+function routeDirectionEditorHtml(dir, title) {
+  const reverseButton = dir === 'inbound'
+    ? '<button class="btn btn-outline" type="button" onclick="reverseOutboundToInbound()">กลับทิศทาง</button>'
+    : '';
+  return `
+    <section class="route-tab-panel" id="route-tab-${dir}">
+      <label class="admin-label">${title} label</label>
+      <input id="route-${dir}-label" class="admin-input" type="text" placeholder="${title}">
+      <div class="route-editor-toolbar">
+        <button class="btn btn-outline" type="button" onclick="setRouteMapMode('${dir}','waypoint')">วาดเส้นทาง</button>
+        <button class="btn btn-outline" type="button" onclick="setRouteMapMode('${dir}','stop')">เพิ่มจุดจอดบนแผนที่</button>
+        <button class="btn btn-outline" type="button" onclick="importRouteCoords('${dir}')">นำเข้าพิกัด</button>
+        ${reverseButton}
+      </div>
+      <div id="route-${dir}-map" class="route-dir-map"></div>
+      <div class="route-editor-grid">
+        <div>
+          <h4>Waypoints</h4>
+          <div id="route-${dir}-waypoints" class="route-editor-list"></div>
+        </div>
+        <div>
+          <h4>Stops</h4>
+          <div class="route-stop-inline">
+            <input id="route-${dir}-stop-name" class="admin-input" type="text" placeholder="ชื่อจุดจอด">
+            <input id="route-${dir}-stop-lat" class="admin-input" type="number" step="0.000001" placeholder="lat">
+            <input id="route-${dir}-stop-lng" class="admin-input" type="number" step="0.000001" placeholder="lng">
+            <button class="btn btn-outline" type="button" onclick="addStopFromInputs('${dir}')">เพิ่ม</button>
+          </div>
+          <div id="route-${dir}-stops" class="route-editor-list"></div>
+        </div>
+      </div>
+    </section>`;
+}
+
+function ensureRouteEditorShell() {
+  const modal = document.getElementById('route-editor-modal');
+  if (!modal) return;
+  const body = modal.querySelector('.admin-modal-body');
+  const foot = modal.querySelector('.admin-modal-foot');
+  if (body?.dataset.fullRouteEditor === 'true') return;
+  body.dataset.fullRouteEditor = 'true';
+  body.innerHTML = `
+    <input type="hidden" id="route-id-input">
+    <div class="route-editor-tabs" role="tablist">
+      <button class="route-editor-tab active" type="button" data-tab="general" onclick="switchRouteEditorTab('general')">ข้อมูลทั่วไป</button>
+      <button class="route-editor-tab" type="button" data-tab="outbound" onclick="switchRouteEditorTab('outbound')">ขาไป</button>
+      <button class="route-editor-tab" type="button" data-tab="inbound" onclick="switchRouteEditorTab('inbound')">ขากลับ</button>
+    </div>
+    <section class="route-tab-panel active" id="route-tab-general">
+      <label class="admin-label">ชื่อเส้นทาง</label>
+      <input id="route-name-input" class="admin-input" type="text" placeholder="นครศรีธรรมราช → พรหมคีรี">
+      <label class="admin-label">ชื่อย่อ</label>
+      <input id="route-short-name-input" class="admin-input" maxlength="10" type="text" placeholder="นคร-พรหม">
+      <label class="admin-label">สี</label>
+      <input id="route-color-input" class="admin-input" type="color" value="#2563EB" onchange="renderAllRouteDirections()">
+      <label class="admin-label" style="display:flex;gap:10px;align-items:center;margin-top:12px;">
+        <input id="route-active-input" type="checkbox" checked> เปิดให้บริการ / ปิด
+      </label>
+    </section>
+    ${routeDirectionEditorHtml('outbound', 'ขาไป')}
+    ${routeDirectionEditorHtml('inbound', 'ขากลับ')}
+  `;
+  if (foot) {
+    foot.innerHTML = `
+      <button class="btn btn-outline" type="button" onclick="closeRouteEditor()">ยกเลิก</button>
+      <button class="btn btn-primary" type="button" onclick="saveRoute()">บันทึกลง Firebase</button>
+    `;
+  }
+}
+
+async function loadRoutes() {
+  try {
+    const routes = await fetchRoutes();
+    const container = document.getElementById('routes-list');
+    if (!container) return;
+    const entries = Object.entries(routes || {}).map(([id, route]) => [id, normalizeAdminRoute(route, id)]);
+    if (!entries.length) {
+      container.innerHTML = '<div style="padding:20px;text-align:center;color:var(--slate-400);">ยังไม่มีเส้นทาง — กด “+ สร้างเส้นทางใหม่” เพื่อเพิ่ม</div>';
+      return;
+    }
+    container.innerHTML = entries.map(([id, route]) => {
+      const stopCount = route.directions.outbound.stops.length + route.directions.inbound.stops.length;
+      return `
+        <div class="route-list-card">
+          <div class="route-list-main">
+            <span class="route-color-dot" style="background:${htmlEscape(route.color)}"></span>
+            <div>
+              <div class="route-list-name">${htmlEscape(route.name || '(ไม่มีชื่อ)')}</div>
+              <div class="route-list-meta">ID: <code>${htmlEscape(id)}</code> · ${stopCount} จุดจอด · ${routes[id]?.vehicleCount || 0} คัน</div>
+            </div>
+          </div>
+          <span class="route-status-badge ${route.active ? 'active' : 'inactive'}">${route.active ? 'active' : 'inactive'}</span>
+          <div class="route-list-actions">
+            <button onclick="openRouteEditor('${jsEscape(id)}')" class="btn btn-outline" type="button">Edit</button>
+            <button onclick="toggleRouteActive('${jsEscape(id)}', ${route.active ? 'false' : 'true'})" class="btn btn-outline" type="button">${route.active ? 'ปิด' : 'เปิด'}</button>
+            <button onclick="confirmDeleteRoute('${jsEscape(id)}','${jsEscape(route.name)}')" class="btn btn-danger" type="button">Delete</button>
+          </div>
+        </div>`;
+    }).join('');
+  } catch (e) {
+    addLog('err', 'โหลดเส้นทางไม่สำเร็จ: ' + e.message);
+  }
+}
+
+async function openRouteEditor(routeId = null) {
+  ensureRouteEditorShell();
+  adminRouteEditingId = routeId;
+  const modal = document.getElementById('route-editor-modal');
+  modal.style.display = 'flex';
+  document.getElementById('route-editor-title').textContent = routeId ? '🗺️ แก้ไขเส้นทาง' : '🗺️ สร้างเส้นทางใหม่';
+  if (routeId) {
+    const response = await fetch(`/api/routes/${encodeURIComponent(routeId)}`);
+    if (!response.ok) throw new Error('Route not found');
+    adminRouteModel = normalizeAdminRoute(await response.json(), routeId);
+  } else {
+    adminRouteModel = emptyAdminRoute();
+  }
+  fillRouteEditorForm();
+  switchRouteEditorTab('general');
+  setTimeout(() => {
+    initRouteDirectionMap('outbound');
+    initRouteDirectionMap('inbound');
+    renderAllRouteDirections();
+  }, 80);
+}
+
+function closeRouteEditor() {
+  const modal = document.getElementById('route-editor-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function fillRouteEditorForm() {
+  document.getElementById('route-id-input').value = adminRouteEditingId || '';
+  document.getElementById('route-name-input').value = adminRouteModel.name || '';
+  document.getElementById('route-short-name-input').value = adminRouteModel.shortName || '';
+  document.getElementById('route-color-input').value = adminRouteModel.color || '#2563EB';
+  document.getElementById('route-active-input').checked = adminRouteModel.active !== false;
+  for (const dir of ['outbound', 'inbound']) {
+    document.getElementById(`route-${dir}-label`).value = adminRouteModel.directions[dir].label || '';
+  }
+}
+
+function syncRouteEditorForm() {
+  adminRouteModel.name = document.getElementById('route-name-input').value.trim();
+  adminRouteModel.shortName = document.getElementById('route-short-name-input').value.trim().slice(0, 10);
+  adminRouteModel.color = document.getElementById('route-color-input').value || '#2563EB';
+  adminRouteModel.active = document.getElementById('route-active-input').checked;
+  for (const dir of ['outbound', 'inbound']) {
+    adminRouteModel.directions[dir].label = document.getElementById(`route-${dir}-label`).value.trim() || (dir === 'inbound' ? 'ขากลับ' : 'ขาไป');
+  }
+}
+
+function switchRouteEditorTab(tab) {
+  document.querySelectorAll('.route-editor-tab').forEach(btn => btn.classList.toggle('active', btn.dataset.tab === tab));
+  document.querySelectorAll('.route-tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === `route-tab-${tab}`));
+  if (tab === 'outbound' || tab === 'inbound') {
+    setTimeout(() => {
+      initRouteDirectionMap(tab);
+      adminRouteMaps[tab]?.invalidateSize();
+      renderRouteDirection(tab);
+    }, 60);
+  }
+}
+
+function initRouteDirectionMap(dir) {
+  const el = document.getElementById(`route-${dir}-map`);
+  if (!el || adminRouteMaps[dir]) return;
+  const map = L.map(el).setView([8.445, 99.965], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap' }).addTo(map);
+  map.on('click', event => {
+    if (!adminRouteModel) return;
+    if (adminRouteClickMode[dir] === 'stop') {
+      adminRouteModel.directions[dir].stops.push({
+        id: `${dir}_stop_${adminRouteModel.directions[dir].stops.length + 1}`,
+        name: `จุดจอด ${adminRouteModel.directions[dir].stops.length + 1}`,
+        lat: event.latlng.lat,
+        lng: event.latlng.lng,
+      });
+    } else {
+      adminRouteModel.directions[dir].coords.push({ lat: event.latlng.lat, lng: event.latlng.lng });
+    }
+    renderRouteDirection(dir);
+  });
+  adminRouteMaps[dir] = map;
+  adminRouteLayers[dir] = { waypointMarkers: [], stopMarkers: [], polyline: null };
+}
+
+function setRouteMapMode(dir, mode) {
+  adminRouteClickMode[dir] = mode;
+  showToast(mode === 'stop' ? 'คลิกแผนที่เพื่อเพิ่มจุดจอด' : 'คลิกแผนที่เพื่อวาด waypoint');
+}
+
+function renderAllRouteDirections() {
+  ['outbound', 'inbound'].forEach(renderRouteDirection);
+}
+
+function renderRouteDirection(dir) {
+  if (!adminRouteModel || !adminRouteMaps[dir]) return;
+  const map = adminRouteMaps[dir];
+  const layers = adminRouteLayers[dir];
+  layers.waypointMarkers.forEach(marker => marker.remove());
+  layers.stopMarkers.forEach(marker => marker.remove());
+  if (layers.polyline) layers.polyline.remove();
+  layers.waypointMarkers = [];
+  layers.stopMarkers = [];
+  const direction = adminRouteModel.directions[dir];
+  const color = document.getElementById('route-color-input')?.value || adminRouteModel.color || '#2563EB';
+  const latlngs = direction.coords.map(p => [Number(p.lat), Number(p.lng)]);
+  if (latlngs.length) {
+    layers.polyline = L.polyline(latlngs, { color, weight: 5, opacity: 0.85 }).addTo(map);
+    map.fitBounds(layers.polyline.getBounds().pad(0.18));
+  }
+  direction.coords.forEach((point, index) => {
+    const marker = L.marker([point.lat, point.lng], { draggable: true }).addTo(map);
+    marker.bindTooltip(String(index + 1), { permanent: true, direction: 'top' });
+    marker.on('dragend', e => {
+      const latlng = e.target.getLatLng();
+      direction.coords[index] = { lat: latlng.lat, lng: latlng.lng };
+      renderRouteDirection(dir);
+    });
+    marker.on('contextmenu', () => removeWaypoint(dir, index));
+    layers.waypointMarkers.push(marker);
+  });
+  direction.stops.forEach((stop, index) => {
+    const marker = L.marker([stop.lat, stop.lng], { draggable: true, title: stop.name }).addTo(map);
+    marker.bindPopup(stop.name || `Stop ${index + 1}`);
+    marker.on('dragend', e => {
+      const latlng = e.target.getLatLng();
+      direction.stops[index].lat = latlng.lat;
+      direction.stops[index].lng = latlng.lng;
+      renderRouteDirection(dir);
+    });
+    layers.stopMarkers.push(marker);
+  });
+  renderRouteLists(dir);
+}
+
+function renderRouteLists(dir) {
+  const direction = adminRouteModel.directions[dir];
+  document.getElementById(`route-${dir}-waypoints`).innerHTML = direction.coords.map((point, index) => `
+    <div class="route-editor-row" draggable="true" ondragstart="dragRouteItem('coords','${dir}',${index})" ondragover="event.preventDefault()" ondrop="dropRouteItem('coords','${dir}',${index})">
+      <span>#${index + 1} ${Number(point.lat).toFixed(6)}, ${Number(point.lng).toFixed(6)}</span>
+      <span>
+        <button type="button" onclick="moveWaypoint('${dir}',${index},-1)">↑</button>
+        <button type="button" onclick="moveWaypoint('${dir}',${index},1)">↓</button>
+        <button type="button" onclick="removeWaypoint('${dir}',${index})">ลบ</button>
+      </span>
+    </div>`).join('') || '<div class="route-editor-empty">ยังไม่มี waypoint</div>';
+  document.getElementById(`route-${dir}-stops`).innerHTML = direction.stops.map((stop, index) => `
+    <div class="route-editor-row stop-row" draggable="true" ondragstart="dragRouteItem('stops','${dir}',${index})" ondragover="event.preventDefault()" ondrop="dropRouteItem('stops','${dir}',${index})">
+      <input class="admin-input" value="${htmlEscape(stop.name)}" onchange="updateStopName('${dir}',${index},this.value)">
+      <small>${Number(stop.lat).toFixed(6)}, ${Number(stop.lng).toFixed(6)}</small>
+      <span>
+        <button type="button" onclick="moveStop('${dir}',${index},-1)">↑</button>
+        <button type="button" onclick="moveStop('${dir}',${index},1)">↓</button>
+        <button type="button" onclick="removeStop('${dir}',${index})">ลบ</button>
+      </span>
+    </div>`).join('') || '<div class="route-editor-empty">ยังไม่มีจุดจอด</div>';
+}
+
+function moveItem(list, index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= list.length) return;
+  const [item] = list.splice(index, 1);
+  list.splice(target, 0, item);
+}
+
+function dragRouteItem(type, dir, index) {
+  adminRouteDragged = { type, dir, index };
+}
+
+function dropRouteItem(type, dir, index) {
+  if (!adminRouteDragged || adminRouteDragged.type !== type || adminRouteDragged.dir !== dir) return;
+  const list = adminRouteModel.directions[dir][type];
+  const [item] = list.splice(adminRouteDragged.index, 1);
+  list.splice(index, 0, item);
+  adminRouteDragged = null;
+  renderRouteDirection(dir);
+}
+
+function moveWaypoint(dir, index, delta) { moveItem(adminRouteModel.directions[dir].coords, index, delta); renderRouteDirection(dir); }
+function removeWaypoint(dir, index) { adminRouteModel.directions[dir].coords.splice(index, 1); renderRouteDirection(dir); }
+function moveStop(dir, index, delta) { moveItem(adminRouteModel.directions[dir].stops, index, delta); renderRouteDirection(dir); }
+function removeStop(dir, index) { adminRouteModel.directions[dir].stops.splice(index, 1); renderRouteDirection(dir); }
+function updateStopName(dir, index, value) { adminRouteModel.directions[dir].stops[index].name = value.trim() || `จุดจอด ${index + 1}`; renderRouteDirection(dir); }
+
+function addStopFromInputs(dir) {
+  const nameEl = document.getElementById(`route-${dir}-stop-name`);
+  const latEl = document.getElementById(`route-${dir}-stop-lat`);
+  const lngEl = document.getElementById(`route-${dir}-stop-lng`);
+  const lat = Number(latEl.value);
+  const lng = Number(lngEl.value);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return alert('กรุณากรอก lat/lng ให้ถูกต้อง');
+  adminRouteModel.directions[dir].stops.push({
+    id: `${dir}_stop_${adminRouteModel.directions[dir].stops.length + 1}`,
+    name: nameEl.value.trim() || `จุดจอด ${adminRouteModel.directions[dir].stops.length + 1}`,
+    lat,
+    lng,
+  });
+  nameEl.value = ''; latEl.value = ''; lngEl.value = '';
+  renderRouteDirection(dir);
+}
+
+function importRouteCoords(dir) {
+  const raw = prompt('วาง JSON array ของพิกัด เช่น [{"lat":8.43,"lng":99.96}] หรือ [[8.43,99.96]]');
+  if (!raw) return;
+  try {
+    const parsed = JSON.parse(raw);
+    const coords = (Array.isArray(parsed) ? parsed : []).map(point => {
+      const lat = Array.isArray(point) ? Number(point[0]) : Number(point.lat);
+      const lng = Array.isArray(point) ? Number(point[1]) : Number(point.lng);
+      return Number.isFinite(lat) && Number.isFinite(lng) ? { lat, lng } : null;
+    }).filter(Boolean);
+    adminRouteModel.directions[dir].coords = coords;
+    renderRouteDirection(dir);
+  } catch (e) {
+    alert('JSON ไม่ถูกต้อง: ' + e.message);
+  }
+}
+
+function reverseOutboundToInbound() {
+  adminRouteModel.directions.inbound.coords = [...adminRouteModel.directions.outbound.coords].reverse().map(point => ({ ...point }));
+  adminRouteModel.directions.inbound.stops = [...adminRouteModel.directions.outbound.stops].reverse().map((stop, index) => ({ ...stop, id: stop.id || `inbound_stop_${index + 1}` }));
+  renderRouteDirection('inbound');
+}
+
+async function toggleRouteActive(routeId, active) {
+  const res = await updateRoute(routeId, { active });
+  if (!res) return;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return alert(body.error || 'อัปเดตสถานะไม่สำเร็จ');
+  }
+  await loadRoutes();
+}
+
+async function confirmDeleteRoute(routeId, routeName = '') {
+  if (!confirm(`ยืนยันลบเส้นทาง "${routeName || routeId}"?\nรถทั้งหมดในเส้นทางนี้จะถูก unassign`)) return;
+  const res = await deleteRoute(routeId);
+  if (!res) return;
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    return alert(body.error || 'ลบเส้นทางไม่สำเร็จ');
+  }
+  showToast('ลบเส้นทางแล้ว');
+  await loadRoutes();
+  await loadFleet();
+}
+
+function showRouteOnMap(routeId) {
+  openRouteEditor(routeId);
+}
+
+async function saveRoute() {
+  syncRouteEditorForm();
+  if (!adminRouteModel.name) return alert('กรุณากรอกชื่อเส้นทาง');
+  const payload = {
+    name: adminRouteModel.name,
+    shortName: adminRouteModel.shortName,
+    color: adminRouteModel.color,
+    active: adminRouteModel.active,
+    directions: adminRouteModel.directions,
+  };
+  const res = adminRouteEditingId ? await updateRoute(adminRouteEditingId, payload) : await createRoute(payload);
+  if (!res) return;
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) return alert(body.error || 'บันทึกเส้นทางไม่สำเร็จ');
+  showToast('บันทึกเส้นทางลง Firebase แล้ว');
+  closeRouteEditor();
+  await loadRoutes();
+  await loadFleet();
+}
+
 async function loadFleet() {
   const container = document.getElementById('fleet-list');
   if (!container) return;

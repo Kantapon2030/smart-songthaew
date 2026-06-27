@@ -409,6 +409,72 @@
       gap: 10px;
       justify-content: flex-end;
     }
+
+    .route-list-card {
+      background: var(--slate-50);
+      border: 1px solid var(--slate-200);
+      border-radius: 12px;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .route-list-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .route-color-dot { width: 14px; height: 14px; border-radius: 999px; border: 2px solid white; box-shadow: 0 0 0 1px var(--slate-200); flex: 0 0 auto; }
+    .route-list-name { font-weight: 800; color: var(--slate-800); }
+    .route-list-meta { font-size: 12px; color: var(--slate-500); margin-top: 2px; }
+    .route-list-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+    .route-status-badge { font-size: 11px; font-weight: 800; border-radius: 999px; padding: 4px 9px; text-transform: uppercase; }
+    .route-status-badge.active { color: var(--green); background: var(--green-50); border: 1px solid #A7F3D0; }
+    .route-status-badge.inactive { color: var(--slate-500); background: var(--slate-100); border: 1px solid var(--slate-200); }
+
+    .route-editor-tabs { display: flex; gap: 8px; padding: 14px 18px 0; border-bottom: 1px solid var(--slate-200); }
+    .route-editor-tab {
+      border: 1px solid var(--slate-200);
+      background: white;
+      color: var(--slate-600);
+      border-radius: 10px 10px 0 0;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-weight: 800;
+    }
+    .route-editor-tab.active { background: var(--blue-50); color: var(--blue); border-color: var(--blue-100); }
+    .route-tab-panel { display: none; padding: 18px; }
+    .route-tab-panel.active { display: block; }
+    .route-editor-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .route-dir-map { width: 100%; height: 330px; border-radius: 12px; border: 1px solid var(--slate-200); overflow: hidden; }
+    .route-editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 14px; }
+    .route-editor-grid h4 { margin: 0 0 8px; font-size: 13px; color: var(--slate-700); }
+    .route-editor-list { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow: auto; }
+    .route-editor-row {
+      border: 1px solid var(--slate-200);
+      background: white;
+      border-radius: 10px;
+      padding: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .route-editor-row button {
+      border: 1px solid var(--slate-200);
+      background: var(--slate-50);
+      border-radius: 6px;
+      padding: 3px 6px;
+      cursor: pointer;
+    }
+    .route-editor-row.stop-row { display: grid; grid-template-columns: 1fr auto auto; }
+    .route-stop-inline { display: grid; grid-template-columns: 1fr .7fr .7fr auto; gap: 8px; margin-bottom: 10px; }
+    .route-editor-empty { padding: 12px; border: 1px dashed var(--slate-200); border-radius: 10px; color: var(--slate-400); text-align: center; }
+
+    @media (max-width: 760px) {
+      .route-list-card { grid-template-columns: 1fr; align-items: stretch; }
+      .route-editor-grid, .route-stop-inline { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body data-page="admin">
