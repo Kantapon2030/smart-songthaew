@@ -83,12 +83,12 @@ function startMeshAnimation() {
 }
 
 /* ─────────────────────────────────────────
-   Mesh Graph — Premium Animated Renderer
+   Mesh Graph — Clean Radial Renderer
 ───────────────────────────────────────── */
 
-const NODE_R_BASE   = 36; // base station radius
-const NODE_R_VEHCL  = 28; // vehicle node radius
-const LABEL_PAD_V   = 14; // vertical gap between node edge and label
+const NODE_R_BASE  = 32;
+const NODE_R_VEH   = 26;
+const ORBIT_PAD    = 70; // min gap from canvas edge to node center
 
 function renderMeshGraph(now = performance.now()) {
   const canvas = document.getElementById('mesh-graph-canvas');
@@ -100,39 +100,38 @@ function renderMeshGraph(now = performance.now()) {
 
   const nodes = meshNodes();
   if (!nodes.length) {
-    drawCentered(ctx, '— ยังไม่มีข้อมูลโครงข่าย —', width, height);
+    drawCentered(ctx, 'ยังไม่มีข้อมูลโครงข่าย', width, height);
     return;
   }
 
-  const positions = layoutNodes(nodes, width, height);
+  const { positions, angles } = layoutNodes(nodes, width, height);
   const links = meshLinks();
 
-  // Draw links first (behind nodes)
+  // 1. Draw all links (behind nodes)
   links.forEach(link => drawLink(ctx, positions, link, now));
-
-  // Draw offline ghost links for nodes with no explicit link
   drawOfflineConnectors(ctx, positions, nodes, links);
 
-  // Draw nodes on top
-  nodes.forEach(node => drawNode(ctx, positions[node.id], node, width, height));
+  // 2. Draw nodes + labels on top
+  nodes.forEach(node => drawNode(ctx, positions[node.id], angles[node.id], node));
 }
 
-/* ── Layout ───────────────────────────────────────────── */
+/* ── Layout: radial from center ──────────────────────── */
 function layoutNodes(nodes, width, height) {
-  const PAD = 80; // keep nodes inside this border padding
   const positions = {};
-  const station = nodes.find(n => n.type === 'ground_station') || { id: 'GROUND_01' };
-  const vehicles = nodes.filter(n => n.type === 'vehicle');
+  const angles    = {};
+  const station   = nodes.find(n => n.type === 'ground_station') || { id: 'GROUND_01' };
+  const vehicles  = nodes.filter(n => n.type === 'vehicle');
 
   const cx = width  / 2;
   const cy = height / 2;
   positions[station.id] = { x: cx, y: cy };
+  angles[station.id]    = null; // center — label goes below
 
-  const available = Math.min(
-    (width  / 2) - PAD - NODE_R_BASE,
-    (height / 2) - PAD - NODE_R_BASE
+  const maxR = Math.min(
+    cx - ORBIT_PAD - NODE_R_VEH,
+    cy - ORBIT_PAD - NODE_R_VEH
   );
-  const orbitR = Math.max(80, Math.min(available, 160));
+  const orbitR = Math.max(70, Math.min(maxR, 140));
 
   vehicles.forEach((node, i) => {
     const angle = ((Math.PI * 2) / Math.max(vehicles.length, 1)) * i - Math.PI / 2;
@@ -140,11 +139,13 @@ function layoutNodes(nodes, width, height) {
       x: cx + Math.cos(angle) * orbitR,
       y: cy + Math.sin(angle) * orbitR,
     };
+    angles[node.id] = angle;
   });
-  return positions;
+
+  return { positions, angles };
 }
 
-/* ── Link rendering ───────────────────────────────────── */
+/* ── Links ──────────────────────────────────────────── */
 function drawLink(ctx, positions, link, now) {
   const from = positions[link.from];
   const to   = positions[link.to];
@@ -155,276 +156,202 @@ function drawLink(ctx, positions, link, now) {
   const offline  = fromNode?.status === 'offline' || toNode?.status === 'offline';
   const hop      = Number(link.hop ?? 0);
 
-  // Pick colors & style per link type
-  let lineColor, glowColor, dashPattern, lineWidth;
-  if (offline) {
-    lineColor   = 'rgba(156,163,175,0.45)';
-    glowColor   = 'rgba(156,163,175,0)';
-    dashPattern = [8, 8];
-    lineWidth   = 2;
-  } else if (hop === 0) {
-    lineColor   = '#16A34A';
-    glowColor   = 'rgba(22,163,74,0.25)';
-    dashPattern = [];
-    lineWidth   = 3;
-  } else if (hop === 1) {
-    lineColor   = '#D97706';
-    glowColor   = 'rgba(217,119,6,0.22)';
-    dashPattern = [10, 6];
-    lineWidth   = 2.5;
-  } else {
-    lineColor   = '#DC2626';
-    glowColor   = 'rgba(220,38,38,0.2)';
-    dashPattern = [6, 8];
-    lineWidth   = 2;
-  }
+  let color, dash, lw;
+  if (offline)     { color = 'rgba(148,163,184,0.5)'; dash = [7, 8];  lw = 1.5; }
+  else if (hop===0){ color = '#22C55E';               dash = [];       lw = 2.5; }
+  else if (hop===1){ color = '#F59E0B';               dash = [8, 6];  lw = 2;   }
+  else             { color = '#EF4444';               dash = [5, 7];  lw = 1.5; }
 
-  // --- Glow halo pass (thicker, semi-transparent) ---
-  if (!offline) {
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(from.x, from.y);
-    ctx.lineTo(to.x, to.y);
-    ctx.setLineDash(dashPattern);
-    ctx.strokeStyle = glowColor;
-    ctx.lineWidth   = lineWidth + 8;
-    ctx.lineCap     = 'round';
-    ctx.stroke();
-    ctx.restore();
-  }
-
-  // --- Main line pass ---
   ctx.save();
   ctx.beginPath();
   ctx.moveTo(from.x, from.y);
   ctx.lineTo(to.x, to.y);
-  ctx.setLineDash(dashPattern);
-  ctx.strokeStyle = lineColor;
-  ctx.lineWidth   = lineWidth;
+  ctx.setLineDash(dash);
+  ctx.strokeStyle = color;
+  ctx.lineWidth   = lw;
   ctx.lineCap     = 'round';
   ctx.stroke();
   ctx.restore();
 
-  // --- Distance badge ---
-  drawDistanceLabel(ctx, from, to, formatDistanceMeters(link.distance_m), lineColor, offline);
+  // Distance label — only when we have a real value
+  const label = formatDistanceMeters(link.distance_m);
+  if (label && label !== '—') drawDistanceLabel(ctx, from, to, label, color);
 
-  // --- Animated data packets (only for online links) ---
-  if (!offline) {
-    drawPackets(ctx, from, to, lineColor, glowColor, now, link.from + link.to);
-  }
+  // Single flowing packet for online links
+  if (!offline) drawPacket(ctx, from, to, color, now, link.from + link.to);
 }
 
-/* Draw faint dashed connectors for all nodes to base even if not in links[] */
 function drawOfflineConnectors(ctx, positions, nodes, links) {
   const station = nodes.find(n => n.type === 'ground_station');
   if (!station) return;
-  const basePos = positions[station.id];
-  if (!basePos) return;
-
-  const linkedIds = new Set(links.flatMap(l => [l.from, l.to]));
-  nodes.filter(n => n.type === 'vehicle' && !linkedIds.has(n.id)).forEach(node => {
-    const pos = positions[node.id];
-    if (!pos) return;
+  const base = positions[station.id];
+  if (!base) return;
+  const linked = new Set(links.flatMap(l => [l.from, l.to]));
+  nodes.filter(n => n.type === 'vehicle' && !linked.has(n.id)).forEach(n => {
+    const p = positions[n.id];
+    if (!p) return;
     ctx.save();
     ctx.beginPath();
-    ctx.moveTo(basePos.x, basePos.y);
-    ctx.lineTo(pos.x, pos.y);
-    ctx.setLineDash([5, 10]);
-    ctx.strokeStyle = 'rgba(156,163,175,0.3)';
+    ctx.moveTo(base.x, base.y);
+    ctx.lineTo(p.x, p.y);
+    ctx.setLineDash([4, 9]);
+    ctx.strokeStyle = 'rgba(148,163,184,0.28)';
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.restore();
   });
 }
 
-/* ── Distance pill on link midpoint ──────────────────── */
-function drawDistanceLabel(ctx, from, to, label, lineColor, offline) {
-  if (!label || label === '—') return;
-  const x = (from.x + to.x) / 2;
-  const y = (from.y + to.y) / 2;
+function drawDistanceLabel(ctx, from, to, label, lineColor) {
+  const mx = (from.x + to.x) / 2;
+  const my = (from.y + to.y) / 2;
   ctx.save();
-  ctx.font = '700 11px Inter, Sarabun, sans-serif';
+  ctx.font = '600 10px Inter, Sarabun, sans-serif';
   ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   const tw = ctx.measureText(label).width;
-  const pw = tw + 14, ph = 18, pr = 9;
-
-  // pill background
-  ctx.fillStyle   = offline ? '#F1F5F9' : 'rgba(255,255,255,0.96)';
-  ctx.strokeStyle = offline ? '#CBD5E1' : lineColor;
-  ctx.lineWidth   = 1.2;
-  roundedRect(ctx, x - pw / 2, y - ph / 2, pw, ph, pr);
+  const pw = tw + 10, ph = 16;
+  // simple white rect, colored border
+  ctx.fillStyle   = 'rgba(255,255,255,0.95)';
+  ctx.strokeStyle = lineColor;
+  ctx.lineWidth   = 1;
+  roundedRect(ctx, mx - pw / 2, my - ph / 2, pw, ph, 8);
   ctx.fill();
   ctx.stroke();
-
-  ctx.fillStyle = offline ? '#94A3B8' : '#1E293B';
-  ctx.fillText(label, x, y + 4);
+  ctx.fillStyle = '#374151';
+  ctx.fillText(label, mx, my);
   ctx.restore();
 }
 
-/* ── Animated flowing packets on online links ─────── */
-function drawPackets(ctx, from, to, color, glowColor, now, seed) {
-  const hash  = [...String(seed)].reduce((s, c) => s + c.charCodeAt(0), 0);
-  // Draw 2 packets per link with phase offset for a nice flowing effect
-  [0, 0.5].forEach(phase => {
-    const t = ((now / 1400) + (hash % 100) / 100 + phase) % 1;
-    const x = from.x + (to.x - from.x) * t;
-    const y = from.y + (to.y - from.y) * t;
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(x, y, 4.5, 0, Math.PI * 2);
-    ctx.fillStyle   = '#ffffff';
-    ctx.shadowColor = color;
-    ctx.shadowBlur  = 14;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(x, y, 3, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.restore();
-  });
+function drawPacket(ctx, from, to, color, now, seed) {
+  const hash = [...String(seed)].reduce((s, c) => s + c.charCodeAt(0), 0);
+  const t    = ((now / 1600) + (hash % 100) / 100) % 1;
+  const x    = from.x + (to.x - from.x) * t;
+  const y    = from.y + (to.y - from.y) * t;
+  ctx.save();
+  // outer glow
+  ctx.beginPath();
+  ctx.arc(x, y, 5, 0, Math.PI * 2);
+  ctx.fillStyle = color.replace(')', ',0.25)').replace('rgb', 'rgba');
+  ctx.fill();
+  // core dot
+  ctx.beginPath();
+  ctx.arc(x, y, 3, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  // white highlight
+  ctx.beginPath();
+  ctx.arc(x - 0.8, y - 0.8, 1.2, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fill();
+  ctx.restore();
 }
 
-/* ── Node rendering ───────────────────────────────────── */
-function drawNode(ctx, pos, node, canvasW, canvasH) {
+/* ── Nodes ──────────────────────────────────────────── */
+function drawNode(ctx, pos, angle, node) {
   if (!pos) return;
-  const isBase   = node.type === 'ground_station';
-  const online   = node.status === 'online';
-  const r        = isBase ? NODE_R_BASE : NODE_R_VEHCL;
-
-  const ringColor = isBase
-    ? '#2563EB'
-    : online ? '#16A34A' : '#94A3B8';
-
-  const gradTop = isBase
-    ? '#EFF6FF'
-    : online ? '#F0FDF4' : '#F8FAFC';
-  const gradBot = isBase
-    ? '#DBEAFE'
-    : online ? '#DCFCE7' : '#F1F5F9';
+  const isBase = node.type === 'ground_station';
+  const online = node.status === 'online';
+  const r      = isBase ? NODE_R_BASE : NODE_R_VEH;
+  const ring   = isBase ? '#3B82F6' : online ? '#22C55E' : '#9CA3AF';
 
   ctx.save();
 
-  // --- Outer glow ring for online nodes ---
-  if (online || isBase) {
-    ctx.beginPath();
-    ctx.arc(pos.x, pos.y, r + 8, 0, Math.PI * 2);
-    ctx.fillStyle = isBase
-      ? 'rgba(37,99,235,0.10)'
-      : 'rgba(22,163,74,0.10)';
-    ctx.fill();
-  }
+  // Drop shadow
+  ctx.shadowColor   = 'rgba(15,23,42,0.12)';
+  ctx.shadowBlur    = 10;
+  ctx.shadowOffsetY = 3;
 
-  // --- Drop shadow ---
-  ctx.shadowColor  = 'rgba(15,23,42,0.18)';
-  ctx.shadowBlur   = 12;
-  ctx.shadowOffsetY = 4;
-
-  // --- Node fill with vertical gradient ---
-  const grad = ctx.createRadialGradient(pos.x, pos.y - r * 0.3, r * 0.1, pos.x, pos.y, r);
-  grad.addColorStop(0, gradTop);
-  grad.addColorStop(1, gradBot);
+  // White filled circle
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, r, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
+  ctx.fillStyle = '#ffffff';
   ctx.fill();
 
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur  = 0;
   ctx.shadowOffsetY = 0;
 
-  // --- Colored ring border ---
-  ctx.lineWidth   = isBase ? 3.5 : 2.5;
-  ctx.strokeStyle = ringColor;
+  // Colored border
+  ctx.lineWidth   = isBase ? 3 : 2.5;
+  ctx.strokeStyle = ring;
   ctx.stroke();
 
-  // --- Inner label (BASE / H0 / H1 …) ---
+  // Centre label: BASE or hop number
   ctx.textAlign    = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillStyle    = ringColor;
-  ctx.font         = `800 ${isBase ? 13 : 12}px Inter, Sarabun, sans-serif`;
+  ctx.fillStyle    = ring;
+  ctx.font         = `700 ${isBase ? 12 : 11}px Inter, Sarabun, sans-serif`;
   ctx.fillText(isBase ? 'BASE' : `H${node.hop ?? '—'}`, pos.x, pos.y);
 
-  // --- Status dot (top-right corner) ---
+  // Status dot (vehicle only)
   if (!isBase) {
-    const dotX = pos.x + r * 0.68;
-    const dotY = pos.y - r * 0.68;
     ctx.beginPath();
-    ctx.arc(dotX, dotY, 5.5, 0, Math.PI * 2);
-    ctx.fillStyle = online ? '#16A34A' : '#9CA3AF';
+    ctx.arc(pos.x + r * 0.7, pos.y - r * 0.7, 5, 0, Math.PI * 2);
+    ctx.fillStyle   = online ? '#22C55E' : '#9CA3AF';
     ctx.fill();
-    ctx.lineWidth   = 2;
+    ctx.lineWidth   = 1.5;
     ctx.strokeStyle = '#ffffff';
     ctx.stroke();
   }
 
   ctx.restore();
 
-  // --- Node labels (name + status/time) outside node ---
-  drawNodeLabel(ctx, pos, node, r, canvasW, canvasH);
+  // External label — pushed radially outward
+  drawNodeLabel(ctx, pos, angle, r, node);
 }
 
-function drawNodeLabel(ctx, pos, node, r, canvasW, canvasH) {
-  const isBase   = node.type === 'ground_station';
-  const name     = node.label || node.vehicle_id || node.id;
-  const sub      = isBase ? 'Ground Station' : `${node.status ?? 'unknown'} • ${formatTime(node.last_seen)}`;
-  const online   = node.status === 'online';
-  const nameColor = '#0F172A';
-  const subColor  = isBase ? '#2563EB' : online ? '#16A34A' : '#94A3B8';
+function drawNodeLabel(ctx, pos, angle, r, node) {
+  const isBase  = node.type === 'ground_station';
+  const online  = node.status === 'online';
+  const name    = node.label || node.vehicle_id || node.id;
+  const subLine = isBase
+    ? 'Ground Station'
+    : (online ? '● online' : '○ offline') + ' ' + formatTime(node.last_seen);
 
-  // Place label below if node is in top half, above if in bottom half
-  // But clamp so label doesn't go outside canvas bounds
-  const spaceBelow = canvasH - (pos.y + r);
-  const spaceAbove = pos.y - r;
-  const useAbove   = spaceBelow < 56 && spaceAbove > 56;
+  // For the center base station, push label straight down
+  // For orbiting vehicles, push in the direction of their angle (away from center)
+  const pushAngle = (angle !== null) ? angle : Math.PI / 2;
+  const GAP  = r + 10;
+  const ox   = Math.cos(pushAngle) * GAP;
+  const oy   = Math.sin(pushAngle) * GAP;
+
+  // Anchor text depending on push direction
+  let hAlign;
+  if (Math.abs(ox) < 10)       hAlign = 'center';
+  else if (ox > 0)              hAlign = 'left';
+  else                          hAlign = 'right';
+
+  const anchorX = pos.x + ox;
+  let   anchorY = pos.y + oy;
+  // if angle is nearly straight down, push a bit more to clear node
+  if (angle === null || Math.abs(pushAngle - Math.PI / 2) < 0.3)
+    anchorY = pos.y + r + 12;
 
   ctx.save();
-  ctx.textAlign    = 'center';
-  ctx.textBaseline = 'alphabetic';
+  ctx.textAlign = hAlign;
+  ctx.textBaseline = 'top';
 
-  const nameFont = `700 12px Inter, Sarabun, sans-serif`;
-  const subFont  = `600 10px Inter, Sarabun, sans-serif`;
+  // Vehicle ID / name — bold
+  ctx.fillStyle = '#1E293B';
+  ctx.font      = `700 11px Inter, Sarabun, sans-serif`;
+  ctx.fillText(name, anchorX, anchorY);
 
-  // Measure pill width
-  ctx.font = nameFont;
-  const nameW = ctx.measureText(name).width;
-  ctx.font = subFont;
-  const subW  = ctx.measureText(sub).width;
-  const pillW = Math.max(nameW, subW) + 18;
-  const pillH = 34;
-  const pillR = 7;
-
-  const labelY = useAbove
-    ? pos.y - r - LABEL_PAD_V - pillH
-    : pos.y + r + LABEL_PAD_V;
-
-  // Pill background
-  ctx.fillStyle   = 'rgba(255,255,255,0.92)';
-  ctx.strokeStyle = '#E2E8F0';
-  ctx.lineWidth   = 1;
-  roundedRect(ctx, pos.x - pillW / 2, labelY, pillW, pillH, pillR);
-  ctx.fill();
-  ctx.stroke();
-
-  // Name
-  ctx.fillStyle = nameColor;
-  ctx.font      = nameFont;
-  ctx.fillText(name, pos.x, labelY + 14);
-
-  // Sub-text
-  ctx.fillStyle = subColor;
-  ctx.font      = subFont;
-  ctx.fillText(sub, pos.x, labelY + 28);
+  // Sub-line — smaller, colored
+  ctx.fillStyle = isBase ? '#3B82F6' : online ? '#16A34A' : '#9CA3AF';
+  ctx.font      = `500 9.5px Inter, Sarabun, sans-serif`;
+  ctx.fillText(subLine, anchorX, anchorY + 14);
 
   ctx.restore();
 }
 
-/* ── Canvas utilities ─────────────────────────────────── */
+/* ── Canvas helpers ─────────────────────────────────── */
 function resizeCanvas(canvas, ctx) {
   const rect = canvas.getBoundingClientRect();
-  const w = Math.max(300, Math.round(rect.width));
-  const h = Math.max(200, Math.round(rect.height));
-  const dpr = window.devicePixelRatio || 1;
-  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+  const w    = Math.max(300, Math.round(rect.width));
+  const h    = Math.max(200, Math.round(rect.height));
+  const dpr  = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(w*dpr) || canvas.height !== Math.round(h*dpr)) {
     canvas.width  = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
   }
@@ -434,44 +361,36 @@ function resizeCanvas(canvas, ctx) {
 
 function drawGraphBackground(ctx, width, height) {
   ctx.save();
-
-  // Subtle light gradient background
-  const bg = ctx.createLinearGradient(0, 0, 0, height);
-  bg.addColorStop(0, '#F8FAFF');
-  bg.addColorStop(1, '#EFF4FF');
-  ctx.fillStyle = bg;
+  ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, width, height);
-
-  // Dot-grid pattern
-  ctx.fillStyle = 'rgba(148,163,184,0.30)';
-  const spacing = 28;
-  for (let gx = spacing; gx < width; gx += spacing) {
-    for (let gy = spacing; gy < height; gy += spacing) {
+  // Very faint dot grid
+  ctx.fillStyle = 'rgba(148,163,184,0.18)';
+  const sp = 32;
+  for (let gx = sp; gx < width; gx += sp) {
+    for (let gy = sp; gy < height; gy += sp) {
       ctx.beginPath();
       ctx.arc(gx, gy, 1, 0, Math.PI * 2);
       ctx.fill();
     }
   }
-
   ctx.restore();
 }
 
-
-
-function roundedRect(ctx, x, y, width, height, radius) {
+function roundedRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, radius);
-  ctx.arcTo(x + width, y + height, x, y + height, radius);
-  ctx.arcTo(x, y + height, x, y, radius);
-  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y,     x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x,     y + h, r);
+  ctx.arcTo(x,     y + h, x,     y,     r);
+  ctx.arcTo(x,     y,     x + w, y,     r);
   ctx.closePath();
 }
 
 function drawCentered(ctx, text, width, height) {
-  ctx.fillStyle = '#64748B';
-  ctx.font = '800 15px Inter, sans-serif';
+  ctx.fillStyle = '#94A3B8';
+  ctx.font = '600 13px Inter, Sarabun, sans-serif';
   ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
   ctx.fillText(text, width / 2, height / 2);
 }
 
