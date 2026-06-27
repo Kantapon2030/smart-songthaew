@@ -248,28 +248,72 @@
       body[data-page="dashboard"] .page-shell.dashboard-layout {
         height: auto;
         overflow: visible;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 16px;
+        padding: 10px 14px;
       }
       .mesh-status-grid {
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: repeat(2, 1fr);
+        height: auto;
         flex: none;
+        gap: 12px;
+      }
+      .mesh-status-card {
+        height: auto;
+        min-height: 72px;
       }
       .mesh-workspace {
         grid-template-columns: 1fr;
         flex: none;
         height: auto;
+        gap: 16px;
+      }
+      .mesh-side-panel {
+        height: auto;
+        overflow: visible;
+        flex: none;
+      }
+      .mesh-side-panel .table-wrap {
+        flex: none;
+        height: auto;
+        overflow-y: visible;
+      }
+      .side-stack {
+        flex: none;
+        height: auto;
+        overflow-y: visible;
       }
       .dashboard-connectivity {
         flex: none;
-        max-height: 220px;
+        height: auto;
+        max-height: none;
+        overflow: visible;
       }
-      .mesh-canvas-wrap { min-height: 300px; }
-      #mesh-graph-canvas { height: 260px; }
+      .dashboard-connectivity .table-wrap {
+        flex: none;
+        height: auto;
+        overflow-y: visible;
+      }
+      .mesh-canvas-wrap {
+        min-height: 380px;
+      }
+      #mesh-graph-canvas {
+        height: 340px;
+      }
     }
 
     @media (max-width: 720px) {
-      .mesh-status-grid { grid-template-columns: 1fr; }
-      .mesh-canvas-wrap { min-height: 240px; }
-      #mesh-graph-canvas { height: 220px; }
+      .mesh-status-grid {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+      .mesh-canvas-wrap {
+        min-height: 320px;
+      }
+      #mesh-graph-canvas {
+        height: 280px;
+      }
     }
   </style>
 </head>

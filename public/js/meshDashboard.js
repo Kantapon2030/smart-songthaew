@@ -99,19 +99,19 @@ function renderMeshGraph(now = performance.now()) {
   const positions = layoutNodes(nodes, width, height);
   const links = meshLinks();
   links.forEach(link => drawLink(ctx, positions, link, now));
-  nodes.forEach(node => drawNode(ctx, positions[node.id], node));
+  nodes.forEach(node => drawNode(ctx, positions[node.id], node, height));
 }
 
 function layoutNodes(nodes, width, height) {
   const positions = {};
   const station = nodes.find(node => node.type === 'ground_station') || { id: 'GROUND_01' };
   const vehicles = nodes.filter(node => node.type === 'vehicle');
-  const center = { x: width / 2, y: height * 0.46 };
+  const center = { x: width / 2, y: height * 0.48 };
   positions[station.id] = center;
-  const radius = Math.max(44, Math.min(width * 0.3, height * 0.28, 180));
+  const radius = Math.max(50, Math.min(width * 0.28 - 25, height * 0.26 - 25, 140));
   vehicles.forEach((node, index) => {
     const angle = ((Math.PI * 2) / Math.max(vehicles.length, 1)) * index - Math.PI / 2;
-    const hopOffset = Math.min(28, Number(node.hop || 0) * 10);
+    const hopOffset = Math.min(20, Number(node.hop || 0) * 8);
     positions[node.id] = {
       x: center.x + Math.cos(angle) * (radius + hopOffset),
       y: center.y + Math.sin(angle) * (radius + hopOffset),
@@ -149,12 +149,13 @@ function drawDistanceLabel(ctx, from, to, label) {
   const x = (from.x + to.x) / 2;
   const y = (from.y + to.y) / 2;
   ctx.save();
-  ctx.font = '800 14px Inter, sans-serif';
+  ctx.font = '800 13px Inter, sans-serif';
   ctx.textAlign = 'center';
   const metrics = ctx.measureText(label);
-  ctx.fillStyle = 'rgba(255,255,255,0.92)';
-  ctx.strokeStyle = '#E2E8F0';
-  roundedRect(ctx, x - metrics.width / 2 - 10, y - 14, metrics.width + 20, 26, 13);
+  ctx.fillStyle = 'rgba(255,255,255,0.94)';
+  ctx.strokeStyle = '#CBD5E1';
+  ctx.lineWidth = 1;
+  roundedRect(ctx, x - metrics.width / 2 - 8, y - 12, metrics.width + 16, 22, 11);
   ctx.fill();
   ctx.stroke();
   ctx.fillStyle = '#334155';
@@ -175,19 +176,33 @@ function drawPacket(ctx, from, to, color, now, seed) {
   ctx.restore();
 }
 
-function drawNode(ctx, pos, node) {
+function drawNode(ctx, pos, node, canvasHeight) {
   if (!pos) return;
   const station = node.type === 'ground_station';
   const color = station ? '#2563EB' : node.status === 'online' ? '#16A34A' : '#6B7280';
   const radius = station ? 38 : 31;
+  
   ctx.save();
+  
+  // Premium outer glow and drop shadow
+  ctx.shadowColor = 'rgba(15, 23, 42, 0.12)';
+  ctx.shadowBlur = 8;
+  ctx.shadowOffsetY = 4;
+  
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
-  ctx.fillStyle = '#fff';
+  ctx.fillStyle = '#ffffff';
   ctx.fill();
+  
+  // Disable shadow for stroke and text
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  
   ctx.lineWidth = 5;
   ctx.strokeStyle = color;
   ctx.stroke();
+  
   ctx.fillStyle = color;
   ctx.font = station ? '850 15px Inter, sans-serif' : '850 14px Inter, sans-serif';
   ctx.textAlign = 'center';
@@ -200,19 +215,40 @@ function drawNode(ctx, pos, node) {
     ctx.fill();
   }
 
-  ctx.fillStyle = '#0F172A';
-  ctx.font = '850 15px Inter, sans-serif';
-  ctx.fillText(node.label || node.vehicle_id || node.id, pos.x, pos.y + radius + 22);
-  ctx.fillStyle = '#64748B';
-  ctx.font = '750 12px Inter, sans-serif';
-  ctx.fillText(station ? 'Ground Station' : `${node.status || 'unknown'} • ${formatTime(node.last_seen)}`, pos.x, pos.y + radius + 40);
+  // Draw labels dynamically above or below the node to prevent overlaps
+  const isAbove = pos.y < canvasHeight * 0.48;
+  const labelText = node.label || node.vehicle_id || node.id;
+  const subText = station ? 'Ground Station' : `${node.status || 'unknown'} • ${formatTime(node.last_seen)}`;
+  
+  ctx.textAlign = 'center';
+  
+  if (isAbove) {
+    // Label above node
+    ctx.fillStyle = '#0F172A';
+    ctx.font = '850 14px Inter, sans-serif';
+    ctx.fillText(labelText, pos.x, pos.y - radius - 26);
+    
+    ctx.fillStyle = '#64748B';
+    ctx.font = '700 11px Inter, sans-serif';
+    ctx.fillText(subText, pos.x, pos.y - radius - 10);
+  } else {
+    // Label below node
+    ctx.fillStyle = '#0F172A';
+    ctx.font = '850 14px Inter, sans-serif';
+    ctx.fillText(labelText, pos.x, pos.y + radius + 18);
+    
+    ctx.fillStyle = '#64748B';
+    ctx.font = '700 11px Inter, sans-serif';
+    ctx.fillText(subText, pos.x, pos.y + radius + 32);
+  }
+  
   ctx.restore();
 }
 
 function resizeCanvas(canvas, ctx) {
   const rect = canvas.getBoundingClientRect();
   const width = Math.max(320, Math.round(rect.width));
-  const height = Math.max(300, Math.round(rect.height));
+  const height = Math.max(150, Math.round(rect.height));
   const ratio = window.devicePixelRatio || 1;
   const targetWidth = Math.round(width * ratio);
   const targetHeight = Math.round(height * ratio);
