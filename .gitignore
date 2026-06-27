@@ -1,8 +1,9 @@
-# ──────────────────────────────────────────────
-#  .gitignore — Smart Songthaew Tracker
-# ──────────────────────────────────────────────
+# Smart Songthaew Tracker
 
-# ── Secret / Credentials ──────────────────────
+# Secrets: never commit real credentials
+songthaew_secrets.h
+mesh_config_local.h
+*.secret.h
 .env
 .env.local
 .env.*.local
@@ -11,10 +12,8 @@ firebase-adminsdk*.json
 *-service-account.json
 *.pem
 *.key
-songthaew_secrets.h
-mesh_config.h
 
-# ── Node ──────────────────────────────────────
+# Node
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -22,22 +21,24 @@ yarn-error.log*
 .pnpm-debug.log*
 *.log
 
-# ── Build / Cache ─────────────────────────────
+# Arduino build artifacts
+*.hex
+*.elf
+*.bin
+build/
+*.cache
+
+# Web build/cache
 .cache/
 dist/
-build/
 .vercel/
 .next/
 
-# ── OS ────────────────────────────────────────
+# OS / Editor
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# ── Editor ────────────────────────────────────
 .vscode/settings.json
 .idea/
 *.swp
 *.swo
-
-.vercel

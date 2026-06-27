@@ -13,7 +13,7 @@
   GND         -> GND
 
   Power: USB 5V -> NodeMCU USB port
-  WiFi: connects to WIFI_SSID from mesh_config.h
+  WiFi: connects to WIFI_SSID from songthaew_secrets.h
 */
 
 #include <Arduino.h>
@@ -24,6 +24,11 @@
 #include <SPI.h>
 #include <WiFiClientSecure.h>
 #include "mesh_config.h"
+#if __has_include("songthaew_secrets.h")
+#include "songthaew_secrets.h"
+#else
+#error "Create songthaew_secrets.h from songthaew_secrets.example.h before flashing."
+#endif
 
 struct BufferedPacket {
   String body;
@@ -32,6 +37,8 @@ struct BufferedPacket {
 };
 
 BufferedPacket packetBuffer[BUFFER_SIZE];
+char seenPackets[DEDUP_BUFFER][40];
+int seenIdx = 0;
 
 bool wifiConnected = false;
 bool loraReady = false;
@@ -40,11 +47,246 @@ unsigned long lastBeaconMs = 0;
 unsigned long lastFlushMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastHttpLatencyMs = 0;
+unsigned long ledPulseUntilMs = 0;
+bool ledPulseActive = false;
 
 bool isVehiclePacket(JsonDocument& doc) {
   const char* type = doc["type"] | "";
   const char* compactType = doc["t"] | "";
   return strcmp(type, "vehicle_data") == 0 || strcmp(compactType, "vd") == 0;
+}
+
+bool isValidThailandCoord(float lat, float lng);
+
+void beginLedPulse(unsigned long durationMs) {
+  ledPulseActive = true;
+  ledPulseUntilMs = millis() + durationMs;
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+void serviceStatusLed() {
+  if (ledPulseActive && (long)(millis() - ledPulseUntilMs) >= 0) {
+    ledPulseActive = false;
+    digitalWrite(LED_BUILTIN, HIGH);
+  }
+}
+
+bool isCompactVehiclePacket(JsonDocument& doc) {
+  return doc["id"].is<const char*>() && doc["pk"].is<const char*>() && doc.containsKey("ts");
+}
+
+String expandDirection(const char* code) {
+  if (!code || code[0] == '\0') return "unknown";
+  if (code[0] == 'I') return "inbound";
+  if (code[0] == 'O') return "outbound";
+  return "unknown";
+}
+
+String expandRouteId(const char* shortId) {
+  if (!shortId || shortId[0] == '\0') return "unassigned";
+  if (shortId[0] == 'R') {
+    int number = atoi(shortId + 1);
+    if (number > 0) {
+      char route[16];
+      snprintf(route, sizeof(route), "route_%03d", number);
+      return String(route);
+    }
+  }
+  return String(shortId);
+}
+
+String expandVehicleId(const char* shortId) {
+  if (!shortId || shortId[0] == '\0') return "";
+  if (strncmp(shortId, "BUS_", 4) == 0 ||
+      strncmp(shortId, "DEMO_", 5) == 0 ||
+      strncmp(shortId, "GROUND_", 7) == 0) {
+    return String(shortId);
+  }
+
+  int number = atoi(shortId + 1);
+  char out[16];
+  if (shortId[0] == 'B' && number > 0) {
+    snprintf(out, sizeof(out), "BUS_%02d", number);
+    return String(out);
+  }
+  if (shortId[0] == 'D' && number > 0) {
+    snprintf(out, sizeof(out), "DEMO_%d", number);
+    return String(out);
+  }
+  if (shortId[0] == 'G' && number > 0) {
+    snprintf(out, sizeof(out), "GROUND_%02d", number);
+    return String(out);
+  }
+  return String(shortId);
+}
+
+String decodeNeighborsCompact(const String& compact) {
+  if (compact.length() == 0) return "[]";
+
+  String result = "[";
+  bool first = true;
+  int start = 0;
+
+  while (start < (int)compact.length()) {
+    int comma = compact.indexOf(',', start);
+    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
+    start = (comma < 0) ? compact.length() : comma + 1;
+
+    int c1 = entry.indexOf(':');
+    int c2 = entry.indexOf(':', c1 + 1);
+    if (c1 < 0 || c2 < 0) continue;
+
+    String nbId = expandVehicleId(entry.substring(0, c1).c_str());
+    int nbRssi = entry.substring(c1 + 1, c2).toInt();
+    float nbSnr = entry.substring(c2 + 1).toInt() / 10.0f;
+
+    if (!first) result += ",";
+    result += "{\"vehicle_id\":\"" + nbId + "\",";
+    result += "\"rssi\":" + String(nbRssi) + ",";
+    result += "\"snr\":" + String(nbSnr, 1) + "}";
+    first = false;
+  }
+
+  result += "]";
+  return result;
+}
+
+String decodeRelayChainCompact(const String& compact) {
+  if (compact.length() == 0) return "[]";
+
+  String result = "[";
+  bool first = true;
+  int start = 0;
+
+  while (start < (int)compact.length()) {
+    int comma = compact.indexOf(',', start);
+    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
+    start = (comma < 0) ? compact.length() : comma + 1;
+    entry.trim();
+    if (entry.length() == 0) continue;
+
+    if (!first) result += ",";
+    result += "\"" + expandVehicleId(entry.c_str()) + "\"";
+    first = false;
+  }
+
+  result += "]";
+  return result;
+}
+
+String decodeVersionSummary(const String& compact) {
+  if (compact.length() == 0) return "[]";
+
+  String result = "[";
+  bool first = true;
+  int start = 0;
+
+  while (start < (int)compact.length()) {
+    int comma = compact.indexOf(',', start);
+    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
+    start = (comma < 0) ? compact.length() : comma + 1;
+
+    int c1 = entry.indexOf(':');
+    int c2 = entry.indexOf(':', c1 + 1);
+    if (c1 < 0) continue;
+
+    String vsId = expandVehicleId(entry.substring(0, c1).c_str());
+    int vsSeq = c2 < 0 ? entry.substring(c1 + 1).toInt() : entry.substring(c1 + 1, c2).toInt();
+    String vsBootPx = c2 < 0 ? "" : entry.substring(c2 + 1);
+
+    if (!first) result += ",";
+    result += "{\"vehicle_id\":\"" + vsId + "\",";
+    result += "\"seq\":" + String(vsSeq);
+    if (vsBootPx.length() > 0) result += ",\"boot_id_prefix\":\"" + vsBootPx + "\"";
+    result += "}";
+    first = false;
+  }
+
+  result += "]";
+  return result;
+}
+
+void copyArrayJsonField(JsonDocument& out, const char* key, const String& arrayJson) {
+  if (arrayJson.length() <= 2) return;
+
+  StaticJsonDocument<384> temp;
+  DeserializationError err = deserializeJson(temp, arrayJson);
+  if (err || !temp.is<JsonArray>()) return;
+  out[key] = temp.as<JsonArray>();
+}
+
+bool decodeCompactPacket(const String& raw, JsonDocument& out) {
+  StaticJsonDocument<512> compact;
+  DeserializationError err = deserializeJson(compact, raw);
+  if (err) return false;
+  if (!compact.containsKey("id") || !compact.containsKey("ts") || !compact.containsKey("pk")) return false;
+
+  String vehicleId = expandVehicleId(compact["id"] | "");
+  uint32_t packetSeq = compact["sq"] | 0UL;
+  const char* bootId = compact["bi"] | "";
+  const char* packetHash = compact["pk"] | "";
+  String packetId = vehicleId + "_" + String(packetSeq) + "_" + String(bootId) + "_" + String(packetHash);
+
+  out.clear();
+  out["vehicleId"] = vehicleId;
+  out["vehicle_id"] = vehicleId;
+  out["seq"] = packetSeq;
+  out["boot_id"] = bootId;
+  out["gps_timestamp"] = compact["ts"] | 0UL;
+  out["lat"] = compact["la"].is<const char*>() ? atof(compact["la"] | "0") : (compact["la"] | 0.0f);
+  out["lng"] = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
+  out["speed"] = compact["sp"] | 0;
+  out["battery"] = compact["bt"] | -1;
+  out["hop"] = compact["hp"] | 0;
+  out["packet_id"] = packetId;
+  out["packet_hash"] = packetHash;
+  out["ttl"] = compact["tt"] | 0;
+
+  if (compact.containsKey("hd")) out["heading"] = compact["hd"].as<int>();
+  if (compact.containsKey("ri")) out["routeId"] = expandRouteId(compact["ri"].as<const char*>());
+  if (compact.containsKey("ri")) out["route_id"] = expandRouteId(compact["ri"].as<const char*>());
+  if (compact.containsKey("dr")) out["direction"] = expandDirection(compact["dr"].as<const char*>());
+  if (compact.containsKey("rf")) out["relay_from"] = expandVehicleId(compact["rf"].as<const char*>());
+  if (compact.containsKey("lq")) out["link_quality"] = compact["lq"].as<int>();
+  if (compact.containsKey("sf")) out["store_forward"] = compact["sf"].as<int>() == 1;
+
+  if (!out.containsKey("routeId")) {
+    out["routeId"] = ROUTE_ID;
+    out["route_id"] = ROUTE_ID;
+  }
+  if (!out.containsKey("direction")) out["direction"] = ROUTE_DIR;
+
+  if (compact.containsKey("nb")) copyArrayJsonField(out, "neighbors", decodeNeighborsCompact(compact["nb"].as<String>()));
+  if (compact.containsKey("rc")) copyArrayJsonField(out, "relay_chain", decodeRelayChainCompact(compact["rc"].as<String>()));
+  if (compact.containsKey("vs")) copyArrayJsonField(out, "version_summary", decodeVersionSummary(compact["vs"].as<String>()));
+
+  out["source"] = "ground_station";
+  out["relay_via"] = "lora";
+  out["gps_fix"] = isValidThailandCoord(out["lat"] | 0.0f, out["lng"] | 0.0f);
+  out["received_rssi"] = LoRa.packetRssi();
+  out["received_snr"] = LoRa.packetSnr();
+  out["received_at"] = millis();
+
+  return true;
+}
+
+bool isValidThailandCoord(float lat, float lng) {
+  return lat >= 5.5f && lat <= 20.5f && lng >= 97.5f && lng <= 105.7f;
+}
+
+bool alreadySeen(const char* packetId) {
+  if (packetId == nullptr || packetId[0] == '\0') return false;
+  for (int i = 0; i < DEDUP_BUFFER; i++) {
+    if (strncmp(seenPackets[i], packetId, sizeof(seenPackets[i])) == 0) return true;
+  }
+  return false;
+}
+
+void markSeen(const char* packetId) {
+  if (packetId == nullptr || packetId[0] == '\0' || alreadySeen(packetId)) return;
+  strncpy(seenPackets[seenIdx], packetId, sizeof(seenPackets[seenIdx]) - 1);
+  seenPackets[seenIdx][sizeof(seenPackets[seenIdx]) - 1] = '\0';
+  seenIdx = (seenIdx + 1) % DEDUP_BUFFER;
 }
 
 int oldestBufferIndex() {
@@ -105,6 +347,7 @@ int postToServer(String body) {
 
   lastHttpLatencyMs = millis() - started;
   Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
+  if (code < 200 || code >= 300) Serial.printf("[POST] fail code:%d\n", code);
   return code;
 }
 
@@ -228,12 +471,32 @@ void addNeighbors(JsonDocument& source, JsonDocument& target) {
   if (out.size() == 0) target.remove("neighbors");
 }
 
+void addVersionSummary(JsonDocument& source, JsonDocument& target) {
+  if (!source["vs"].is<JsonArray>()) return;
+
+  JsonArray out = target.createNestedArray("version_summary");
+  for (JsonVariant item : source["vs"].as<JsonArray>()) {
+    if (!item.is<JsonArray>()) continue;
+    JsonArray values = item.as<JsonArray>();
+    JsonObject row = out.createNestedObject();
+    row["vehicle_id"] = values[0] | "";
+    row["seq"] = values[1] | 0;
+    if (values.size() > 2) row["gps_timestamp"] = values[2] | 0UL;
+  }
+
+  if (out.size() == 0) target.remove("version_summary");
+}
+
 String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr) {
   StaticJsonDocument<1024> out;
+  float lat = rx["lat"] | 0.0f;
+  float lng = rx["lng"] | 0.0f;
+  bool gpsFix = (rx["fix"] | true) && isValidThailandCoord(lat, lng);
+
   out["vehicleId"] = rx["vid"] | "";
   out["vehicle_id"] = rx["vid"] | "";
-  out["lat"] = rx["lat"] | 0.0f;
-  out["lng"] = rx["lng"] | 0.0f;
+  out["lat"] = lat;
+  out["lng"] = lng;
   out["speed"] = rx["spd"] | 0.0f;
   out["battery"] = rx["bat"] | -1;
   out["routeId"] = rx["rid"] | ROUTE_ID;
@@ -246,8 +509,11 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   out["seq"] = rx["seq"] | 0;
   out["boot_id"] = rx["bid"] | "";
   out["packet_id"] = rx["pid"] | "";
+  out["gps_timestamp"] = rx["gt"] | 0UL;
+  out["ttl"] = rx["ttl"] | -1;
+  out["store_forward"] = (rx["sf"] | 0) == 1;
   out["source"] = "vehicle";
-  out["gps_fix"] = rx["fix"] | true;
+  out["gps_fix"] = gpsFix;
   out["received_rssi"] = receivedRssi;
   out["received_snr"] = receivedSnr;
   out["received_at"] = millis();
@@ -259,6 +525,7 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
 
   addRelayChain(rx, out);
   addNeighbors(rx, out);
+  addVersionSummary(rx, out);
 
   String body;
   serializeJson(out, body);
@@ -281,7 +548,30 @@ void printReceiveLog(JsonDocument& rx, float rssi, float snr, int code) {
   } else if (code >= 400 && code < 500) {
     Serial.printf("-> HTTP %d drop (%lums)\n", code, lastHttpLatencyMs);
   } else {
-    Serial.printf("-> buffered code:%d\n", code);
+    Serial.printf("-> buffered code:%d wifi_status:%d\n", code, WiFi.status());
+  }
+  Serial.println("--------------------");
+}
+
+void printPostLog(JsonDocument& post, int code) {
+  const char* vid = post["vehicleId"].is<const char*>() ? post["vehicleId"] : (post["vehicle_id"] | "?");
+  int hop = post["hop"] | 0;
+  float lat = post["lat"] | 0.0f;
+  float lng = post["lng"] | 0.0f;
+  float spd = post["speed"] | 0.0f;
+  int bat = post["battery"] | -1;
+  float rssi = post["received_rssi"] | 0.0f;
+  float snr = post["received_snr"] | 0.0f;
+
+  Serial.println("--------------------");
+  Serial.printf("[RX] %s | hop:%d | rssi:%.0f | snr:%.1f\n", vid, hop, rssi, snr);
+  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%%\n", lat, lng, spd, bat);
+  if (code >= 200 && code < 300) {
+    Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
+  } else if (code >= 400 && code < 500) {
+    Serial.printf("-> HTTP %d drop (%lums)\n", code, lastHttpLatencyMs);
+  } else {
+    Serial.printf("-> buffered code:%d wifi_status:%d\n", code, WiFi.status());
   }
   Serial.println("--------------------");
 }
@@ -299,6 +589,7 @@ void onLoRaReceive(int packetSize) {
   float receivedRssi = LoRa.packetRssi();
   float receivedSnr = LoRa.packetSnr();
 
+  String raw(payload);
   StaticJsonDocument<768> rx;
   DeserializationError error = deserializeJson(rx, payload);
   if (error) {
@@ -306,19 +597,44 @@ void onLoRaReceive(int packetSize) {
     return;
   }
 
-  if (!isVehiclePacket(rx)) return;
+  StaticJsonDocument<1536> postDoc;
+  String body;
+  bool compactPacket = isCompactVehiclePacket(rx);
+  if (compactPacket) {
+    if (!decodeCompactPacket(raw, postDoc)) {
+      Serial.println("[RX] compact decode failed");
+      return;
+    }
+    serializeJson(postDoc, body);
+  } else {
+    if (!isVehiclePacket(rx)) return;
+    body = buildServerPayload(rx, receivedRssi, receivedSnr);
+  }
 
-  String body = buildServerPayload(rx, receivedRssi, receivedSnr);
+  const char* packetId = compactPacket ? (postDoc["packet_id"] | "") : (rx["pid"] | "");
+  if (alreadySeen(packetId)) {
+    Serial.printf("[RX] duplicate %s dropped\n", packetId[0] ? packetId : "?");
+    return;
+  }
+  markSeen(packetId);
+
   int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
   bool ok = code >= 200 && code < 300;
   bool badPacket = code >= 400 && code < 500;
 
   if (!ok && !badPacket) bufferPacket(body);
-  printReceiveLog(rx, receivedRssi, receivedSnr, code);
+  beginLedPulse(ok ? 80UL : (badPacket ? 800UL : 250UL));
+  if (compactPacket) {
+    printPostLog(postDoc, code);
+  } else {
+    printReceiveLog(rx, receivedRssi, receivedSnr, code);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
 
   WiFi.mode(WIFI_STA);
@@ -329,6 +645,7 @@ void setup() {
 }
 
 void loop() {
+  serviceStatusLed();
   serviceWiFi();
 
   if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {

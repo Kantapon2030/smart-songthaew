@@ -491,7 +491,11 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     neighbors: Array.isArray(data.neighbors) ? data.neighbors : [],
     link_quality: typeof data.link_quality === 'number' ? data.link_quality : null,
     rssi: typeof data.rssi === 'number' ? data.rssi : null,
-    snr: typeof data.snr === 'number' ? data.snr : null
+    snr: typeof data.snr === 'number' ? data.snr : null,
+    gps_time: validGpsTime(Number(data.gps_time || data.gps_timestamp)) ? Number(data.gps_time || data.gps_timestamp) : null,
+    ttl: typeof data.ttl === 'number' ? data.ttl : null,
+    store_forward: data.store_forward === true,
+    version_summary: Array.isArray(data.version_summary) ? data.version_summary : []
   };
   if (!demoMode && !validCoord) {
     delete node.lat;
@@ -637,11 +641,17 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const relay_from = req.body.relay_from || null;
   const relay_chain = Array.isArray(req.body.relay_chain) ? req.body.relay_chain : [];
   const neighbors = Array.isArray(req.body.neighbors) ? req.body.neighbors : [];
+  const version_summary = Array.isArray(req.body.version_summary) ? req.body.version_summary : [];
   const link_quality = typeof req.body.link_quality === 'number' ? req.body.link_quality : null;
   const snr = typeof req.body.snr === 'number' ? req.body.snr : null;
   const seq = typeof req.body.seq === 'number' ? req.body.seq : null;
   const boot_id = req.body.boot_id || null;
   const packet_id = req.body.packet_id || null;
+  const ttl = typeof req.body.ttl === 'number' ? req.body.ttl : null;
+  const store_forward = req.body.store_forward === true;
+  const source = req.body.source || 'vehicle';
+  const received_rssi = typeof req.body.received_rssi === 'number' ? req.body.received_rssi : null;
+  const received_snr = typeof req.body.received_snr === 'number' ? req.body.received_snr : null;
 
   if (!vehicleId) {
     return res.status(400).json({ error: 'vehicleId is required' });
@@ -669,6 +679,9 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const satsI  = parseInt(sats,      10) ?? -1;  // จำนวนดาวเทียมจริง
   const hdopF  = parseFloat(hdop)        || -1;  // HDOP จริง
   const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
+  const gpsTimeRaw = Number(req.body.gps_timestamp ?? req.body.gps_time);
+  const gpsTime = validGpsTime(gpsTimeRaw, Math.floor(ts / 1000)) ? gpsTimeRaw : null;
+  const gpsFix = req.body.gps_fix === false ? false : hasValidGPS;
 
   const data = {
     // ถ้าไม่มี GPS fix ยังคง lat/lng เดิมใน Firebase (ไม่ส่ง 0,0 ทับ)
@@ -683,6 +696,11 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     hdop:        hdopF,   // HDOP จริงจาก GPS
     rssi:        rssiI,   // WiFi RSSI dBm จริง
     timestamp:   ts,
+    server_received_at: Math.floor(ts / 1000),
+    last_seen:   Math.floor(ts / 1000),
+    gps_time:    gpsTime,
+    gps_timestamp: gpsTime,
+    gps_fix:     gpsFix,
     routeId:     routeId   || 'unassigned',
     direction:   direction || 'unknown',
   };
@@ -697,8 +715,22 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   if (seq !== null) data.seq = seq;
   if (boot_id) data.boot_id = boot_id;
   if (packet_id) data.packet_id = packet_id;
+  if (ttl !== null) data.ttl = ttl;
+  if (store_forward) data.store_forward = true;
+  if (source) data.source = source;
+  if (received_rssi !== null) data.received_rssi = received_rssi;
+  if (received_snr !== null) data.received_snr = received_snr;
+  if (version_summary.length > 0) data.version_summary = version_summary;
 
   try {
+    if (boot_id && seq !== null) {
+      const previous = (await db.ref(`fleet/${vehicleId}/current`).once('value')).val();
+      const decision = telemetryDecision(previous, { boot_id, seq, gps_time: gpsTime, gps_fix: gpsFix });
+      if (!decision.accepted) {
+        return res.status(200).json({ message: 'Telemetry ignored', status: 'ignored', reason: decision.reason, timestamp: ts });
+      }
+    }
+
     const updates = {};
 
     // 1. Live current position (overwrite)
