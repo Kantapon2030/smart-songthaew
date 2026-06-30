@@ -2110,6 +2110,72 @@ app.get('/api/v1/network', async (req, res) => {
   }
 });
 
+// ============================================================
+//  FIELD TEST SESSIONS (admin only)
+//  Firebase path: network/fieldtest/{sessionId}
+// ============================================================
+app.post('/api/v1/fieldtest/session', authMiddleware, async (req, res) => {
+  try {
+    const sessionId = `field_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const nodes = Array.isArray(req.body?.nodes) ? req.body.nodes : [];
+    const links = Array.isArray(req.body?.links) ? req.body.links : [];
+    if (nodes.length > 50) return res.status(400).json({ error: 'Too many nodes (max 50)' });
+    if (links.length > 200) return res.status(400).json({ error: 'Too many links (max 200)' });
+    const rawSessionName = String(req.body?.sessionName || '').trim();
+    const sessionName = (rawSessionName || `Field test ${new Date().toISOString()}`).slice(0, 120);
+    const notes = String(req.body?.notes || '').slice(0, 5000);
+    const now = Date.now();
+    const session = {
+      sessionId,
+      sessionName,
+      nodes,
+      links,
+      notes,
+      createdAt: now,
+      updatedAt: now,
+      createdBy: req.user?.username || req.user?.sub || 'admin'
+    };
+    await db.ref(`network/fieldtest/${sessionId}`).set(session);
+    res.status(201).json({ ok: true, sessionId, session });
+  } catch (error) {
+    console.error('[FIELDTEST] save failed:', error);
+    res.status(500).json({ error: 'Failed to save field test session' });
+  }
+});
+
+app.get('/api/v1/fieldtest/session/:id', authMiddleware, async (req, res) => {
+  try {
+    const sessionId = String(req.params.id || '').replace(/[^\w-]/g, '');
+    if (!sessionId) return res.status(400).json({ error: 'Invalid field test session id' });
+    const snap = await db.ref(`network/fieldtest/${sessionId}`).once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'Field test session not found' });
+    res.json(snap.val());
+  } catch (error) {
+    console.error('[FIELDTEST] load failed:', error);
+    res.status(500).json({ error: 'Failed to load field test session' });
+  }
+});
+
+app.get('/api/v1/fieldtest/sessions', authMiddleware, async (_req, res) => {
+  try {
+    const snap = await db.ref('network/fieldtest').once('value');
+    const sessions = Object.entries(snap.val() || {})
+      .map(([sessionId, session]) => ({
+        sessionId,
+        sessionName: session?.sessionName || sessionId,
+        createdAt: session?.createdAt || null,
+        updatedAt: session?.updatedAt || null,
+        nodeCount: Array.isArray(session?.nodes) ? session.nodes.length : 0,
+        linkCount: Array.isArray(session?.links) ? session.links.length : 0
+      }))
+      .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+    res.json({ ok: true, sessions });
+  } catch (error) {
+    console.error('[FIELDTEST] list failed:', error);
+    res.status(500).json({ error: 'Failed to list field test sessions' });
+  }
+});
+
 app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });

@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Field Test - Smart Songthaew</title>
+  <link rel="stylesheet" href="/css/style.css"/>
+  <style>
+    html, body { height: 100%; overflow: hidden; }
+    .field-shell {
+      height: calc(100dvh - var(--nav-height));
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      gap: 12px;
+      padding: 12px;
+    }
+    .field-map-wrap {
+      position: relative;
+      min-height: 540px;
+      overflow: hidden;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      background: #eef2f7;
+    }
+    #field-map { width: 100%; height: 100%; }
+    .field-badge {
+      position: absolute;
+      left: 14px;
+      top: 14px;
+      z-index: 2;
+      max-width: min(560px, calc(100% - 28px));
+      padding: 8px 12px;
+      border: 1px solid #facc15;
+      border-radius: var(--radius-control);
+      background: rgba(254, 252, 232, 0.96);
+      color: #854d0e;
+      font-size: 12px;
+      font-weight: 800;
+      box-shadow: var(--shadow-card);
+    }
+    .field-panel {
+      overflow: auto;
+      display: grid;
+      gap: 10px;
+      align-content: start;
+    }
+    .field-card {
+      background: #fff;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-card);
+      padding: 14px;
+    }
+    .field-card h2 {
+      margin: 0 0 10px;
+      font-size: 14px;
+      color: var(--color-text);
+    }
+    .field-grid { display: grid; gap: 8px; }
+    .field-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      color: var(--color-muted);
+    }
+    .field-row strong { color: var(--color-text); }
+    .field-control {
+      width: 100%;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      padding: 8px 10px;
+      font: inherit;
+      font-size: 13px;
+      background: #fff;
+      color: var(--color-text);
+    }
+    .field-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .field-list {
+      display: grid;
+      gap: 6px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .field-node-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      padding: 8px;
+      font-size: 12px;
+      background: var(--color-soft);
+    }
+    .field-node-row code { font-size: 11px; color: var(--color-muted); }
+    .field-note {
+      min-height: 74px;
+      resize: vertical;
+    }
+    .field-status {
+      min-height: 18px;
+      color: var(--color-muted);
+      font-size: 12px;
+    }
+    .field-marker {
+      min-width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 3px solid #fff;
+      box-shadow: 0 8px 18px rgba(15,23,42,.22);
+      color: #fff;
+      font-size: 11px;
+      font-weight: 900;
+      background: #2563eb;
+      padding: 0 4px;
+    }
+    .field-marker.real { background: #16a34a; }
+    .field-marker.ground { background: #7c3aed; }
+    .field-label {
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(255,255,255,.95);
+      border: 1px solid var(--color-border);
+      color: var(--color-text);
+      font-size: 11px;
+      font-weight: 800;
+      white-space: nowrap;
+      box-shadow: 0 4px 12px rgba(15,23,42,.12);
+    }
+    @media (max-width: 980px) {
+      html, body { overflow: auto; }
+      .field-shell {
+        height: auto;
+        grid-template-columns: 1fr;
+      }
+      .field-map-wrap { height: 62dvh; min-height: 420px; }
+    }
+  </style>
+</head>
+<body data-page="fieldtest">
+  <div id="navbar-root"></div>
+  <main class="field-shell">
+    <section class="field-map-wrap">
+      <div id="field-map"></div>
+      <div id="field-mode-badge" class="field-badge">Mesh View: estimated from GPS distance</div>
+    </section>
+
+    <aside class="field-panel" aria-label="Field test controls">
+      <section class="field-card">
+        <h1 class="card-title">Field Test Mesh Map</h1>
+        <div class="card-subtitle">Staff-only satellite workspace for temporary test nodes.</div>
+        <div class="field-status" id="field-status">Click the map to place a test node.</div>
+      </section>
+
+      <section class="field-card field-grid">
+        <h2>Node Placement</h2>
+        <input id="node-label-input" class="field-control" placeholder="Next node label, e.g. Ridge Test A"/>
+        <div class="field-row">
+          <label for="range-radius-input"><strong>Range ring radius</strong></label>
+          <input id="range-radius-input" class="field-control" type="number" min="50" step="50" value="1000" style="max-width:130px"/>
+        </div>
+        <div class="field-actions">
+          <button id="load-real-btn" class="button primary" type="button">Load real vehicles</button>
+          <button id="clear-test-btn" class="button ghost" type="button">Clear test nodes</button>
+        </div>
+      </section>
+
+      <section class="field-card field-grid">
+        <h2>Layers</h2>
+        <label class="field-row"><span>Distance labels</span><input type="checkbox" data-layer="distance" checked/></label>
+        <label class="field-row"><span>RSSI</span><input type="checkbox" data-layer="rssi"/></label>
+        <label class="field-row"><span>SNR</span><input type="checkbox" data-layer="snr"/></label>
+        <label class="field-row"><span>Link Quality</span><input type="checkbox" data-layer="lq" checked/></label>
+        <label class="field-row"><span>Hop / Relay chain</span><input type="checkbox" data-layer="hop" checked/></label>
+        <label class="field-row" for="mesh-mode-filter"><span>Mode filter</span>
+          <select id="mesh-mode-filter" class="field-control" style="max-width:160px">
+            <option value="all">All</option>
+            <option value="estimated">Estimated only</option>
+            <option value="real">Real only</option>
+          </select>
+        </label>
+      </section>
+
+      <section class="field-card field-grid">
+        <h2>Ad-hoc Distance</h2>
+        <div class="field-actions">
+          <button id="measure-btn" class="button ghost" type="button">Measure two points</button>
+          <button id="reset-measure-btn" class="button ghost" type="button">Reset measure</button>
+        </div>
+        <div id="measure-output" class="field-status">No measurement yet.</div>
+      </section>
+
+      <section class="field-card field-grid">
+        <h2>Session</h2>
+        <input id="session-name-input" class="field-control" placeholder="Session name"/>
+        <textarea id="session-notes-input" class="field-control field-note" placeholder="Notes"></textarea>
+        <select id="session-select" class="field-control">
+          <option value="">Saved sessions</option>
+        </select>
+        <div class="field-actions">
+          <button id="save-session-btn" class="button primary" type="button">Save session</button>
+          <button id="load-session-btn" class="button ghost" type="button">Load selected</button>
+          <button id="export-csv-btn" class="button ghost" type="button">Export CSV</button>
+        </div>
+      </section>
+
+      <section class="field-card">
+        <h2>Test Nodes</h2>
+        <div id="test-node-list" class="field-list"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script src="/js/shared.js"></script>
+  <script src="/js/fieldTest.js"></script>
+</body>
+</html>
