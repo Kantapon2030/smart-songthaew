@@ -5,6 +5,7 @@ let activeStop = null;
 let activeRouteId = '';
 let activeDirection = 'all';
 let userPosition = null;
+let routePageReady = false;
 
 document.addEventListener('DOMContentLoaded', initRoutesPage);
 
@@ -13,7 +14,11 @@ async function initRoutesPage() {
     active: 'routes',
     onRouteChange(routeId) {
       activeRouteId = routeId || activeRouteId;
-      renderStopDetail();
+      if (routePageReady) {
+        ensureActiveStopForRoute();
+        renderStopList();
+        renderStopDetail();
+      }
     },
   });
   document.getElementById('location-icon').innerHTML = pinSvg(16, '#334155');
@@ -29,12 +34,35 @@ async function initRoutesPage() {
 }
 
 async function loadRouteStops() {
-  const payload = await fetchPassengerRoutes();
-  routeList = normalizeRouteList(payload);
-  activeRouteId = document.getElementById('shared-route-select')?.value || routeList[0]?.route_id || '';
-  const firstStop = allStops()[0];
-  if (firstStop) activeStop = firstStop;
+  try {
+    const payload = await fetchPassengerRoutes();
+    routeList = normalizeRouteList(payload);
+    activeRouteId = document.getElementById('shared-route-select')?.value || routeList[0]?.route_id || '';
+    ensureActiveStopForRoute();
+  } catch (error) {
+    console.error('[routes-page]', error);
+    routeList = [];
+    activeStop = null;
+    activeRouteId = '';
+  }
+  routePageReady = true;
   renderStopList();
+}
+
+function ensureActiveStopForRoute() {
+  const stops = allStops();
+  if (!stops.length) {
+    activeStop = null;
+    activeRouteId = '';
+    return;
+  }
+  if (!activeRouteId || !routeList.some(route => route.route_id === activeRouteId)) {
+    activeRouteId = routeList[0]?.route_id || stops[0].routes[0]?.route_id || '';
+  }
+  const routeHasStop = stop => stop.routes.some(route => route.route_id === activeRouteId);
+  if (!activeStop || !routeHasStop(activeStop)) {
+    activeStop = stops.find(routeHasStop) || stops[0];
+  }
 }
 
 function allStops() {
@@ -85,6 +113,9 @@ async function renderStopDetail() {
     return;
   }
 
+  if (!activeStop.routes.some(route => route.route_id === activeRouteId)) {
+    activeRouteId = activeStop.routes[0]?.route_id || activeRouteId;
+  }
   const routeOptions = activeStop.routes.map(route => `<option value="${route.route_id}" ${route.route_id === activeRouteId ? 'selected' : ''}>${route.name}</option>`).join('');
   root.innerHTML = `
     <div class="card-header">
@@ -135,6 +166,11 @@ async function renderStopDetail() {
 
 function renderStopTimeline() {
   const route = routeList.find(item => item.route_id === activeRouteId) || activeStop?.routes[0];
+  if (!route) {
+    document.getElementById('route-stop-heading').textContent = 'Route';
+    document.getElementById('route-stop-list').innerHTML = '<div class="empty-state">No route data</div>';
+    return;
+  }
   const stops = activeDirection === 'inbound' ? [...routeStops(route)].reverse() : routeStops(route);
   document.getElementById('route-stop-heading').textContent = `เส้นทางสาย ${route?.name || '—'}`;
   document.getElementById('route-stop-list').innerHTML = stops.map(stop => `
@@ -143,6 +179,7 @@ function renderStopTimeline() {
 
 async function renderArrivals() {
   const root = document.getElementById('arrival-list');
+  if (!root || !activeStop || !activeRouteId) return;
   try {
     const payload = await fetchLegacyLocations(activeRouteId);
     const vehicles = Object.entries(payload || {})

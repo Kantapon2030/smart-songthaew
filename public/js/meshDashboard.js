@@ -4,6 +4,7 @@ let meshData = null;
 let meshPage = 0;
 let meshAnimStarted = false;
 let meshLastFrame = 0;
+let selectedMeshNodeId = null;
 const MESH_PAGE_SIZE = 8;
 
 document.addEventListener('DOMContentLoaded', initMeshDashboard);
@@ -32,6 +33,7 @@ async function refreshMeshDashboard() {
     const response = await fetch('/api/v1/network');
     if (!response.ok) throw new Error(`network ${response.status}`);
     meshData = await response.json();
+    ensureSelectedMeshNode();
     renderMeshSummary();
     renderVehicleDistances();
     renderNodeList();
@@ -88,7 +90,7 @@ function startMeshAnimation() {
 
 const NODE_R_BASE  = 32;
 const NODE_R_VEH   = 26;
-const ORBIT_PAD    = 70; // min gap from canvas edge to node center
+const ORBIT_PAD    = 34; // min gap from canvas edge to node center
 
 function renderMeshGraph(now = performance.now()) {
   const canvas = document.getElementById('mesh-graph-canvas');
@@ -112,7 +114,7 @@ function renderMeshGraph(now = performance.now()) {
   drawOfflineConnectors(ctx, positions, nodes, links);
 
   // 2. Draw nodes + labels on top
-  nodes.forEach(node => drawNode(ctx, positions[node.id], angles[node.id], node));
+  nodes.forEach(node => drawNode(ctx, positions[node.id], angles[node.id], node, width, height));
 }
 
 /* ── Layout: radial from center ──────────────────────── */
@@ -127,11 +129,11 @@ function layoutNodes(nodes, width, height) {
   positions[station.id] = { x: cx, y: cy };
   angles[station.id]    = null; // center — label goes below
 
-  const maxR = Math.min(
+  const maxR = Math.max(62, Math.min(
     cx - ORBIT_PAD - NODE_R_VEH,
     cy - ORBIT_PAD - NODE_R_VEH
-  );
-  const orbitR = Math.max(70, Math.min(maxR, 140));
+  ));
+  const orbitR = Math.min(maxR, Math.max(108, Math.min(width, height) * 0.43));
 
   vehicles.forEach((node, i) => {
     const angle = ((Math.PI * 2) / Math.max(vehicles.length, 1)) * i - Math.PI / 2;
@@ -248,7 +250,7 @@ function drawPacket(ctx, from, to, color, now, seed) {
 }
 
 /* ── Nodes ──────────────────────────────────────────── */
-function drawNode(ctx, pos, angle, node) {
+function drawNode(ctx, pos, angle, node, width, height) {
   if (!pos) return;
   const isBase = node.type === 'ground_station';
   const online = node.status === 'online';
@@ -298,10 +300,10 @@ function drawNode(ctx, pos, angle, node) {
   ctx.restore();
 
   // External label — pushed radially outward
-  drawNodeLabel(ctx, pos, angle, r, node);
+  drawNodeLabel(ctx, pos, angle, r, node, width, height);
 }
 
-function drawNodeLabel(ctx, pos, angle, r, node) {
+function drawNodeLabel(ctx, pos, angle, r, node, width, height) {
   const isBase  = node.type === 'ground_station';
   const online  = node.status === 'online';
   const name    = node.label || node.vehicle_id || node.id;
@@ -323,11 +325,22 @@ function drawNodeLabel(ctx, pos, angle, r, node) {
   else if (ox > 0)              hAlign = 'left';
   else                          hAlign = 'right';
 
-  const anchorX = pos.x + ox;
+  const labelPad = 12;
+  const maxLabelWidth = Math.min(140, Math.max(90, width * 0.26));
+  let anchorX = pos.x + ox;
   let   anchorY = pos.y + oy;
   // if angle is nearly straight down, push a bit more to clear node
   if (angle === null || Math.abs(pushAngle - Math.PI / 2) < 0.3)
     anchorY = pos.y + r + 12;
+
+  if (hAlign === 'left' && anchorX + maxLabelWidth > width - labelPad) {
+    anchorX = width - labelPad - maxLabelWidth;
+  } else if (hAlign === 'right' && anchorX - maxLabelWidth < labelPad) {
+    anchorX = labelPad + maxLabelWidth;
+  } else if (hAlign === 'center') {
+    anchorX = clamp(anchorX, labelPad + maxLabelWidth / 2, width - labelPad - maxLabelWidth / 2);
+  }
+  anchorY = clamp(anchorY, labelPad, height - labelPad - 28);
 
   ctx.save();
   ctx.textAlign = hAlign;
@@ -344,6 +357,10 @@ function drawNodeLabel(ctx, pos, angle, r, node) {
   ctx.fillText(subLine, anchorX, anchorY + 14);
 
   ctx.restore();
+}
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
 }
 
 /* ── Canvas helpers ─────────────────────────────────── */
@@ -422,18 +439,32 @@ function renderNodeList() {
     return;
   }
   root.innerHTML = nodes.map(node => `
-    <div class="node-row">
+    <button class="node-row ${node.id === selectedMeshNodeId ? 'selected' : ''}" type="button" data-node-id="${node.id}">
       <span class="node-dot ${node.status === 'online' ? 'online' : ''}"></span>
       <span>
-        <strong>${node.vehicle_id || node.id}</strong>
+        <strong>${node.plate || node.vehicle_id || node.id}</strong>
         <span class="item-meta" style="display:block;">Hop ${node.hop ?? '—'} • ${node.demo ? 'Demo' : 'Real'}${gpsMeta(node)}</span>
       </span>
       <span style="display:inline-flex;gap:4px;align-items:center;justify-content:flex-end;flex-wrap:wrap;">${statusBadge(node.status, node.gps_fix)}</span>
-    </div>`).join('');
+    </button>`).join('');
+  root.querySelectorAll('[data-node-id]').forEach(button => {
+    button.addEventListener('click', () => {
+      selectedMeshNodeId = button.dataset.nodeId;
+      renderNodeList();
+      renderNetworkDetails();
+    });
+  });
 }
 
 function renderNetworkDetails() {
   const root = document.getElementById('mesh-network-body');
+  const telemetryDetails = networkTelemetryRows();
+  root.innerHTML = telemetryDetails.map(([label, value]) => `
+    <div class="network-detail-row">
+      <span>${label}</span>
+      <strong>${value}</strong>
+    </div>`).join('');
+  return;
   const links = meshLinks();
   const nodes = vehicleNodes();
   const online = nodes.filter(node => node.status === 'online').length;
@@ -450,6 +481,56 @@ function renderNetworkDetails() {
       <span>${label}</span>
       <strong>${value}</strong>
     </div>`).join('');
+}
+
+function networkTelemetryRows() {
+  const links = meshLinks();
+  const nodes = vehicleNodes();
+  const online = nodes.filter(node => node.status === 'online').length;
+  const avgDistance = links.map(link => Number(link.distance_m)).filter(Number.isFinite);
+  const avgHop = links.map(link => Number(link.hop)).filter(Number.isFinite);
+  const focus = nodeById(selectedMeshNodeId) || nodes.find(node => node.status === 'online') || nodes[0];
+  return [
+    ['Mode', meshData?.mode || 'waiting'],
+    ['Online vehicles', `${online}/${nodes.length}`],
+    ['Average link', avgDistance.length ? formatDistanceMeters(avgDistance.reduce((a, b) => a + b, 0) / avgDistance.length) : '--'],
+    ['Average hop', avgHop.length ? (avgHop.reduce((a, b) => a + b, 0) / avgHop.length).toFixed(1) : '--'],
+    ...selectedNodeTelemetryRows(focus),
+  ];
+}
+
+function selectedNodeTelemetryRows(node) {
+  if (!node) return [['Selected vehicle', '--']];
+  const gps = node.gps_fix === false
+    ? 'No fix'
+    : [node.sats != null ? `${node.sats} sats` : null, node.hdop != null ? `HDOP ${node.hdop}` : null].filter(Boolean).join(' / ') || 'Fixed';
+  return [
+    ['Selected vehicle', node.plate || node.vehicle_id || node.id],
+    ['Vehicle ID', node.vehicle_id || node.id],
+    ['Speed', formatSpeedKmh(node.speed)],
+    ['Battery', node.battery != null ? `${node.battery}%` : '--'],
+    ['GPS quality', gps],
+    ['RSSI / SNR', [formatMetric(node.received_rssi ?? node.rssi, ' dBm'), formatMetric(node.received_snr ?? node.snr, ' dB')].filter(value => value !== '--').join(' / ') || '--'],
+    ['Link quality', node.link_quality != null ? `${node.link_quality}%` : '--'],
+    ['Power', formatNodePower(node)],
+    ['Packet', [node.seq != null ? `seq ${node.seq}` : null, node.packet_id || null].filter(Boolean).join(' / ') || '--'],
+    ['Relay chain', Array.isArray(node.relay_chain) && node.relay_chain.length ? node.relay_chain.join(' -> ') : node.relay_from || 'direct'],
+    ['Neighbors', Array.isArray(node.neighbors) && node.neighbors.length ? node.neighbors.length : '--'],
+    ['Firmware', Array.isArray(node.version_summary) && node.version_summary.length ? node.version_summary.join(', ') : '--'],
+  ];
+}
+
+function formatMetric(value, suffix = '') {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${number}${suffix}` : '--';
+}
+
+function formatNodePower(node) {
+  const parts = [];
+  if (Number.isFinite(Number(node.battVoltage))) parts.push(`${node.battVoltage} mV`);
+  if (Number.isFinite(Number(node.currentMa))) parts.push(`${node.currentMa} mA`);
+  if (Number.isFinite(Number(node.powerMw))) parts.push(`${node.powerMw} mW`);
+  return parts.length ? parts.join(' / ') : '--';
 }
 
 function renderMeshTable() {
@@ -522,6 +603,17 @@ function distanceClass(distance) {
 function distanceStatus(distance) {
   const cls = distanceClass(distance);
   return { green: 'ใกล้', blue: 'ปกติ', amber: 'ไกล', gray: 'ห่างมาก' }[cls];
+}
+
+function ensureSelectedMeshNode() {
+  const nodes = vehicleNodes();
+  if (!nodes.length) {
+    selectedMeshNodeId = null;
+    return;
+  }
+  if (!selectedMeshNodeId || !nodes.some(node => node.id === selectedMeshNodeId)) {
+    selectedMeshNodeId = (nodes.find(node => node.status === 'online') || nodes[0]).id;
+  }
 }
 
 function meshNodes() {

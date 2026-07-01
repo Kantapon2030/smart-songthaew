@@ -176,9 +176,31 @@ function normalizeLegacyVehicle(id, entry = {}, now = Date.now() / 1000) {
     direction: current.direction || '',
     last_seen: lastSeen || 0,
     timestamp: timestampMs || (lastSeen ? lastSeen * 1000 : 0),
-    plate: current.plate,
+    plate: entry.plate || current.plate,
+    description: entry.description || current.description,
     seats_available: current.seats_available,
     seat_count: current.seat_count,
+    battVoltage: current.battVoltage,
+    currentMa: current.currentMa,
+    powerMw: current.powerMw,
+    txCount: current.txCount,
+    sats: current.sats,
+    hdop: current.hdop,
+    rssi: current.rssi,
+    snr: current.snr,
+    link_quality: current.link_quality,
+    seq: current.seq,
+    boot_id: current.boot_id,
+    packet_id: current.packet_id,
+    ttl: current.ttl,
+    store_forward: current.store_forward,
+    relay_from: current.relay_from,
+    relay_chain: current.relay_chain,
+    neighbors: current.neighbors,
+    version_summary: current.version_summary,
+    received_rssi: current.received_rssi,
+    received_snr: current.received_snr,
+    gps_time: current.gps_time || current.gps_timestamp,
     source: entry.type || current.source || 'legacy',
     demo: current.demo === true || entry.demo === true,
   };
@@ -278,6 +300,11 @@ function formatDistanceKm(km) {
 function formatMinutes(minutes) {
   const value = Number(minutes);
   return Number.isFinite(value) ? `${Math.max(1, Math.round(value))} นาที` : '—';
+}
+
+function formatSpeedKmh(speed) {
+  const value = Number(speed);
+  return Number.isFinite(value) ? `${Math.max(0, value).toFixed(value >= 10 ? 0 : 1)} km/h` : '—';
 }
 
 function formatTime(value) {

@@ -2,14 +2,20 @@
 
 let map;
 let routeLine;
-let userMarker;
+let destinationMarker;
+let originMarker;
+let originClickListener;
 let currentRouteId = null;
 let currentDirection = 'outbound';
+let selectedOrigin = null;
 let selectedDestination = null;
 let selectedVehicleId = null;
 let routesById = {};
 let vehicleData = {};
 let vehicleMarkers = {};
+let vehicleMotion = {};
+let vehicleSpeedDisplay = {};
+let vehicleAnimationStarted = false;
 let stopMarkers = [];
 let etaState = { key: null, value: null, fetchedAt: 0 };
 let serverClock = { serverTime: 0, perfAt: 0 };
@@ -26,6 +32,8 @@ async function initPassengerPage() {
   });
   document.getElementById('vehicle-image').innerHTML = busSvg(34, '#2563EB');
   document.getElementById('mesh-toggle-icon').innerHTML = antennaSvg(16, '#64748B');
+  document.getElementById('current-location-icon').innerHTML = pinSvg(14, '#334155');
+  document.getElementById('drop-pin-icon').innerHTML = pinSvg(14, '#334155');
   bindPassengerControls();
   await initMap();
 }
@@ -49,6 +57,8 @@ function bindPassengerControls() {
   });
 
   document.getElementById('destination-search').addEventListener('input', renderPopularDestinations);
+  document.getElementById('use-current-location-btn').addEventListener('click', useCurrentLocationAsOrigin);
+  document.getElementById('drop-origin-pin-btn').addEventListener('click', toggleOriginPinMode);
   document.getElementById('show-route-btn').addEventListener('click', () => {
     const destination = selectedDestination || directionStops(routesById[currentRouteId])[0];
     if (destination) setDestination(destination);
@@ -81,6 +91,7 @@ async function initMap() {
   });
 
   if (window.MeshOverlay) window.MeshOverlay.init(map);
+  startVehicleAnimation();
   await loadRoutes();
   await fetchVehicles();
   setInterval(fetchVehicles, 3500);
@@ -174,7 +185,7 @@ function renderPopularDestinations() {
 
 async function renderRecommendedStops() {
   const route = routesById[currentRouteId];
-  const stops = directionStops(route).slice(0, 5);
+  const stops = recommendedStops(route);
   const root = document.getElementById('recommended-stops');
   if (!stops.length) {
     root.innerHTML = '<div class="empty-state">ยังไม่มีจุดจอดในเส้นทางนี้</div>';
@@ -202,6 +213,18 @@ function directionStops(route) {
   return currentDirection === 'inbound' ? stops.reverse() : stops;
 }
 
+function recommendedStops(route) {
+  const stops = directionStops(route);
+  if (!selectedOrigin) return stops.slice(0, 5);
+  return stops
+    .map(stop => ({
+      ...stop,
+      originDistanceKm: haversineKm(selectedOrigin.lat, selectedOrigin.lng, stop.lat, stop.lng),
+    }))
+    .sort((a, b) => a.originDistanceKm - b.originDistanceKm)
+    .slice(0, 5);
+}
+
 function renderDirectionButtons(route) {
   document.querySelectorAll('.direction-row button').forEach(button => {
     const dir = button.dataset.direction;
@@ -214,16 +237,19 @@ function renderDirectionButtons(route) {
 }
 
 async function updateStopEtas(stops) {
-  const origin = selectedVehicleId && vehicleData[selectedVehicleId]
-    ? `${vehicleData[selectedVehicleId].lat},${vehicleData[selectedVehicleId].lng}`
-    : selectedDestination
-      ? `${selectedDestination.lat},${selectedDestination.lng}`
-      : null;
+  const origin = selectedOrigin
+    ? `${selectedOrigin.lat},${selectedOrigin.lng}`
+    : selectedVehicleId && vehicleData[selectedVehicleId]
+      ? `${vehicleData[selectedVehicleId].lat},${vehicleData[selectedVehicleId].lng}`
+      : selectedDestination
+        ? `${selectedDestination.lat},${selectedDestination.lng}`
+        : null;
   if (!origin) return;
   for (const stop of stops) {
     const meta = document.getElementById(`stop-meta-${safeId(stop.name)}`);
     if (!meta || !Number.isFinite(Number(stop.lat)) || !Number.isFinite(Number(stop.lng))) continue;
-    const distance = selectedDestination ? haversineKm(selectedDestination.lat, selectedDestination.lng, stop.lat, stop.lng) : null;
+    const distanceBase = selectedOrigin || selectedDestination;
+    const distance = distanceBase ? haversineKm(distanceBase.lat, distanceBase.lng, stop.lat, stop.lng) : null;
     try {
       const data = await fetchMapsEta(origin, `${stop.lat},${stop.lng}`);
       meta.textContent = `${formatDistanceKm(distance)} • ${formatMinutes(data.eta_min)}`;
@@ -237,8 +263,8 @@ function setDestination(stop, refresh = true) {
   if (!stop) return;
   selectedDestination = stop;
   const position = { lat: Number(stop.lat), lng: Number(stop.lng) };
-  if (!userMarker) {
-    userMarker = new google.maps.marker.AdvancedMarkerElement({
+  if (!destinationMarker) {
+    destinationMarker = new google.maps.marker.AdvancedMarkerElement({
       map,
       position,
       content: destinationMarkerContent(),
@@ -246,8 +272,8 @@ function setDestination(stop, refresh = true) {
       zIndex: 900,
     });
   } else {
-    userMarker.position = position;
-    userMarker.title = stop.name;
+    destinationMarker.position = position;
+    destinationMarker.title = stop.name;
   }
   if (refresh) {
     map.panTo(position);
@@ -263,6 +289,96 @@ function destinationMarkerContent() {
   el.style.cssText = 'width:34px;height:34px;border-radius:50%;background:#2563EB;color:#fff;display:flex;align-items:center;justify-content:center;border:3px solid #fff;box-shadow:0 8px 22px rgba(37,99,235,.35);';
   el.innerHTML = pinSvg(18, '#fff');
   return el;
+}
+
+function useCurrentLocationAsOrigin() {
+  if (!navigator.geolocation) {
+    updateOriginStatus('เบราว์เซอร์นี้ไม่รองรับการอ่านตำแหน่ง');
+    return;
+  }
+  setOriginPickMode(false);
+  updateOriginStatus('กำลังขอตำแหน่งปัจจุบัน...');
+  navigator.geolocation.getCurrentPosition(position => {
+    setOrigin({
+      lat: position.coords.latitude,
+      lng: position.coords.longitude,
+      name: 'ตำแหน่งปัจจุบัน',
+    }, { pan: true });
+  }, () => {
+    updateOriginStatus('ไม่สามารถอ่านตำแหน่งได้ กรุณาอนุญาตตำแหน่งหรือใช้วางหมุด');
+  }, { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 });
+}
+
+function toggleOriginPinMode() {
+  if (!map || !window.google?.maps) {
+    updateOriginStatus('ยังไม่สามารถใช้แผนที่เพื่อวางหมุดได้');
+    return;
+  }
+  setOriginPickMode(!originClickListener);
+}
+
+function setOriginPickMode(enabled) {
+  const button = document.getElementById('drop-origin-pin-btn');
+  if (!map || !window.google?.maps) return;
+  if (!enabled) {
+    if (originClickListener) {
+      google.maps.event.removeListener(originClickListener);
+      originClickListener = null;
+    }
+    document.body.classList.remove('origin-pick-mode');
+    if (button) button.className = 'button ghost';
+    return;
+  }
+  if (originClickListener) return;
+  document.body.classList.add('origin-pick-mode');
+  if (button) button.className = 'button primary';
+  updateOriginStatus('คลิกบนแผนที่เพื่อวางหมุดตำแหน่งของคุณ');
+  originClickListener = map.addListener('click', event => {
+    setOrigin({
+      lat: event.latLng.lat(),
+      lng: event.latLng.lng(),
+      name: 'ตำแหน่งที่เลือก',
+    }, { pan: false });
+    setOriginPickMode(false);
+  });
+}
+
+function setOrigin(point, options = {}) {
+  const lat = Number(point?.lat);
+  const lng = Number(point?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  selectedOrigin = { lat, lng, name: point.name || 'ตำแหน่งของคุณ' };
+  const position = { lat, lng };
+  if (!originMarker) {
+    originMarker = new google.maps.marker.AdvancedMarkerElement({
+      map,
+      position,
+      content: originMarkerContent(),
+      title: selectedOrigin.name,
+      zIndex: 950,
+    });
+  } else {
+    originMarker.position = position;
+    originMarker.title = selectedOrigin.name;
+  }
+  if (options.pan) map.panTo(position);
+  updateOriginStatus(`${selectedOrigin.name}: ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  chooseNearestVehicle();
+  requestSelectedEta(true);
+  renderVehicleCard(vehicleData[selectedVehicleId]);
+  renderRecommendedStops();
+}
+
+function originMarkerContent() {
+  const el = document.createElement('div');
+  el.style.cssText = 'width:34px;height:34px;border-radius:50%;background:#16A34A;color:#fff;display:flex;align-items:center;justify-content:center;border:3px solid #fff;box-shadow:0 8px 22px rgba(22,163,74,.35);';
+  el.innerHTML = pinSvg(18, '#fff');
+  return el;
+}
+
+function updateOriginStatus(message) {
+  const el = document.getElementById('origin-status');
+  if (el) el.textContent = message || '';
 }
 
 async function fetchVehicles() {
@@ -299,8 +415,15 @@ function renderVehicleMarkers(vehicles) {
         zIndex: selected ? 600 : 500,
       });
       vehicleMarkers[vehicle.vehicle_id].addListener('click', () => selectVehicle(vehicle.vehicle_id));
+      vehicleMotion[vehicle.vehicle_id] = {
+        current: position,
+        from: position,
+        target: position,
+        startedAt: performance.now(),
+        duration: 1,
+      };
     } else {
-      vehicleMarkers[vehicle.vehicle_id].position = position;
+      setVehicleMotionTarget(vehicle.vehicle_id, position);
       vehicleMarkers[vehicle.vehicle_id].content = createVehicleMarkerContent(vehicle.speed, online, false, selected, vehicle.heading);
       vehicleMarkers[vehicle.vehicle_id].zIndex = selected ? 600 : 500;
     }
@@ -309,18 +432,74 @@ function renderVehicleMarkers(vehicles) {
     if (!ids.has(id)) {
       vehicleMarkers[id].map = null;
       delete vehicleMarkers[id];
+      delete vehicleMotion[id];
+      delete vehicleSpeedDisplay[id];
     }
   });
 }
 
+function setVehicleMotionTarget(vehicleId, target) {
+  const marker = vehicleMarkers[vehicleId];
+  if (!marker) return;
+  const motion = vehicleMotion[vehicleId] || {};
+  const current = motion.current || markerPosition(marker) || target;
+  const distance = haversineKm(current.lat, current.lng, target.lat, target.lng);
+  if (!Number.isFinite(distance) || distance > 2.5) {
+    marker.position = target;
+    vehicleMotion[vehicleId] = {
+      current: target,
+      from: target,
+      target,
+      startedAt: performance.now(),
+      duration: 1,
+    };
+    return;
+  }
+  vehicleMotion[vehicleId] = {
+    current,
+    from: current,
+    target,
+    startedAt: performance.now(),
+    duration: Math.max(900, Math.min(3200, distance * 100000)),
+  };
+}
+
+function markerPosition(marker) {
+  const position = marker?.position;
+  if (!position) return null;
+  const lat = typeof position.lat === 'function' ? position.lat() : position.lat;
+  const lng = typeof position.lng === 'function' ? position.lng() : position.lng;
+  return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null;
+}
+
+function startVehicleAnimation() {
+  if (vehicleAnimationStarted) return;
+  vehicleAnimationStarted = true;
+  const frame = now => {
+    Object.entries(vehicleMotion).forEach(([id, motion]) => {
+      const marker = vehicleMarkers[id];
+      if (!marker || !motion?.target) return;
+      const t = motion.duration <= 1 ? 1 : Math.min(1, (now - motion.startedAt) / motion.duration);
+      const eased = t < 1 ? 1 - Math.pow(1 - t, 3) : 1;
+      const lat = motion.from.lat + (motion.target.lat - motion.from.lat) * eased;
+      const lng = motion.from.lng + (motion.target.lng - motion.from.lng) * eased;
+      motion.current = { lat, lng };
+      marker.position = motion.current;
+    });
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
+}
+
 function chooseNearestVehicle() {
-  if (!selectedDestination) return;
+  const target = selectedOrigin || selectedDestination;
+  if (!target) return;
   const candidates = Object.values(vehicleData).filter(vehicle => vehicle.status === 'online' && vehicle.gps_fix !== false);
   if (!candidates.length) {
     selectedVehicleId = null;
     return;
   }
-  candidates.sort((a, b) => haversineKm(a.lat, a.lng, selectedDestination.lat, selectedDestination.lng) - haversineKm(b.lat, b.lng, selectedDestination.lat, selectedDestination.lng));
+  candidates.sort((a, b) => haversineKm(a.lat, a.lng, target.lat, target.lng) - haversineKm(b.lat, b.lng, target.lat, target.lng));
   selectedVehicleId = candidates[0].vehicle_id;
 }
 
@@ -334,17 +513,18 @@ function selectVehicle(vehicleId) {
 
 async function requestSelectedEta(force = false) {
   const vehicle = vehicleData[selectedVehicleId];
-  if (!vehicle || !selectedDestination) {
+  const target = selectedOrigin || selectedDestination;
+  if (!vehicle || !target) {
     etaState = { key: null, value: null, fetchedAt: Date.now() };
     return;
   }
-  const key = `${vehicle.vehicle_id}:${Number(selectedDestination.lat).toFixed(5)},${Number(selectedDestination.lng).toFixed(5)}`;
+  const key = `${vehicle.vehicle_id}:${Number(target.lat).toFixed(5)},${Number(target.lng).toFixed(5)}`;
   if (!force && etaState.key === key && Date.now() - etaState.fetchedAt < 30000) return;
   etaState = { key, value: null, fetchedAt: Date.now() };
   try {
     etaState.value = await fetchMapsEta(
       `${vehicle.lat},${vehicle.lng}`,
-      `${selectedDestination.lat},${selectedDestination.lng}`,
+      `${target.lat},${target.lng}`,
       vehicle.vehicle_id
     );
   } catch (_) {
@@ -368,11 +548,13 @@ function renderVehicleCard(vehicle) {
   statusEl.className = `status-badge ${vehicle.status === 'online' ? 'status-online' : 'status-offline'}`;
   document.getElementById('vehicle-updated').textContent = `อัปเดต ${vehicleAge(vehicle)} วินาทีที่แล้ว`;
   document.getElementById('vehicle-route').textContent = route?.name || vehicle.route_id || '—';
-  document.getElementById('vehicle-plate').textContent = vehicle.plate || vehicle.vehicle_id;
+  document.getElementById('vehicle-plate').textContent = vehicle.plate ? `ทะเบียน ${vehicle.plate}` : vehicle.vehicle_id;
 
   const eta = etaState.value;
   document.getElementById('vehicle-eta').textContent = formatMinutes(eta?.eta_min);
   document.getElementById('vehicle-distance').textContent = formatDistanceMeters(eta?.distance_m);
+  const speedEl = document.getElementById('vehicle-speed');
+  if (speedEl) speedEl.textContent = formatSpeedKmh(smoothVehicleSpeed(vehicle));
   const seatStat = document.getElementById('vehicle-seat-stat');
   if (vehicle.seats_available != null || vehicle.seat_count != null) {
     seatStat.style.display = '';
@@ -382,6 +564,16 @@ function renderVehicleCard(vehicle) {
   }
   const nextStop = findNextStop(vehicle, route);
   document.getElementById('vehicle-next-stop').textContent = nextStop ? `${nextStop.name} • ${formatMinutes(eta?.eta_min)}` : '—';
+}
+
+function smoothVehicleSpeed(vehicle) {
+  const target = Number(vehicle?.speed || 0);
+  if (!Number.isFinite(target)) return 0;
+  const id = vehicle.vehicle_id;
+  const current = vehicleSpeedDisplay[id] ?? target;
+  const next = Math.abs(target - current) < 0.2 ? target : current + (target - current) * 0.35;
+  vehicleSpeedDisplay[id] = next;
+  return next;
 }
 
 function findNextStop(vehicle, route) {

@@ -358,6 +358,44 @@ function legacyHeaders(res, successor) {
 function logLegacy(req, vehicleId) {
   console.warn(`[LEGACY_USED] endpoint=${req.path} vehicle_id=${vehicleId || '-'} ip=${req.ip}`);
 }
+
+function sanitizePlate(value) {
+  const plate = String(value || '').trim();
+  if (!plate) return '';
+  return plate.replace(/\s+/g, ' ').slice(0, 32);
+}
+
+function normalizeTelemetryFields(current = {}, entry = {}) {
+  const out = {};
+  const numericFields = [
+    'battVoltage', 'currentMa', 'powerMw', 'txCount', 'sats', 'hdop',
+    'rssi', 'snr', 'link_quality', 'seq', 'ttl', 'received_rssi',
+    'received_snr', 'heading', 'bearing'
+  ];
+  const textFields = ['boot_id', 'packet_id', 'relay_from', 'source'];
+  const boolFields = ['store_forward', 'gps_fix', 'sleepMode', 'demo'];
+  const arrayFields = ['relay_chain', 'neighbors', 'version_summary'];
+
+  numericFields.forEach(field => {
+    const value = Number(current[field]);
+    if (Number.isFinite(value)) out[field] = value;
+  });
+  textFields.forEach(field => {
+    if (current[field] !== undefined && current[field] !== null && current[field] !== '') out[field] = current[field];
+  });
+  boolFields.forEach(field => {
+    if (current[field] !== undefined) out[field] = current[field] === true;
+  });
+  arrayFields.forEach(field => {
+    if (Array.isArray(current[field])) out[field] = current[field];
+  });
+
+  const plate = sanitizePlate(entry.plate || current.plate || current.license_plate || current.licensePlate);
+  if (plate) out.plate = plate;
+  if (entry.description || current.description) out.description = entry.description || current.description;
+  return out;
+}
+
 function normalizeVehicle(vehicleId, entry, now = unixNow()) {
   const current = entry?.current || entry || {};
   const receivedAt = Number(current.server_received_at || current.serverReceivedAt || current.last_seen || current.lastSeen || Math.floor(Number(current.timestamp || 0) / 1000));
@@ -380,6 +418,7 @@ function normalizeVehicle(vehicleId, entry, now = unixNow()) {
     direction: current.direction || 'unknown',
     hop: Number.isFinite(Number(current.hop)) ? Number(current.hop) : 0,
     source: current.source || 'legacy',
+    ...normalizeTelemetryFields({ ...current, heading, bearing: Number(current.bearing ?? heading) }, entry),
   };
 }
 function isWithinRouteCorridor(lat, lng, coords, radiusKm = 5) {
@@ -442,6 +481,19 @@ function currentForLiveMode(current = {}) {
   if (hasValidGpsFix(current)) return current;
   const { lat, lng, ...withoutCoordinates } = current;
   return withoutCoordinates;
+}
+
+function currentForFleetResponse(vehicleId, entry = {}, demoMode = false) {
+  const current = entry.current && !demoMode ? currentForLiveMode(entry.current) : entry.current;
+  if (!current) return null;
+  const routeId = current.routeId || current.route_id || entry.routeId || 'unassigned';
+  return {
+    ...current,
+    vehicle_id: current.vehicle_id || current.vehicleId || vehicleId,
+    routeId,
+    route_id: current.route_id || routeId,
+    ...normalizeTelemetryFields(current, entry),
+  };
 }
 
 async function getDemoMode() {
@@ -553,6 +605,7 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     id: vehicleId,
     type: 'vehicle',
     vehicle_id: vehicleId,
+    plate: sanitizePlate(vehicleMeta?.plate || data.plate || data.license_plate || data.licensePlate) || null,
     lat: gpsFix ? lat : null,
     lng: gpsFix ? lng : null,
     status: isOnline ? 'online' : 'offline',
@@ -574,7 +627,21 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     gps_time: validGpsTime(Number(data.gps_time || data.gps_timestamp)) ? Number(data.gps_time || data.gps_timestamp) : null,
     ttl: typeof data.ttl === 'number' ? data.ttl : null,
     store_forward: data.store_forward === true,
-    version_summary: Array.isArray(data.version_summary) ? data.version_summary : []
+    version_summary: Array.isArray(data.version_summary) ? data.version_summary : [],
+    battVoltage: typeof data.battVoltage === 'number' ? data.battVoltage : null,
+    currentMa: typeof data.currentMa === 'number' ? data.currentMa : null,
+    powerMw: typeof data.powerMw === 'number' ? data.powerMw : null,
+    txCount: typeof data.txCount === 'number' ? data.txCount : null,
+    sats: typeof data.sats === 'number' ? data.sats : null,
+    hdop: typeof data.hdop === 'number' ? data.hdop : null,
+    seq: typeof data.seq === 'number' ? data.seq : null,
+    boot_id: data.boot_id || null,
+    packet_id: data.packet_id || null,
+    received_rssi: typeof data.received_rssi === 'number' ? data.received_rssi : null,
+    received_snr: typeof data.received_snr === 'number' ? data.received_snr : null,
+    heading: typeof data.heading === 'number' ? data.heading : typeof data.bearing === 'number' ? data.bearing : null,
+    bearing: typeof data.bearing === 'number' ? data.bearing : typeof data.heading === 'number' ? data.heading : null,
+    timestamp: data.timestamp || null
   };
   if (!demoMode && !gpsFix) {
     delete node.lat;
@@ -754,6 +821,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     sats        = -1,   // จำนวนดาวเทียม (จาก GPS6MV2 จริง)
     hdop        = -1,   // Horizontal Dilution of Precision (จาก GPS6MV2 จริง)
     rssi        = null, // WiFi signal strength dBm (จาก WiFi.RSSI() จริง)
+    plate       = '',
   } = req.body;
 
   // Optional VIBE Mesh fields (backward-compatible)
@@ -772,6 +840,10 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const source = req.body.source || 'vehicle';
   const received_rssi = typeof req.body.received_rssi === 'number' ? req.body.received_rssi : null;
   const received_snr = typeof req.body.received_snr === 'number' ? req.body.received_snr : null;
+
+  const plateValue = sanitizePlate(plate || req.body.license_plate || req.body.licensePlate);
+  const headingValue = Number(req.body.heading ?? req.body.bearing);
+  const sleepMode = req.body.sleepMode === true;
 
   if (!vehicleId) {
     return res.status(400).json({ error: 'vehicleId is required' });
@@ -805,6 +877,11 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       patch.snr = received_snr;
     }
     if (hop !== null) patch.hop = hop;
+    if (plateValue) patch.plate = plateValue;
+    if (Number.isFinite(headingValue)) {
+      patch.heading = headingValue;
+      patch.bearing = headingValue;
+    }
     await currentRef.update(patch);
     return res.status(200).json({ message: 'Heartbeat updated', status: 'heartbeat', timestamp: ts });
   }
@@ -856,6 +933,12 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     routeId:     routeId   || 'unassigned',
     direction:   direction || 'unknown',
   };
+  if (Number.isFinite(headingValue)) {
+    data.heading = headingValue;
+    data.bearing = headingValue;
+  }
+  if (plateValue) data.plate = plateValue;
+  if (sleepMode) data.sleepMode = true;
 
   // Preserve existing telemetry payloads by storing mesh fields only when supplied.
   if (hop !== null) data.hop = hop;
@@ -889,6 +972,8 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
             direction: direction || previous?.direction || 'unknown',
             battery: batI,
             speed: 0,
+            ...(plateValue ? { plate: plateValue } : {}),
+            ...(Number.isFinite(headingValue) ? { heading: headingValue, bearing: headingValue } : {}),
             ...(hop !== null ? { hop } : {}),
             ...(link_quality !== null ? { link_quality } : {}),
             ...(rssiI !== null ? { rssi: rssiI } : {}),
@@ -953,9 +1038,16 @@ app.get('/api/locations', async (req, res) => {
       // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
       if (!demoMode && isDemoVehicle(id, val)) continue;
       if (demoMode && isDemoVehicle(id, val)) console.log(`[demo] including demo vehicle ${id}`);
-      if (routeId && canonicalRouteId(val.routeId) !== canonicalRouteId(routeId) && !isDemoVehicle(id, val)) continue;
+      const entryRouteId = val.routeId || val.current?.routeId || val.current?.route_id || 'unassigned';
+      if (routeId && canonicalRouteId(entryRouteId) !== canonicalRouteId(routeId) && !isDemoVehicle(id, val)) continue;
       if (val?.current) {
-        result[id] = { current: demoMode ? val.current : currentForLiveMode(val.current), routeId: val.routeId, type: val.type };
+        result[id] = {
+          current: currentForFleetResponse(id, val, demoMode),
+          routeId: entryRouteId,
+          type: val.type,
+          plate: sanitizePlate(val.plate || val.current?.plate) || '',
+          description: val.description || '',
+        };
       }
     }
 
@@ -1387,6 +1479,11 @@ function bearingCalc(la1,lo1,la2,lo2){
   return((Math.atan2(y,x)*180/Math.PI)+360)%360;
 }
 const DEMO_IDS = ['DEMO_1', 'DEMO_2', 'DEMO_3'];
+const DEMO_PLATES = {
+  DEMO_1: 'DEMO-001',
+  DEMO_2: 'DEMO-002',
+  DEMO_3: 'DEMO-003',
+};
 const DEMO_FALLBACK_COORDS = [
   { lat: 8.4304, lng: 99.9631 },
   { lat: 8.4580, lng: 99.9502 },
@@ -1427,8 +1524,49 @@ function buildVehiclePairs(nodes) {
   return pairs;
 }
 
+function demoRouteLengthMeters(coords = demoRouteCoords) {
+  if (!Array.isArray(coords) || coords.length < 2) return 0;
+  let total = 0;
+  for (let i = 0; i < coords.length; i++) {
+    const a = coords[i];
+    const b = coords[(i + 1) % coords.length];
+    if (validLatLng(a?.lat, a?.lng) && validLatLng(b?.lat, b?.lng)) {
+      total += haversineDistanceMeters(a, b);
+    }
+  }
+  return total;
+}
+
+function demoPositionAtDistance(distanceM, coords = demoRouteCoords) {
+  const total = demoRouteLengthMeters(coords);
+  if (!total || coords.length < 2) return null;
+  let remaining = ((distanceM % total) + total) % total;
+  for (let i = 0; i < coords.length; i++) {
+    const a = coords[i];
+    const b = coords[(i + 1) % coords.length];
+    const segment = haversineDistanceMeters(a, b);
+    if (!segment) continue;
+    if (remaining <= segment) {
+      const t = remaining / segment;
+      const lat = a.lat + (b.lat - a.lat) * t;
+      const lng = a.lng + (b.lng - a.lng) * t;
+      return {
+        lat,
+        lng,
+        segmentIndex: i,
+        bearing: bearingCalc(lat, lng, b.lat, b.lng),
+      };
+    }
+    remaining -= segment;
+  }
+  const first = coords[0];
+  const next = coords[1];
+  return { lat: first.lat, lng: first.lng, segmentIndex: 0, bearing: bearingCalc(first.lat, first.lng, next.lat, next.lng) };
+}
+
 function initializeDemoFleet() {
   const len = demoRouteCoords.length;
+  const routeLength = demoRouteLengthMeters();
   console.log(`[DEMO] initializeDemoFleet coords=${len} source=${_demoRouteCoordSource} format=${_demoRouteCoordFormat}`);
   const indices = [
     0,
@@ -1440,6 +1578,8 @@ function initializeDemoFleet() {
     {
       id: DEMO_IDS[index],
       segmentIndex: Math.max(0, Math.min(len - 1, idx)),
+      distanceM: routeLength ? routeLength * (index / DEMO_IDS.length) : 0,
+      lastTimestamp: 0,
       speed: [34, 43, 55][index],
       battery: [93, 86, 79][index],
     }
@@ -1453,24 +1593,33 @@ function initializeDemoFleet() {
 function moveDemoVehicle(vehicleId, timestamp, updates) {
   const vehicle = _demoVehicles.get(vehicleId);
   if (!vehicle || !demoRouteCoords.length) return null;
-  const currentIndex = vehicle.segmentIndex;
-  const coord = demoRouteCoords[currentIndex];
-  const nextCoord = demoRouteCoords[(currentIndex + 1) % demoRouteCoords.length];
-  if (!Number.isFinite(coord?.lat) || !Number.isFinite(coord?.lng)) {
-    console.error(`[DEMO] Invalid coord for ${vehicleId} segment=${currentIndex}:`, coord);
+  const routeLength = demoRouteLengthMeters();
+  if (!routeLength) return null;
+  const elapsedSec = vehicle.lastTimestamp ? Math.max(0.2, Math.min(5, (timestamp - vehicle.lastTimestamp) / 1000)) : 1;
+  const index = DEMO_IDS.indexOf(vehicleId);
+  const wave = Math.sin(timestamp / 9000 + index * 1.7);
+  const targetSpeed = ([31, 38, 45][index] + wave * 5) * _demoSpeedMultiplier;
+  vehicle.speed = Math.max(8, Math.min(65, vehicle.speed + (targetSpeed - vehicle.speed) * 0.28));
+  vehicle.distanceM = (Number(vehicle.distanceM || 0) + (vehicle.speed * 1000 / 3600) * elapsedSec) % routeLength;
+  vehicle.lastTimestamp = timestamp;
+
+  const coord = demoPositionAtDistance(vehicle.distanceM);
+  if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) {
+    console.error(`[DEMO] Invalid coord for ${vehicleId} distance=${vehicle.distanceM}`);
     return null;
   }
-  const speed = Math.round((30 + Math.random() * 25) * _demoSpeedMultiplier);
-  vehicle.speed = Math.max(30, Math.min(55, speed));
   vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
+  vehicle.segmentIndex = coord.segmentIndex;
 
   const current = {
     vehicle_id: vehicleId,
+    plate: DEMO_PLATES[vehicleId] || vehicleId,
     lat: coord.lat,
     lng: coord.lng,
-    speed: vehicle.speed,
+    speed: Number(vehicle.speed.toFixed(1)),
     battery: Number(vehicle.battery.toFixed(1)),
-    bearing: bearingCalc(coord.lat, coord.lng, nextCoord.lat, nextCoord.lng),
+    bearing: Number(coord.bearing.toFixed(1)),
+    heading: Number(coord.bearing.toFixed(1)),
     timestamp,
     server_received_at: Math.floor(timestamp / 1000),
     last_seen: Math.floor(timestamp / 1000),
@@ -1480,18 +1629,39 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
     direction: 'ตามเส้นทางเดโม',
     demo: true,
     source: 'demo',
+    battVoltage: Math.round(12400 + vehicle.battery * 7),
+    currentMa: Math.round(420 + vehicle.speed * 9),
+    powerMw: Math.round((12400 + vehicle.battery * 7) * (420 + vehicle.speed * 9) / 1000),
+    txCount: Math.floor(timestamp / 1000) % 100000,
+    sats: 9 + index,
+    hdop: Number((0.8 + index * 0.12).toFixed(2)),
+    rssi: -54 - index * 5,
+    snr: Number((9.5 - index * 0.8).toFixed(1)),
+    link_quality: Math.max(70, 96 - index * 8),
+    seq: Math.floor(timestamp / 1000),
+    boot_id: `demo-${vehicleId}`,
+    packet_id: `${vehicleId}-${timestamp}`,
+    ttl: 5,
+    store_forward: false,
+    relay_from: index > 0 ? DEMO_IDS[0] : null,
+    relay_chain: index > 0 ? [DEMO_IDS[0]] : [],
+    neighbors: DEMO_IDS.filter(id => id !== vehicleId),
+    version_summary: ['demo-sim:1.0'],
+    received_rssi: -50 - index * 4,
+    received_snr: Number((10.2 - index * 0.7).toFixed(1)),
   };
 
   updates[`fleet/${vehicleId}/current`] = current;
   updates[`fleet/${vehicleId}/routeId`] = _demoRouteId;
   updates[`fleet/${vehicleId}/type`] = 'demo';
   updates[`fleet/${vehicleId}/demo`] = true;
+  updates[`fleet/${vehicleId}/plate`] = current.plate;
+  updates[`fleet/${vehicleId}/description`] = `Demo vehicle ${index + 1}`;
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
   updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
-  vehicle.segmentIndex = (currentIndex + 1) % demoRouteCoords.length;
   const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
   if (logCount < 3) {
-    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current segment=${currentIndex} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
+    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current segment=${vehicle.segmentIndex} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
     _demoWriteLogCounts.set(vehicleId, logCount + 1);
   }
   return current;
@@ -1575,7 +1745,7 @@ async function startDemoFleet() {
   await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
   initializeDemoFleet();
   clearInterval(_demoTimer);
-  _demoTimer = setInterval(demoFleetTick, 3000);
+  _demoTimer = setInterval(demoFleetTick, 1000);
   await demoFleetTick();
 }
 
@@ -1925,19 +2095,16 @@ app.get('/api/fleet', async (req, res) => {
     const result = {};
     for (const [id, v] of Object.entries(fleet)) {
       if (!demoMode && isDemoVehicle(id, v)) continue;
-      const current = v.current && !demoMode ? currentForLiveMode(v.current) : v.current;
+      const current = currentForFleetResponse(id, v, demoMode);
+      const routeId = v.routeId || current?.routeId || current?.route_id || 'unassigned';
       result[id] = {
         vehicleId:  id,
-        routeId:    v.routeId || 'unassigned',
+        routeId,
         type:       v.type || 'real',
+        plate:      sanitizePlate(v.plate || current?.plate) || '',
+        description:v.description || '',
         assignedAt: v.assignedAt || null,
-        current: current ? {
-          ...(current.lat !== undefined ? { lat: current.lat } : {}),
-          ...(current.lng !== undefined ? { lng: current.lng } : {}),
-          speed:     current.speed,
-          battery:   current.battery,
-          timestamp: current.timestamp,
-        } : null,
+        current,
       };
     }
     res.json(result);
@@ -1948,6 +2115,7 @@ app.get('/api/fleet', async (req, res) => {
 
 app.post('/api/fleet/register', authMiddleware, async (req, res) => {
   const { vehicleId, routeId = 'unassigned', description = '', type = 'real' } = req.body;
+  const plate = sanitizePlate(req.body.plate || req.body.license_plate || req.body.licensePlate);
   if (!vehicleId || !/^[a-zA-Z0-9_-]+$/.test(vehicleId)) {
     return res.status(400).json({ error: 'vehicleId required (a-z, 0-9, _, -)' });
   }
@@ -1960,6 +2128,7 @@ app.post('/api/fleet/register', authMiddleware, async (req, res) => {
       routeId,
       type,
       description,
+      plate,
       registeredAt: Date.now(),
       assignedAt:   Date.now(),
     });
@@ -1989,6 +2158,9 @@ app.patch('/api/fleet/:id', authMiddleware, async (req, res) => {
     if (routeId     !== undefined) patch.routeId     = routeId;
     if (description !== undefined) patch.description = description;
     if (type        !== undefined) patch.type        = type;
+    if (req.body.plate !== undefined || req.body.license_plate !== undefined || req.body.licensePlate !== undefined) {
+      patch.plate = sanitizePlate(req.body.plate || req.body.license_plate || req.body.licensePlate);
+    }
     await db.ref(`fleet/${id}`).update(patch);
     res.json({ ok: true });
   } catch (e) {

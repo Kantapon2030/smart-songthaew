@@ -8,6 +8,8 @@ let trackingRoutes = [];
 let trackingRouteId = '';
 let selectedVehicle = null;
 let trackingEta = null;
+let trackingMotion = null;
+let trackingAnimationStarted = false;
 
 document.addEventListener('DOMContentLoaded', initTrackingPage);
 
@@ -22,6 +24,7 @@ async function initTrackingPage() {
     },
   });
   await initTrackingMap();
+  startTrackingAnimation();
   await loadTrackingRoutes();
   await refreshTracking();
   setInterval(refreshTracking, 5000);
@@ -77,7 +80,9 @@ function drawTrackingRoute() {
   trackingStopMarkers.forEach(marker => { marker.map = null; });
   trackingStopMarkers = [];
 
-  const path = (route.coords || []).map(([lat, lng]) => ({ lat, lng }));
+  const path = (directionCoords(route, 'outbound').length ? directionCoords(route, 'outbound') : route.coords || [])
+    .map(point => ({ lat: Number(point.lat), lng: Number(point.lng) }))
+    .filter(point => Number.isFinite(point.lat) && Number.isFinite(point.lng));
   trackingRouteLine = new google.maps.Polyline({
     map: trackingMap,
     path,
@@ -111,10 +116,55 @@ function drawTrackingVehicle() {
       content: createVehicleMarkerContent(selectedVehicle.speed, selectedVehicle.status === 'online', false, true, selectedVehicle.heading),
       zIndex: 700,
     });
+    trackingMotion = { current: position, from: position, target: position, startedAt: performance.now(), duration: 1 };
   } else {
-    trackingVehicleMarker.position = position;
+    setTrackingMotionTarget(position);
     trackingVehicleMarker.content = createVehicleMarkerContent(selectedVehicle.speed, selectedVehicle.status === 'online', false, true, selectedVehicle.heading);
   }
+}
+
+function setTrackingMotionTarget(target) {
+  if (!trackingVehicleMarker) return;
+  const current = trackingMotion?.current || markerPositionForTracking() || target;
+  const distance = haversineKm(current.lat, current.lng, target.lat, target.lng);
+  if (!Number.isFinite(distance) || distance > 2.5) {
+    trackingVehicleMarker.position = target;
+    trackingMotion = { current: target, from: target, target, startedAt: performance.now(), duration: 1 };
+    return;
+  }
+  trackingMotion = {
+    current,
+    from: current,
+    target,
+    startedAt: performance.now(),
+    duration: Math.max(900, Math.min(4200, distance * 100000)),
+  };
+}
+
+function markerPositionForTracking() {
+  const position = trackingVehicleMarker?.position;
+  if (!position) return null;
+  const lat = typeof position.lat === 'function' ? position.lat() : position.lat;
+  const lng = typeof position.lng === 'function' ? position.lng() : position.lng;
+  return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null;
+}
+
+function startTrackingAnimation() {
+  if (trackingAnimationStarted) return;
+  trackingAnimationStarted = true;
+  const frame = now => {
+    if (trackingVehicleMarker && trackingMotion?.target) {
+      const t = trackingMotion.duration <= 1 ? 1 : Math.min(1, (now - trackingMotion.startedAt) / trackingMotion.duration);
+      const eased = t < 1 ? 1 - Math.pow(1 - t, 3) : 1;
+      trackingMotion.current = {
+        lat: trackingMotion.from.lat + (trackingMotion.target.lat - trackingMotion.from.lat) * eased,
+        lng: trackingMotion.from.lng + (trackingMotion.target.lng - trackingMotion.from.lng) * eased,
+      };
+      trackingVehicleMarker.position = trackingMotion.current;
+    }
+    requestAnimationFrame(frame);
+  };
+  requestAnimationFrame(frame);
 }
 
 async function fetchTrackingEta() {

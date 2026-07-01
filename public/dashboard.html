@@ -20,7 +20,7 @@
       gap: 8px;
       padding: 8px 14px;
       /* total height = viewport minus navbar */
-      height: calc(100vh - var(--nav-height));
+      height: calc(100dvh - var(--nav-height));
       overflow: hidden;
     }
 
@@ -65,10 +65,11 @@
     /* ── Row 2: mesh workspace — flex fill ── */
     .mesh-workspace {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 400px;
+      grid-template-columns: minmax(0, 1fr) clamp(340px, 24vw, 440px);
       gap: 8px;
       /* fill all remaining space between stat cards and bottom table */
       flex: 1 1 0;
+      min-width: 0;
       min-height: 0;
     }
 
@@ -76,14 +77,14 @@
     .mesh-workspace > .card:first-child {
       display: flex;
       flex-direction: column;
+      min-width: 0;
       min-height: 0;
       overflow: hidden;
     }
 
     .mesh-canvas-wrap {
-      flex: 0 0 clamp(240px, 34vh, 320px);
-      min-height: 240px;
-      max-height: 320px;
+      flex: 1 1 auto;
+      min-height: 260px;
       padding: 8px;
       overflow: hidden;
     }
@@ -105,6 +106,7 @@
       border-top: 1px solid var(--color-border);
       background: #fff;
       flex: 0 0 auto;
+      min-height: 42px;
     }
 
     .graph-legend {
@@ -135,13 +137,14 @@
     .mesh-side-panel {
       display: flex;
       flex-direction: column;
+      min-width: 0;
       min-height: 0;
       overflow: hidden;
     }
 
     /* Distance table section — half of side panel height */
     .mesh-side-panel .table-wrap {
-      flex: 1 1 0;
+      flex: 0 0 clamp(118px, 38%, 190px);
       min-height: 0;
       overflow-y: auto;
     }
@@ -176,7 +179,25 @@
       font-size: 11px;
     }
 
+    .node-row {
+      width: 100%;
+      text-align: left;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    .node-row.selected {
+      border-color: var(--color-primary);
+      background: var(--color-primary-50);
+    }
+
     .network-detail-row { grid-template-columns: 1fr auto; }
+    .network-detail-row strong {
+      min-width: 0;
+      max-width: 220px;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
 
     .node-dot {
       width: 9px;
@@ -218,7 +239,8 @@
 
     /* ── Row 3: connectivity table — fixed 180px ── */
     .dashboard-connectivity {
-      flex: 0 0 180px;
+      flex: 0 0 clamp(170px, 23vh, 230px);
+      min-width: 0;
       min-height: 0;
       display: flex;
       flex-direction: column;
@@ -296,7 +318,8 @@
         overflow-y: visible;
       }
       .mesh-canvas-wrap {
-        min-height: 380px;
+        flex: none;
+        min-height: 360px;
       }
       #mesh-graph-canvas {
         height: 340px;
@@ -309,7 +332,7 @@
         gap: 8px;
       }
       .mesh-canvas-wrap {
-        min-height: 320px;
+        min-height: 300px;
       }
       #mesh-graph-canvas {
         height: 280px;

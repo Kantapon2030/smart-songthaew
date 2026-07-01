@@ -6,6 +6,20 @@
  */
 'use strict';
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[char]));
+}
+
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, '&#96;');
+}
+
 // ── Route Editor Variables ───────────────────────────────────────────
 let routeEditorMap = null;
 let routeWaypoints = [];
@@ -1045,6 +1059,7 @@ async function loadFleet() {
       const routeName = routeNames[v.routeId] || (v.routeId === 'unassigned' ? '—' : v.routeId);
       const bat = v.current?.battery >= 0 ? v.current.battery : null;
       const spd = v.current?.speed ?? '--';
+      const plate = v.plate || v.current?.plate || '';
       const routeOpts = ['<option value="unassigned">— ยังไม่กำหนด —</option>',
         ...Object.entries(routes).map(([rid, r]) =>
           `<option value="${rid}"${v.routeId===rid?' selected':''}>${r.name}</option>`)
@@ -1053,7 +1068,8 @@ async function loadFleet() {
         <div style="background:var(--slate-50);border:1px solid var(--slate-200);border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
           <div style="width:38px;height:38px;border-radius:50%;background:${online?'#ECFDF5':'#F1F5F9'};border:2px solid ${online?'#059669':'#CBD5E1'};display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0;">🚐</div>
           <div style="flex:1;min-width:140px;">
-            <div style="font-weight:700;font-family:'IBM Plex Mono',monospace;font-size:.85rem;">${id}</div>
+            <div style="font-weight:700;font-family:'IBM Plex Mono',monospace;font-size:.85rem;">${escapeHtml(id)}</div>
+            <div style="font-size:.68rem;color:var(--slate-500);font-family:'IBM Plex Mono',monospace;">Plate: ${plate ? escapeHtml(plate) : '-'}</div>
             <div style="font-size:.68rem;color:var(--slate-400);">
               ${online ? '<span style="color:#059669;font-weight:700;">● Online</span>' : '<span style="color:#94A3B8;">○ Offline</span>'}
               ${bat !== null ? ` · 🔋${bat}%` : ''} · ⚡${spd}km/h
@@ -1064,6 +1080,7 @@ async function loadFleet() {
             <select onchange="changeVehicleRoute('${id}',this.value)" style="padding:5px 8px;border:1px solid var(--slate-200);border-radius:7px;font-family:'Sarabun',sans-serif;font-size:.72rem;">
               ${routeOpts}
             </select>
+            <input value="${escapeAttr(plate)}" onchange="changeVehiclePlate('${id}',this.value)" placeholder="Plate" style="width:110px;padding:5px 8px;border:1px solid var(--slate-200);border-radius:7px;font-family:'IBM Plex Mono',monospace;font-size:.72rem;">
             <button onclick="deleteVehicle('${id}')" class="btn btn-danger" style="padding:4px 10px;font-size:.7rem;">🗑</button>
           </div>
         </div>`;
@@ -1085,6 +1102,20 @@ async function changeVehicleRoute(vehicleId, routeId) {
   } catch (e) { addLog('err', e.message); }
 }
 
+async function changeVehiclePlate(vehicleId, plate) {
+  try {
+    const res = await authFetch(`/api/fleet/${vehicleId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ plate: String(plate || '').trim() }),
+    });
+    if (!res) return;
+    const body = await res.json();
+    if (body.ok) { addLog('ok', `${vehicleId} plate updated`); loadFleet(); }
+    else addLog('err', body.error);
+  } catch (e) { addLog('err', e.message); }
+}
+
 async function deleteVehicle(vehicleId) {
   if (!confirm(`ลบรถ "${vehicleId}" ออกจากระบบ?`)) return;
   try {
@@ -1098,6 +1129,7 @@ async function deleteVehicle(vehicleId) {
 
 // ── Register Vehicle Modal ────────────────────────────────────
 async function openRegisterVehicle() {
+  ensureRegisterPlateField();
   // โหลด route list ไปใส่ใน select
   const sel = document.getElementById('reg-route-id');
   if (sel) {
@@ -1111,6 +1143,22 @@ async function openRegisterVehicle() {
   if (modal) modal.style.display = 'flex';
   const inp = document.getElementById('reg-vehicle-id');
   if (inp) { inp.value = ''; inp.focus(); }
+  const plateInp = document.getElementById('reg-plate');
+  if (plateInp) plateInp.value = '';
+}
+
+function ensureRegisterPlateField() {
+  if (document.getElementById('reg-plate')) return;
+  const descriptionInput = document.getElementById('reg-description');
+  const anchor = descriptionInput?.closest('.admin-form-row');
+  if (!anchor) return;
+  const row = document.createElement('div');
+  row.className = 'admin-form-row';
+  row.innerHTML = `
+    <label class="admin-label">ป้ายทะเบียน</label>
+    <input class="admin-input" id="reg-plate" placeholder="เช่น: กข 1234"/>
+  `;
+  anchor.before(row);
 }
 
 function closeRegisterVehicle() {
@@ -1123,6 +1171,7 @@ async function registerVehicle() {
   const routeId     = document.getElementById('reg-route-id')?.value || 'unassigned';
   const description = document.getElementById('reg-description')?.value.trim() || '';
   const type        = document.getElementById('reg-type')?.value || 'real';
+  const plate       = document.getElementById('reg-plate')?.value.trim() || '';
 
   if (!vehicleId) { alert('กรุณาระบุ Vehicle ID'); return; }
   addLog('info', `กำลังลงทะเบียน ${vehicleId}...`);
@@ -1130,7 +1179,7 @@ async function registerVehicle() {
     const res  = await authFetch('/api/fleet/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ vehicleId, routeId, description, type }),
+      body: JSON.stringify({ vehicleId, routeId, description, type, plate }),
     });
     if (!res) return;
     const body = await res.json();
