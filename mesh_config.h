@@ -5,10 +5,16 @@
 #ifndef MESH_CONFIG_H
 #define MESH_CONFIG_H
 
-// Ground station location
+// Ground station location (can be overridden in songthaew_secrets.h)
+#ifndef GROUND_LAT
 #define GROUND_LAT    8.4304
+#endif
+#ifndef GROUND_LNG
 #define GROUND_LNG    99.9631
+#endif
+#ifndef GROUND_ID
 #define GROUND_ID     "GROUND_01"
+#endif
 
 // Vehicles
 #define VEHICLE_ID_LIST { "BUS_01", "BUS_02", "BUS_03", "BUS_04", "BUS_05", "BUS_06", "BUS_07", "BUS_08", "BUS_09", "BUS_10" }

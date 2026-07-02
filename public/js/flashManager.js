@@ -384,6 +384,15 @@
     }[status] || status || 'Not configured';
   }
 
+  function groundStationLabel() {
+    const ground = window.SYS?.groundStation || {};
+    const id = ground.id || 'GROUND_01';
+    const lat = Number(ground.lat);
+    const lng = Number(ground.lng);
+    const coord = Number.isFinite(lat) && Number.isFinite(lng) ? `${lat.toFixed(5)}, ${lng.toFixed(5)}` : 'default location';
+    return `<strong>${htmlEscape(id)}</strong><small>${htmlEscape(coord)}</small>`;
+  }
+
   function renderBoards() {
     const body = document.getElementById('flash-board-list');
     if (!body) return;
@@ -413,7 +422,7 @@
           </td>
           <td>
             ${board.boardType === 'ground'
-              ? '<span class="flash-muted">-</span>'
+              ? groundStationLabel()
               : `<input class="admin-input flash-id-input" list="flash-vehicle-ids" value="${htmlEscape(board.vehicleId || '')}" onchange="flashSetVehicleId('${board.portId}', this.value)" placeholder="Vehicle ID" />`
             }
           </td>

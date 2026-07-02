@@ -49,6 +49,11 @@ function applyConfigToUI(cfg) {
   document.getElementById('cfg-timeout').value            = cfg.offlineTimeout ?? 15;
   document.getElementById('cfg-timeout-val').textContent  = cfg.offlineTimeout ?? 15;
   document.getElementById('cfg-announcement').value       = cfg.announcement   ?? '';
+  const ground = cfg.groundStation || {};
+  if (document.getElementById('cfg-ground-id')) document.getElementById('cfg-ground-id').value = ground.id || 'GROUND_01';
+  if (document.getElementById('cfg-ground-label')) document.getElementById('cfg-ground-label').value = ground.label || 'Ground Station';
+  if (document.getElementById('cfg-ground-lat')) document.getElementById('cfg-ground-lat').value = ground.lat ?? 8.4304;
+  if (document.getElementById('cfg-ground-lng')) document.getElementById('cfg-ground-lng').value = ground.lng ?? 99.9631;
 
   const light     = document.getElementById('demo-light');
   const title     = document.getElementById('demo-state-title');
@@ -155,6 +160,12 @@ async function saveConfig() {
     routeName:      document.getElementById('cfg-route').value.trim(),
     offlineTimeout: parseInt(document.getElementById('cfg-timeout').value),
     announcement:   document.getElementById('cfg-announcement').value.trim(),
+    groundStation: {
+      id:    document.getElementById('cfg-ground-id')?.value.trim() || 'GROUND_01',
+      label: document.getElementById('cfg-ground-label')?.value.trim() || 'Ground Station',
+      lat:   Number(document.getElementById('cfg-ground-lat')?.value),
+      lng:   Number(document.getElementById('cfg-ground-lng')?.value),
+    },
   };
   try {
     await authFetch('/api/config', {

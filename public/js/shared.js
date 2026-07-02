@@ -26,6 +26,7 @@ window.SYS = {
   routeName: 'นครศรีธรรมราช ↔ พรหมคีรี',
   offlineTimeout: 90,
   announcement: '',
+  groundStation: { id: 'GROUND_01', label: 'Ground Station', lat: 8.4304, lng: 99.9631 },
   updatedAt: null,
 };
 

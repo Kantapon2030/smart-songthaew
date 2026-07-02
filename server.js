@@ -211,6 +211,26 @@ function validLatLng(lat, lng) {
   );
 }
 
+const DEFAULT_GROUND_STATION = {
+  id: 'GROUND_01',
+  label: 'Ground Station',
+  lat: 8.4304,
+  lng: 99.9631,
+};
+
+function normalizeGroundStationConfig(value = {}) {
+  const lat = Number(value.lat);
+  const lng = Number(value.lng);
+  const id = String(value.id || DEFAULT_GROUND_STATION.id).trim().replace(/[^\w-]/g, '').slice(0, 40) || DEFAULT_GROUND_STATION.id;
+  const label = String(value.label || DEFAULT_GROUND_STATION.label).trim().slice(0, 80) || DEFAULT_GROUND_STATION.label;
+  return {
+    id,
+    label,
+    lat: validLatLng(lat, lng) ? lat : DEFAULT_GROUND_STATION.lat,
+    lng: validLatLng(lat, lng) ? lng : DEFAULT_GROUND_STATION.lng,
+  };
+}
+
 function normalizeCoordPoint(point) {
   const lat = Array.isArray(point) ? Number(point[0]) : Number(point?.lat);
   const lng = Array.isArray(point) ? Number(point[1]) : Number(point?.lng);
@@ -1702,6 +1722,7 @@ app.get('/api/config', async (req, res) => {
       routeName:      cfg.routeName      ?? 'Siam Square ↔ แยก Rama IV (ถ.อังรีดูนัง)',
       offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 90) ? cfg.offlineTimeout : 90,
       announcement:   cfg.announcement  ?? '',
+      groundStation:  normalizeGroundStationConfig(cfg.groundStation),
       updatedAt:      cfg.updatedAt      ?? null,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1713,6 +1734,9 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     const patch   = {};
     for (const k of allowed) {
       if (k in req.body) patch[k] = req.body[k];
+    }
+    if ('groundStation' in req.body) {
+      patch.groundStation = normalizeGroundStationConfig(req.body.groundStation);
     }
     patch.updatedAt = Date.now();
     await db.ref('system/config').update(patch);
@@ -1780,6 +1804,15 @@ function buildVehiclePairs(nodes) {
     }
   }
   return pairs;
+}
+
+function demoPointDirection(point, fallback = 'outbound') {
+  return point?.direction === 'inbound' ? 'inbound' : fallback;
+}
+
+function isSameDemoPoint(a, b, thresholdM = 8) {
+  if (!validLatLng(a?.lat, a?.lng) || !validLatLng(b?.lat, b?.lng)) return false;
+  return haversineDistanceMeters(a, b) <= thresholdM;
 }
 
 function demoRouteLengthMeters(coords = demoRouteCoords) {
@@ -1867,6 +1900,7 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   const t = stepsForCoord <= 1 ? 0 : subStep / stepsForCoord;
   const lat = coord.lat + (nextCoord.lat - coord.lat) * t;
   const lng = coord.lng + (nextCoord.lng - coord.lng) * t;
+  const direction = demoPointDirection(coord, demoPointDirection(nextCoord, 'outbound'));
   const wave = Math.sin(timestamp / 9000 + index * 1.7);
   const targetSpeed = ([31, 38, 45][index] + wave * 5) * _demoSpeedMultiplier;
   vehicle.speed = Math.max(8, Math.min(65, vehicle.speed + (targetSpeed - vehicle.speed) * 0.28));
@@ -1897,7 +1931,7 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
     routeId: _demoRouteId,
     route_id: _demoRouteId,
     demo: true,
-    direction: 'outbound',
+    direction,
     source: 'demo',
     battVoltage: Math.round(12400 + vehicle.battery * 7),
     currentMa: Math.round(420 + vehicle.speed * 9),
@@ -2005,18 +2039,53 @@ function normalizeDemoRouteCoords(coords = []) {
   return { coords: normalized, format };
 }
 
-function findDemoRouteWithCoords(routes) {
+function appendDemoDirectionCoords(target, coords, direction) {
+  coords.forEach(point => {
+    const next = { lat: point.lat, lng: point.lng, direction };
+    const previous = target[target.length - 1];
+    if (!previous || !isSameDemoPoint(previous, next)) target.push(next);
+  });
+}
+
+function buildDemoRoutePath(route = {}) {
+  const outboundRaw = Array.isArray(route?.directions?.outbound?.coords)
+    ? route.directions.outbound.coords
+    : Array.isArray(route?.coords)
+      ? route.coords
+      : [];
+  const inboundRaw = Array.isArray(route?.directions?.inbound?.coords)
+    ? route.directions.inbound.coords
+    : [];
+  const outbound = normalizeDemoRouteCoords(outboundRaw);
+  const inbound = normalizeDemoRouteCoords(inboundRaw);
+  const fallbackInbound = outbound.coords.length > 1 ? [...outbound.coords].reverse() : [];
+  const path = [];
+  appendDemoDirectionCoords(path, outbound.coords, 'outbound');
+  appendDemoDirectionCoords(path, inbound.coords.length > 1 ? inbound.coords : fallbackInbound, 'inbound');
+  return {
+    coords: path,
+    format: inbound.coords.length > 1
+      ? `${outbound.format}+${inbound.format}`
+      : `${outbound.format}+reverse-outbound`,
+    outboundCount: outbound.coords.length,
+    inboundCount: inbound.coords.length > 1 ? inbound.coords.length : fallbackInbound.length,
+    hasInbound: inbound.coords.length > 1,
+  };
+}
+
+function findDemoRouteWithCoords(routes, preferredRouteId = '') {
   const entries = Object.entries(routes || {});
+  const orderedEntries = preferredRouteId
+    ? [
+      ...entries.filter(([routeKey, route]) => [routeKey, route?.id, route?.route_id, route?.routeId].includes(preferredRouteId)),
+      ...entries.filter(([routeKey, route]) => ![routeKey, route?.id, route?.route_id, route?.routeId].includes(preferredRouteId)),
+    ]
+    : entries;
   console.log(`[DEMO] Scanning ${entries.length} Firebase routes for coords length > 5`);
-  for (const [routeKey, route] of entries) {
-    const rawCoords = Array.isArray(route?.directions?.outbound?.coords)
-      ? route.directions.outbound.coords
-      : Array.isArray(route?.coords)
-        ? route.coords
-        : [];
-    const normalized = normalizeDemoRouteCoords(rawCoords);
+  for (const [routeKey, route] of orderedEntries) {
+    const normalized = buildDemoRoutePath(route);
     const routeId = route?.id || route?.route_id || route?.routeId || routeKey;
-    console.log(`[DEMO] route candidate routeId=${routeId} rawCoords=${rawCoords.length} validCoords=${normalized.coords.length} format=${normalized.format}`);
+    console.log(`[DEMO] route candidate routeId=${routeId} outbound=${normalized.outboundCount} inbound=${normalized.inboundCount} validPath=${normalized.coords.length} format=${normalized.format} hasInbound=${normalized.hasInbound}`);
     if (normalized.coords.length > 5) {
       console.log(`[DEMO] selected routeId=${routeId} coordCount=${normalized.coords.length} firstCoord=${JSON.stringify(normalized.coords[0])}`);
       console.log(`[DEMO] normalized first3=${normalized.coords.slice(0, 3).map(point => `${point.lat},${point.lng}`).join(' | ')}`);
@@ -2026,15 +2095,16 @@ function findDemoRouteWithCoords(routes) {
   return null;
 }
 
-async function startDemoFleet() {
+async function startDemoFleet(options = {}) {
   const [routesSnap, configSnap] = await Promise.all([
     db.ref('routes').once('value'),
     db.ref('system/config').once('value'),
   ]);
   const routes = routesSnap.val() || {};
   const config = configSnap.val() || {};
-  console.log(`[DEMO] startDemoFleet demoRouteIdConfig=${config.demoRouteId || '-'} assumption=routes is object keyed by routeId; coords may be [lat,lng] or {lat,lng}`);
-  const selected = findDemoRouteWithCoords(routes);
+  const preferredRouteId = String(options.routeId || config.demoRouteId || '').trim();
+  console.log(`[DEMO] startDemoFleet demoRouteIdConfig=${config.demoRouteId || '-'} requested=${preferredRouteId || '-'} assumption=routes is object keyed by routeId; coords may be [lat,lng] or {lat,lng}`);
+  const selected = findDemoRouteWithCoords(routes, preferredRouteId);
   if (selected) {
     const routeId = selected.route.id || selected.route.route_id || selected.route.routeId || selected.routeKey;
     demoRouteCoords = selected.normalized.coords;
@@ -2042,10 +2112,13 @@ async function startDemoFleet() {
     _demoRouteCoordSource = 'firebase';
     _demoRouteId = routeId;
   } else {
-    demoRouteCoords = DEMO_FALLBACK_COORDS.map(point => ({ ...point }));
-    _demoRouteCoordFormat = 'object-lat-lng';
+    const fallbackPath = [];
+    appendDemoDirectionCoords(fallbackPath, DEMO_FALLBACK_COORDS, 'outbound');
+    appendDemoDirectionCoords(fallbackPath, [...DEMO_FALLBACK_COORDS].reverse(), 'inbound');
+    demoRouteCoords = fallbackPath;
+    _demoRouteCoordFormat = 'object-lat-lng+reverse-outbound';
     _demoRouteCoordSource = 'fallback';
-    _demoRouteId = config.demoRouteId || _demoRouteId;
+    _demoRouteId = preferredRouteId || _demoRouteId;
     console.error('[DEMO] Using fallback hardcoded route');
     console.log(`[DEMO] selected fallback routeId=${_demoRouteId} coordCount=${demoRouteCoords.length} firstCoord=${JSON.stringify(demoRouteCoords[0])}`);
     console.log(`[DEMO] normalized first3=${demoRouteCoords.slice(0, 3).map(point => `${point.lat},${point.lng}`).join(' | ')}`);
@@ -2059,8 +2132,9 @@ async function startDemoFleet() {
 
 app.post('/api/demo/start', authMiddleware, async (req,res)=>{
   try {
-    console.log(`[DEMO] POST /api/demo/start requestedRoute=${req.body?.routeId || req.body?.route_id || '-'}`);
-    await startDemoFleet();
+    const requestedRoute = req.body?.routeId || req.body?.route_id || '';
+    console.log(`[DEMO] POST /api/demo/start requestedRoute=${requestedRoute || '-'}`);
+    await startDemoFleet({ routeId: requestedRoute });
     return res.json({ ok: true, vehicles: 3, routeId: _demoRouteId, ids: DEMO_IDS, coords: demoRouteCoords.length, coordFormat: _demoRouteCoordFormat, coordSource: _demoRouteCoordSource });
   } catch (error) {
     console.error('[DEMO] start failed:', error);
@@ -2093,6 +2167,10 @@ app.get('/api/demo/status', async (req,res)=>{
       demoMode,
       vehicles: DEMO_IDS,
       ids: DEMO_IDS,
+      routeId: _demoRouteId,
+      coords: demoRouteCoords.length,
+      coordFormat: _demoRouteCoordFormat,
+      coordSource: _demoRouteCoordSource,
       lastTickAt: _demoLastTickAt,
       lastTickAgeMs: _demoLastTickAt ? Date.now() - _demoLastTickAt : null,
       lastError: _demoLastError,
@@ -2547,16 +2625,14 @@ app.get('/api/v1/network', async (req, res) => {
     const fleetData = fleetSnap.val() || {};
     const sysConfig = configSnap.val() || {};
     const demoMode = sysConfig.demoMode === true;
-    const configuredGroundStation = sysConfig.groundStation || {};
-    const configuredLat = Number(configuredGroundStation.lat);
-    const configuredLng = Number(configuredGroundStation.lng);
+    const configuredGroundStation = normalizeGroundStationConfig(sysConfig.groundStation);
     const groundStation = {
-      id: 'GROUND_01',
+      id: configuredGroundStation.id,
       type: 'ground_station',
-      lat: configuredGroundStation.lat != null && configuredGroundStation.lat !== '' && Number.isFinite(configuredLat) ? configuredLat : 8.4304,
-      lng: configuredGroundStation.lng != null && configuredGroundStation.lng !== '' && Number.isFinite(configuredLng) ? configuredLng : 99.9631,
+      lat: configuredGroundStation.lat,
+      lng: configuredGroundStation.lng,
       status: 'online',
-      label: configuredGroundStation.label || 'Ground Station'
+      label: configuredGroundStation.label
     };
     const offlineTimeoutMs = Math.max(90, Number(sysConfig.offlineTimeout) || 90) * 1000;
     const nodes = Object.entries(fleetData)

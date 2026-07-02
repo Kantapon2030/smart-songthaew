@@ -23,12 +23,12 @@
 #include <LoRa.h>
 #include <SPI.h>
 #include <WiFiClientSecure.h>
-#include "mesh_config.h"
 #if __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
 #else
 #error "Create songthaew_secrets.h from songthaew_secrets.example.h before flashing."
 #endif
+#include "mesh_config.h"
 
 struct BufferedPacket {
   String body;
