@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Smart Songthaew — ประวัติและวิเคราะห์รถ</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="/css/style.css"/>
+  <style>
+    html, body { height: 100%; overflow: hidden; }
+    body[data-page="history"] { background: var(--color-background); }
+    .history-shell {
+      height: calc(100dvh - var(--nav-height));
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 8px;
+      padding: 8px 12px;
+    }
+    .history-controls {
+      display: grid;
+      grid-template-columns: 150px minmax(180px, 260px) 110px 110px auto auto 1fr;
+      gap: 8px;
+      align-items: center;
+    }
+    .history-workspace {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(430px, 48%);
+      gap: 8px;
+    }
+    .history-map-card { min-height: 0; overflow: hidden; }
+    #history-map { width: 100%; height: 100%; min-height: 420px; }
+    .history-panel {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 180px 120px minmax(0, 1fr);
+      gap: 8px;
+    }
+    .history-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .history-chart-card { min-height: 0; }
+    .history-chart { height: 100%; min-height: 0; position: relative; }
+    .history-table-card {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+    }
+    .history-table-card .table-wrap { min-height: 0; overflow: auto; }
+    .history-table-card tr { cursor: pointer; }
+    .table-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 6px 10px;
+      border-top: 1px solid var(--color-border);
+    }
+    .history-status {
+      justify-self: end;
+      color: var(--color-muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    @media (max-width: 1100px) {
+      html, body { overflow: auto; }
+      .history-shell { height: auto; }
+      .history-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .history-status { justify-self: start; grid-column: 1 / -1; }
+      .history-workspace { grid-template-columns: 1fr; }
+      .history-map-card { height: 52dvh; }
+      .history-panel { grid-template-rows: auto 220px 160px minmax(360px, auto); }
+    }
+    @media (max-width: 720px) {
+      .history-controls,
+      .history-summary { grid-template-columns: 1fr; }
+      .history-shell { padding: 8px 10px; }
+    }
+  </style>
+</head>
+<body data-page="history">
+  <div id="navbar-root"></div>
+  <main class="history-shell">
+    <section class="card">
+      <div class="card-body history-controls">
+        <input id="history-date" class="form-control" type="date" aria-label="วันที่"/>
+        <select id="history-vehicle" class="select-control" aria-label="รถ"></select>
+        <input id="history-from" class="form-control" type="time" aria-label="จากเวลา"/>
+        <input id="history-to" class="form-control" type="time" aria-label="ถึงเวลา"/>
+        <button id="history-search" class="button primary" type="button">ค้นหา</button>
+        <button id="history-export" class="button ghost" type="button">Export CSV</button>
+        <div id="history-status" class="history-status">พร้อมใช้งาน</div>
+      </div>
+    </section>
+
+    <section class="history-workspace">
+      <section class="history-map-card card">
+        <div id="history-map" class="map-canvas"></div>
+      </section>
+
+      <section class="history-panel">
+        <div class="history-summary">
+          <div class="metric-card"><div class="metric-content"><div class="metric-label">ระยะทางรวม</div><div id="summary-distance" class="metric-value">—</div></div></div>
+          <div class="metric-card"><div class="metric-content"><div class="metric-label">ความเร็วเฉลี่ย</div><div id="summary-speed" class="metric-value">—</div></div></div>
+          <div class="metric-card"><div class="metric-content"><div class="metric-label">เวลาออนไลน์</div><div id="summary-online" class="metric-value">—</div></div></div>
+          <div class="metric-card"><div class="metric-content"><div class="metric-label">แบตเตอรี่ล่าสุด</div><div id="summary-battery" class="metric-value">—</div></div></div>
+        </div>
+
+        <div class="card history-chart-card">
+          <div class="card-header"><h1 class="card-title">ความเร็ว</h1></div>
+          <div class="card-body history-chart"><canvas id="speed-chart"></canvas></div>
+        </div>
+
+        <div class="card history-chart-card">
+          <div class="card-header"><h1 class="card-title">แบตเตอรี่</h1></div>
+          <div class="card-body history-chart"><canvas id="battery-chart"></canvas></div>
+        </div>
+
+        <div class="card history-table-card">
+          <div class="card-header">
+            <h1 class="card-title">ข้อมูลย้อนหลัง</h1>
+            <input id="history-filter" class="search-control" type="search" placeholder="กรองข้อมูล" style="max-width:180px;"/>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>รถ</th>
+                  <th>เวลา</th>
+                  <th>ความเร็ว</th>
+                  <th>แบตเตอรี่</th>
+                  <th>RSSI</th>
+                  <th>Hop</th>
+                  <th>ทิศทาง</th>
+                  <th>พิกัด</th>
+                </tr>
+              </thead>
+              <tbody id="history-table-body"></tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <span id="history-page-label" class="metric-sub">—</span>
+            <div style="display:flex;gap:8px;">
+              <button id="history-prev" class="button ghost" type="button">ก่อนหน้า</button>
+              <button id="history-next" class="button ghost" type="button">ถัดไป</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/js/shared.js"></script>
+  <script src="/js/history.js"></script>
+</body>
+</html>

@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>เกี่ยวกับ VIBE — Smart Songthaew</title>
+  <meta name="description" content="VIBE (Vehicle Information Broadcast Exchange) — ระบบเครือข่ายกระจายและแลกเปลี่ยนข้อมูลยานพาหนะผ่าน LoRa Mesh โดยไม่ต้องซิมทุกคัน"/>
+  <link rel="stylesheet" href="/css/style.css"/>
+  <style>
+    body[data-page="about"] {
+      background: var(--color-background);
+    }
+
+    .about-shell {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px 16px 60px;
+    }
+
+    /* ── HERO ── */
+    .vibe-hero {
+      text-align: center;
+      padding: 48px 24px 36px;
+      background: linear-gradient(135deg, #0a2e24 0%, #0d3b2e 40%, #0f2d42 100%);
+      border-radius: var(--radius-card);
+      margin-bottom: 28px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .vibe-hero::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        radial-gradient(circle at 20% 50%, rgba(29,158,117,0.15) 0%, transparent 50%),
+        radial-gradient(circle at 80% 20%, rgba(29,158,117,0.10) 0%, transparent 40%);
+      animation: pulse-bg 4s ease-in-out infinite alternate;
+    }
+
+    @keyframes pulse-bg {
+      from { opacity: 0.7; }
+      to   { opacity: 1; }
+    }
+
+    .vibe-hero-content { position: relative; z-index: 1; }
+
+    .vibe-wordmark {
+      font-size: clamp(56px, 10vw, 88px);
+      font-weight: 900;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #1D9E75, #4ecdc4, #a8edea);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      line-height: 1;
+      margin-bottom: 8px;
+    }
+
+    .vibe-fullname {
+      font-size: 15px;
+      font-weight: 700;
+      color: rgba(255,255,255,0.9);
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .vibe-thai-name {
+      font-size: 13px;
+      color: rgba(255,255,255,0.6);
+      margin-bottom: 20px;
+    }
+
+    .vibe-tagline {
+      font-size: 18px;
+      font-weight: 800;
+      color: #fff;
+      margin-bottom: 4px;
+    }
+
+    .vibe-tagline-thai {
+      font-size: 13px;
+      color: rgba(255,255,255,0.65);
+      margin-bottom: 20px;
+    }
+
+    .hero-mode-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .hero-mode-badge.estimated {
+      background: rgba(217,119,6,0.2);
+      color: #fbbf24;
+      border: 1px solid rgba(217,119,6,0.3);
+    }
+
+    .hero-mode-badge.telemetry {
+      background: rgba(22,163,74,0.2);
+      color: #4ade80;
+      border: 1px solid rgba(22,163,74,0.3);
+    }
+
+    .hero-mode-badge::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: blink 1.4s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 1; }
+      50%       { opacity: 0.3; }
+    }
+
+    /* ── Section headings ── */
+    .section-title {
+      font-size: 14px;
+      font-weight: 900;
+      color: var(--color-text);
+      letter-spacing: 0.02em;
+      margin: 0 0 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .section-title::before {
+      content: '';
+      display: block;
+      width: 4px;
+      height: 18px;
+      background: linear-gradient(to bottom, #1D9E75, #0d9488);
+      border-radius: 2px;
+      flex: 0 0 auto;
+    }
+
+    .about-section {
+      background: var(--color-card);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      box-shadow: var(--shadow-card);
+      padding: 20px;
+      margin-bottom: 16px;
+      animation: fade-up 0.4s ease both;
+    }
+
+    @keyframes fade-up {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .about-section:nth-child(2) { animation-delay: 0.05s; }
+    .about-section:nth-child(3) { animation-delay: 0.10s; }
+    .about-section:nth-child(4) { animation-delay: 0.15s; }
+    .about-section:nth-child(5) { animation-delay: 0.20s; }
+    .about-section:nth-child(6) { animation-delay: 0.25s; }
+    .about-section:nth-child(7) { animation-delay: 0.30s; }
+
+    /* ── Problem Cards ── */
+    .problem-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .problem-card {
+      padding: 14px;
+      background: var(--color-soft);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      text-align: center;
+    }
+
+    .problem-icon { font-size: 28px; margin-bottom: 8px; }
+
+    .problem-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--color-text);
+      margin-bottom: 4px;
+    }
+
+    .problem-desc {
+      font-size: 11px;
+      color: var(--color-muted);
+      line-height: 1.5;
+    }
+
+    /* ── Flow Diagram ── */
+    .flow-diagram {
+      display: flex;
+      align-items: center;
+      gap: 0;
+      overflow-x: auto;
+      padding: 16px 8px;
+      margin-bottom: 12px;
+      scrollbar-width: thin;
+    }
+
+    .flow-node {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      flex: 0 0 auto;
+    }
+
+    .flow-node-circle {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 13px;
+      color: #fff;
+      border: 2px solid rgba(255,255,255,0.3);
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+      transition: transform 0.2s;
+    }
+
+    .flow-node:hover .flow-node-circle { transform: scale(1.1); }
+
+    .flow-node-circle.vehicle { background: linear-gradient(135deg, #1D9E75, #0d9488); }
+    .flow-node-circle.station { background: linear-gradient(135deg, #2563eb, #1d4ed8); }
+    .flow-node-circle.cloud   { background: linear-gradient(135deg, #7c3aed, #5b21b6); }
+
+    .flow-node-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--color-muted);
+      text-align: center;
+      white-space: nowrap;
+    }
+
+    .flow-arrow {
+      flex: 0 0 auto;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0 4px;
+      padding-bottom: 20px;
+    }
+
+    .flow-arrow-line {
+      width: 32px;
+      height: 2px;
+      background: linear-gradient(to right, #1D9E75, #0d9488);
+      position: relative;
+      animation: flow-pulse 1.8s ease-in-out infinite;
+    }
+
+    @keyframes flow-pulse {
+      0%, 100% { opacity: 0.5; }
+      50%       { opacity: 1; }
+    }
+
+    .flow-arrow-line::after {
+      content: '';
+      position: absolute;
+      right: -5px;
+      top: -4px;
+      border: 5px solid transparent;
+      border-left-color: #0d9488;
+    }
+
+    .flow-arrow-label {
+      font-size: 9px;
+      font-weight: 700;
+      color: #1D9E75;
+      margin-top: 4px;
+      letter-spacing: 0.03em;
+    }
+
+    .flow-caption {
+      font-size: 11px;
+      color: var(--color-muted);
+      text-align: center;
+      line-height: 1.6;
+      padding: 10px 16px;
+      background: var(--color-soft);
+      border-radius: var(--radius-control);
+    }
+
+    /* ── Concepts Grid ── */
+    .concepts-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+    }
+
+    @media (max-width: 600px) {
+      .concepts-grid { grid-template-columns: 1fr; }
+    }
+
+    .concept-card {
+      padding: 14px;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+      background: #fff;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .concept-card:hover {
+      border-color: #1D9E75;
+      box-shadow: 0 0 0 3px rgba(29,158,117,0.08);
+    }
+
+    .concept-tag {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 800;
+      background: rgba(29,158,117,0.1);
+      color: #1D9E75;
+      margin-bottom: 6px;
+      border: 1px solid rgba(29,158,117,0.2);
+    }
+
+    .concept-title {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--color-text);
+      margin-bottom: 4px;
+    }
+
+    .concept-desc {
+      font-size: 11px;
+      color: var(--color-muted);
+      line-height: 1.5;
+    }
+
+    /* ── VIBE Predict Steps ── */
+    .predict-steps { display: grid; gap: 10px; }
+
+    .predict-step {
+      display: grid;
+      grid-template-columns: 32px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 12px;
+      background: var(--color-soft);
+      border-radius: var(--radius-card);
+      border: 1px solid var(--color-border);
+    }
+
+    .predict-step-num {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1D9E75, #0d9488);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 900;
+      font-size: 13px;
+      flex: 0 0 32px;
+    }
+
+    .predict-step-label {
+      font-size: 12px;
+      font-weight: 800;
+      color: var(--color-text);
+      margin-bottom: 2px;
+    }
+
+    .predict-step-desc {
+      font-size: 11px;
+      color: var(--color-muted);
+      line-height: 1.5;
+    }
+
+    .predict-result {
+      margin-top: 14px;
+      padding: 12px 14px;
+      background: linear-gradient(135deg, rgba(29,158,117,0.08), rgba(13,148,136,0.06));
+      border: 1px solid rgba(29,158,117,0.2);
+      border-radius: var(--radius-card);
+      text-align: center;
+    }
+
+    .predict-result strong {
+      font-size: 13px;
+      color: #1D9E75;
+      font-weight: 800;
+    }
+
+    /* ── Live Status ── */
+    .live-status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .live-stat {
+      text-align: center;
+      padding: 12px 8px;
+      background: var(--color-soft);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-card);
+    }
+
+    .live-stat-value {
+      font-size: 24px;
+      font-weight: 900;
+      color: var(--color-text);
+      line-height: 1;
+      margin-bottom: 4px;
+    }
+
+    .live-stat-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--color-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .live-refresh-note {
+      font-size: 10px;
+      color: var(--color-muted);
+      text-align: right;
+      margin-top: 6px;
+    }
+
+    /* ── Tech Specs Table ── */
+    .specs-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .specs-table tr:not(:last-child) td {
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .specs-table td {
+      padding: 8px 10px;
+      vertical-align: top;
+    }
+
+    .specs-table td:first-child {
+      width: 40%;
+      font-weight: 700;
+      color: var(--color-muted);
+      white-space: nowrap;
+    }
+
+    .specs-table td:last-child {
+      color: var(--color-text);
+      font-weight: 600;
+    }
+
+    .specs-table tr:hover td { background: var(--color-soft); }
+  </style>
+</head>
+<body data-page="about">
+  <div id="navbar-root"></div>
+
+  <main class="about-shell" id="about-main">
+
+    <!-- ── 1. HERO ── -->
+    <div class="vibe-hero">
+      <div class="vibe-hero-content">
+        <div class="vibe-wordmark">VIBE</div>
+        <div class="vibe-fullname">Vehicle Information Broadcast Exchange</div>
+        <div class="vibe-thai-name">ระบบเครือข่ายกระจายและแลกเปลี่ยนข้อมูลยานพาหนะ</div>
+        <div class="vibe-tagline">Every Vehicle Shares. Every Vehicle Connects.</div>
+        <div class="vibe-tagline-thai">รถทุกคันแบ่งปัน ทุกคันเชื่อมต่อ</div>
+        <span id="hero-mode-badge" class="hero-mode-badge estimated" aria-live="polite">กำลังโหลด...</span>
+      </div>
+    </div>
+
+    <!-- ── 2. THE PROBLEM ── -->
+    <section class="about-section" aria-labelledby="problem-heading">
+      <h2 class="section-title" id="problem-heading">ปัญหาที่ VIBE แก้</h2>
+      <div class="problem-grid">
+        <div class="problem-card">
+          <div class="problem-icon" aria-hidden="true">💸</div>
+          <div class="problem-title">ต้นทุนซิม</div>
+          <div class="problem-desc">ติดซิมการ์ด 4G ทุกคันมีค่าใช้จ่ายรายเดือนสูง ไม่คุ้มค่าสำหรับรถสองแถวชนบท</div>
+        </div>
+        <div class="problem-card">
+          <div class="problem-icon" aria-hidden="true">📡</div>
+          <div class="problem-title">สัญญาณไม่สม่ำเสมอ</div>
+          <div class="problem-desc">พื้นที่ห่างไกลสัญญาณมือถือไม่เสถียร ทำให้ข้อมูล GPS หายหรือล่าช้า</div>
+        </div>
+        <div class="problem-card">
+          <div class="problem-icon" aria-hidden="true">🚌</div>
+          <div class="problem-title">รถขาดการเชื่อมต่อ</div>
+          <div class="problem-desc">รถที่ไม่มีซิมหรือสัญญาณหายไม่สามารถส่งข้อมูลตำแหน่งกลับศูนย์ควบคุมได้</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 3. HOW IT WORKS ── -->
+    <section class="about-section" aria-labelledby="how-heading">
+      <h2 class="section-title" id="how-heading">วิธีการทำงานของ VIBE</h2>
+
+      <div class="flow-diagram" role="img" aria-label="ไดอะแกรม LoRa Mesh: รถ A ส่งผ่าน LoRa ไปยัง รถ B แล้วต่อไปยัง รถ C แล้วต่อไปยัง สถานีฐาน แล้วผ่าน 4G ไปยัง Cloud">
+        <div class="flow-node">
+          <div class="flow-node-circle vehicle">A</div>
+          <div class="flow-node-label">รถ A</div>
+        </div>
+        <div class="flow-arrow">
+          <div class="flow-arrow-line"></div>
+          <div class="flow-arrow-label">LoRa</div>
+        </div>
+        <div class="flow-node">
+          <div class="flow-node-circle vehicle">B</div>
+          <div class="flow-node-label">รถ B</div>
+        </div>
+        <div class="flow-arrow">
+          <div class="flow-arrow-line"></div>
+          <div class="flow-arrow-label">LoRa</div>
+        </div>
+        <div class="flow-node">
+          <div class="flow-node-circle vehicle">C</div>
+          <div class="flow-node-label">รถ C</div>
+        </div>
+        <div class="flow-arrow">
+          <div class="flow-arrow-line"></div>
+          <div class="flow-arrow-label">LoRa</div>
+        </div>
+        <div class="flow-node">
+          <div class="flow-node-circle station">BS</div>
+          <div class="flow-node-label">สถานีฐาน</div>
+        </div>
+        <div class="flow-arrow">
+          <div class="flow-arrow-line" style="background:linear-gradient(to right,#2563eb,#1d4ed8);"></div>
+          <div class="flow-arrow-label" style="color:#2563eb;">4G</div>
+        </div>
+        <div class="flow-node">
+          <div class="flow-node-circle cloud">&#9729;</div>
+          <div class="flow-node-label">Cloud</div>
+        </div>
+      </div>
+
+      <div class="flow-caption">
+        รถแต่ละคันคือ <strong>node</strong> ในเครือข่าย ช่วยส่งต่อข้อมูลเป็นทอดๆ —
+        แม้รถ A ไม่มีสัญญาณ 4G ข้อมูลก็ยังถึง Cloud ผ่านรถ B หรือ C
+      </div>
+    </section>
+
+    <!-- ── 4. KEY CONCEPTS ── -->
+    <section class="about-section" aria-labelledby="concepts-heading">
+      <h2 class="section-title" id="concepts-heading">แนวคิดสำคัญของ VIBE</h2>
+      <div class="concepts-grid">
+        <div class="concept-card">
+          <span class="concept-tag">ADS-B Inspired</span>
+          <div class="concept-title">ได้แรงบันดาลใจจากการบิน</div>
+          <div class="concept-desc">ยืมแนวคิดจากระบบติดตามเครื่องบิน ADS-B ที่อากาศยานทุกลำกระจายข้อมูลตำแหน่งตัวเองออกมา แทนที่จะรอถูกเรดาร์ตรวจ</div>
+        </div>
+        <div class="concept-card">
+          <span class="concept-tag">Store-Carry-Forward</span>
+          <div class="concept-title">เก็บ · พา · ส่ง</div>
+          <div class="concept-desc">รถเก็บข้อมูลไว้ในหน่วยความจำก่อน เมื่อพบ node อื่นหรือสถานีฐานจึงส่งต่อทันที ไม่มีข้อมูลสูญหาย</div>
+        </div>
+        <div class="concept-card">
+          <span class="concept-tag">Shared State</span>
+          <div class="concept-title">รู้ข้อมูลของเพื่อนร่วมเส้นทาง</div>
+          <div class="concept-desc">รถทุกคันรับและกระจายข้อมูลของกันและกัน ทุกคันรู้ตำแหน่งและสถานะของเพื่อนในเครือข่ายเดียวกัน</div>
+        </div>
+        <div class="concept-card">
+          <span class="concept-tag">Hop Relay</span>
+          <div class="concept-title">ส่งต่อหลายทอดถึงสถานีฐาน</div>
+          <div class="concept-desc">ข้อมูลกระโดดข้ามรถได้สูงสุด 3 hop ก่อนถึงสถานีฐาน ขยายระยะครอบคลุมเครือข่ายโดยไม่เพิ่มต้นทุน</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 5. VIBE PREDICT ── -->
+    <section class="about-section" aria-labelledby="predict-heading">
+      <h2 class="section-title" id="predict-heading">VIBE Predict — AI ในระบบ</h2>
+      <p style="font-size:12px;color:var(--color-muted);margin-bottom:14px;">
+        <strong style="color:var(--color-text);">VIBE Predict</strong> คือ Route-Aware Prediction Engine ที่ทำงานอยู่เบื้องหลัง คำนวณ ETA จาก 3 ขั้นตอน:
+      </p>
+      <div class="predict-steps">
+        <div class="predict-step">
+          <div class="predict-step-num">1</div>
+          <div>
+            <div class="predict-step-label">Map Matching</div>
+            <div class="predict-step-desc">จับตำแหน่ง GPS ให้ติดถนนจริง ลดความคลาดเคลื่อนจาก multipath และ drift ของ GPS receiver</div>
+          </div>
+        </div>
+        <div class="predict-step">
+          <div class="predict-step-num">2</div>
+          <div>
+            <div class="predict-step-label">Kalman Filter</div>
+            <div class="predict-step-desc">ประมาณตำแหน่งและความเร็วเมื่อข้อมูลมาช้าหรือขาดหาย ทำให้ tracking ราบรื่นแม้ในพื้นที่สัญญาณอ่อน</div>
+          </div>
+        </div>
+        <div class="predict-step">
+          <div class="predict-step-num">3</div>
+          <div>
+            <div class="predict-step-label">Route Profile</div>
+            <div class="predict-step-desc">เรียนรู้ความเร็วเฉลี่ยของแต่ละช่วงถนนในเส้นทาง พร้อมปรับตามเวลาและสภาพจราจร</div>
+          </div>
+        </div>
+      </div>
+      <div class="predict-result">
+        <strong>ETA แม่นยำ พร้อมระดับความเชื่อมั่น (Confidence Score)</strong>
+      </div>
+    </section>
+
+    <!-- ── 6. LIVE NETWORK STATUS ── -->
+    <section class="about-section" aria-labelledby="live-heading">
+      <h2 class="section-title" id="live-heading">
+        สถานะเครือข่าย VIBE แบบเรียลไทม์
+        <span id="live-mode-badge" class="small-badge status-warning" style="margin-left:auto;" aria-live="polite">กำลังโหลด...</span>
+      </h2>
+      <div class="live-status-grid" id="live-status-grid">
+        <div class="live-stat">
+          <div class="live-stat-value" id="live-vehicles">—</div>
+          <div class="live-stat-label">รถออนไลน์</div>
+        </div>
+        <div class="live-stat">
+          <div class="live-stat-value" id="live-health">—</div>
+          <div class="live-stat-label">Mesh Health</div>
+        </div>
+        <div class="live-stat">
+          <div class="live-stat-value" id="live-links">—</div>
+          <div class="live-stat-label">Links Active</div>
+        </div>
+        <div class="live-stat">
+          <div class="live-stat-value" id="live-mode-text">—</div>
+          <div class="live-stat-label">Mode</div>
+        </div>
+      </div>
+      <div class="live-refresh-note" id="live-refresh-note">อัปเดตอัตโนมัติทุก 10 วินาที</div>
+    </section>
+
+    <!-- ── 7. TECHNICAL SPECS ── -->
+    <section class="about-section" aria-labelledby="specs-heading">
+      <h2 class="section-title" id="specs-heading">ข้อมูลทางเทคนิค</h2>
+      <table class="specs-table" aria-label="ข้อมูลทางเทคนิคของ VIBE">
+        <tbody>
+          <tr><td>Protocol</td><td>LoRa 915 / 923 MHz</td></tr>
+          <tr><td>ระยะทำการ</td><td>สูงสุด 15 กม. (line-of-sight)</td></tr>
+          <tr><td>อัตราส่งข้อมูล</td><td>ทุก 5 วินาที</td></tr>
+          <tr><td>Max Hop</td><td>3 hop</td></tr>
+          <tr><td>Hardware</td><td>ESP8266 + SX1276</td></tr>
+          <tr><td>Backend</td><td>Node.js + Firebase Realtime Database</td></tr>
+          <tr><td>AI Engine</td><td>VIBE Predict (Map Matching + Kalman Filter)</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </main>
+
+  <script src="/js/shared.js"></script>
+  <script>
+    'use strict';
+
+    renderSharedNavbar({ active: 'about' });
+
+    async function fetchNetworkStatus() {
+      try {
+        const data = await fetch('/api/v1/network').then(function(r) { return r.json(); });
+        var mode = data && data.mode ? data.mode : 'estimated';
+        var isLive = mode === 'telemetry' || mode === 'live';
+
+        var heroBadge = document.getElementById('hero-mode-badge');
+        if (heroBadge) {
+          heroBadge.className = 'hero-mode-badge ' + (isLive ? 'telemetry' : 'estimated');
+          heroBadge.textContent = isLive ? 'live telemetry' : 'estimated mode';
+        }
+
+        var liveBadge = document.getElementById('live-mode-badge');
+        if (liveBadge) {
+          liveBadge.className = 'small-badge ' + (isLive ? 'status-online' : 'status-warning');
+          liveBadge.textContent = isLive ? 'live telemetry' : 'estimated mode';
+        }
+
+        var vehicles = (data && data.vehicles_online != null) ? data.vehicles_online
+                     : (data && data.online != null) ? data.online : '—';
+        var health   = (data && data.mesh_health != null) ? data.mesh_health + '%' : '—';
+        var directL  = (data && data.direct_links != null) ? (data.direct_links || 0) : 0;
+        var relayL   = (data && data.relay_links != null)  ? (data.relay_links  || 0) : 0;
+        var links    = (data && (data.direct_links != null || data.relay_links != null))
+                       ? (directL + relayL) : '—';
+        var modeText = isLive ? 'Live' : 'Est.';
+
+        document.getElementById('live-vehicles').textContent  = vehicles;
+        document.getElementById('live-health').textContent    = health;
+        document.getElementById('live-links').textContent     = links;
+        document.getElementById('live-mode-text').textContent = modeText;
+
+        var note = document.getElementById('live-refresh-note');
+        if (note) { note.textContent = 'อัปเดตล่าสุด: ' + new Date().toLocaleTimeString('th-TH'); }
+      } catch (e) {
+        var heroBadge2 = document.getElementById('hero-mode-badge');
+        if (heroBadge2) {
+          heroBadge2.className = 'hero-mode-badge estimated';
+          heroBadge2.textContent = 'estimated mode';
+        }
+        var liveBadge2 = document.getElementById('live-mode-badge');
+        if (liveBadge2) {
+          liveBadge2.className = 'small-badge status-warning';
+          liveBadge2.textContent = 'estimated mode';
+        }
+      }
+    }
+
+    fetchNetworkStatus();
+    setInterval(fetchNetworkStatus, 10000);
+  </script>
+</body>
+</html>

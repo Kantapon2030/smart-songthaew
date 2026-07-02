@@ -2,6 +2,7 @@
 
 let opsFleet = {};
 let opsRoutes = [];
+let opsHistoryAnalytics = { vehicles: [], fleet: {} };
 let opsMap;
 let opsMarkers = [];
 let peakChart;
@@ -39,7 +40,10 @@ function switchSection(sectionId, clickedBtn) {
   if (sectionId === 'performance') renderPerfSection();
   if (sectionId === 'routes-sec') renderRoutesSection();
   if (sectionId === 'alerts-sec') renderFullAlerts();
-  if (sectionId === 'reports') renderReportsIllus();
+  if (sectionId === 'reports') {
+    renderReportsSummary();
+    renderReportsIllus();
+  }
 }
 
 /* ─────────────────────────────────────────
@@ -97,14 +101,16 @@ async function initOpsMapIfNeeded() {
 ───────────────────────────────────────── */
 async function refreshOperations() {
   try {
-    const [fleet, routePayload, peakHours, config] = await Promise.all([
+    const [fleet, routePayload, peakHours, config, historyAnalytics] = await Promise.all([
       fetch('/api/fleet').then(r => r.json()),
       fetchPassengerRoutes(),
       fetch('/api/analytics/peak-hours').then(r => r.ok ? r.json() : {}),
       fetch('/api/config').then(r => r.ok ? r.json() : {}),
+      fetchHistoryAnalyticsForReports(),
     ]);
     opsFleet = fleet || {};
     opsRoutes = normalizeRouteList(routePayload);
+    opsHistoryAnalytics = historyAnalytics || { vehicles: [], fleet: {} };
 
     renderOpsSummary();
     renderPeakHours(peakHours, 'peak-hours-chart');
@@ -113,11 +119,22 @@ async function refreshOperations() {
     renderAlerts();
     renderAnnouncementPanel(config);
     renderVehicleTable();
+    renderReportsSummary();
 
     // Refresh live map if visible
     if (document.getElementById('section-live')?.classList.contains('active')) renderOpsMap();
   } catch (error) {
     console.error('[operations]', error);
+  }
+}
+
+async function fetchHistoryAnalyticsForReports() {
+  try {
+    const response = await authFetch(`/api/history/analytics?date=${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })}`);
+    if (!response || !response.ok) return { vehicles: [], fleet: {} };
+    return response.json();
+  } catch (_) {
+    return { vehicles: [], fleet: {} };
   }
 }
 
@@ -479,6 +496,50 @@ function renderPerfSection() {
 /* ─────────────────────────────────────────
    Reports Section Illustration
 ───────────────────────────────────────── */
+function renderReportsSummary() {
+  const body = document.getElementById('reports-summary-body');
+  if (!body) return;
+
+  const rows = (opsHistoryAnalytics.vehicles || [])
+    .slice()
+    .sort((a, b) => Number(b.totalDistanceKm || 0) - Number(a.totalDistanceKm || 0));
+  const sub = document.getElementById('reports-summary-sub');
+  const fleet = opsHistoryAnalytics.fleet || {};
+
+  if (sub) {
+    sub.textContent = rows.length
+      ? `${rows.length} คัน • ${Number(fleet.totalDistanceKm || 0).toFixed(1)} กม. • ออนไลน์ ${Math.round(Number(fleet.onlineRatio || 0) * 100)}%`
+      : 'ยังไม่มีข้อมูลประวัติของวันนี้';
+  }
+
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="6" class="empty-state">ยังไม่มีข้อมูลประวัติของวันนี้</td></tr>';
+    return;
+  }
+
+  const date = opsHistoryAnalytics.date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+  body.innerHTML = rows.map(row => {
+    const battery = row.batteryEnd ?? row.batteryStart;
+    const href = `/history.html?vehicleId=${encodeURIComponent(row.vehicleId)}&date=${encodeURIComponent(date)}`;
+    return `
+      <tr>
+        <td><strong>${row.vehicleId}</strong></td>
+        <td>${Number(row.totalDistanceKm || 0).toFixed(1)} กม.</td>
+        <td>${Number(row.avgSpeed || 0).toFixed(1)} กม./ชม.</td>
+        <td>${formatOpsHistoryHours(row.activeHours)}</td>
+        <td>${battery != null ? `${battery}%` : '-'}</td>
+        <td><a class="button ghost" href="${href}" style="min-height:24px;">เปิด</a></td>
+      </tr>`;
+  }).join('');
+}
+
+function formatOpsHistoryHours(hours) {
+  const totalMinutes = Math.max(0, Math.round(Number(hours || 0) * 60));
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return h ? `${h} ชม. ${m} นาที` : `${m} นาที`;
+}
+
 function renderReportsIllus() {
   const el = document.getElementById('reports-illus');
   if (el && !el.innerHTML) el.innerHTML = songthaewIllusSvg(110, 55);

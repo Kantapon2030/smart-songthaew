@@ -538,6 +538,32 @@
         <div class="card-header" style="background:#fff;border:1px solid var(--color-border);border-radius:var(--radius-card);">
           <h1 class="card-title">รายงาน</h1>
         </div>
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h2 class="card-title">สรุปการใช้งานรถวันนี้</h2>
+              <div class="card-subtitle" id="reports-summary-sub">กำลังโหลดข้อมูลย้อนหลัง...</div>
+            </div>
+            <a class="button ghost" href="/history.html">ดูประวัติทั้งหมด</a>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>รถ</th>
+                  <th>ระยะทาง</th>
+                  <th>ความเร็วเฉลี่ย</th>
+                  <th>เวลาออนไลน์</th>
+                  <th>แบตเตอรี่</th>
+                  <th>รายละเอียด</th>
+                </tr>
+              </thead>
+              <tbody id="reports-summary-body">
+                <tr><td colspan="6" class="empty-state">กำลังโหลดข้อมูลย้อนหลัง...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
         <div class="report-grid">
           <div class="report-card">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" style="margin:0 auto 10px;color:var(--color-primary)"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Z" stroke="currentColor" stroke-width="1.8"/><path d="M14 3v6h6M8 13h8M8 17h5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>

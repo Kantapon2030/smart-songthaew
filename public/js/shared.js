@@ -520,8 +520,10 @@ function renderSharedNavbar(options = {}) {
         ${navLinkEl('/', 'หน้าหลัก', 'home', active)}
         ${navLinkEl('/routes.html', 'เส้นทาง', 'routes', active)}
         ${navLinkEl('/dashboard.html', 'Dashboard', 'dashboard', active)}
+        ${navLinkEl('/history.html', '\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34', 'history', active)}
         <button class="nav-link" id="nav-btn-announcements" type="button" aria-haspopup="dialog">ประกาศ</button>
         ${navLinkEl('/tracking.html', 'ประวัติการเดินทาง', 'tracking', active)}
+        ${navLinkEl('/about.html', 'เกี่ยวกับ VIBE', 'about', active)}
         <button class="nav-link" id="nav-btn-help" type="button" aria-haspopup="dialog">ช่วยเหลือ</button>
       </div>
       <div class="nav-actions">
@@ -603,6 +605,14 @@ function ensureModalsExist() {
               <a href="/admin.html" style="display:inline-flex;align-items:center;gap:6px;margin-top:10px;padding:7px 12px;background:var(--color-primary);color:#fff;border-radius:var(--radius-control);font-size:12px;font-weight:700;text-decoration:none;">
                 ${userSvg(14, '#fff')} เข้าสู่ระบบผู้ดูแล
               </a>
+            </div>
+          </div>
+          <div style="border-top:1px solid var(--color-border);padding-top:14px;margin-top:14px;">
+            <div style="font-size:12px;font-weight:800;color:var(--color-muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px;">เกี่ยวกับเทคโนโลยี VIBE</div>
+            <div style="padding:12px;background:linear-gradient(135deg,#0d2e24,#0f3a2e);border:1px solid rgba(29,158,117,0.3);border-radius:var(--radius-control);">
+              <div style="font-size:11px;font-weight:800;color:#1D9E75;margin-bottom:6px;">ขับเคลื่อนโดย VIBE Mesh Network</div>
+              <div style="font-size:11px;color:rgba(255,255,255,0.65);line-height:1.55;">VIBE (Vehicle Information Broadcast Exchange) ใช้ LoRa Mesh ให้รถทุกคันช่วยกันส่งต่อข้อมูล — ไม่ต้องซิมทุกคัน AI Predict คำนวณ ETA แม่นยำแม้สัญญาณไม่สม่ำเสมอ</div>
+              <a href="/about.html" style="display:inline-flex;align-items:center;gap:5px;margin-top:10px;padding:5px 10px;background:rgba(29,158,117,0.2);color:#1D9E75;border:1px solid rgba(29,158,117,0.35);border-radius:var(--radius-control);font-size:11px;font-weight:700;text-decoration:none;">เรียนรู้เพิ่มเติมเกี่ยวกับ VIBE →</a>
             </div>
           </div>
           <div style="margin-top:14px;padding:10px 12px;background:var(--color-soft);border-radius:var(--radius-control);display:flex;justify-content:space-between;align-items:center;">

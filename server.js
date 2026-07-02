@@ -511,6 +511,146 @@ function haversineDistanceMeters(a, b) {
   return 2 * R * Math.asin(Math.sqrt(x));
 }
 
+function normalizeHistoryDate(value) {
+  const date = String(value || todayStr()).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : todayStr();
+}
+
+function sanitizeHistoryVehicleId(value) {
+  return String(value || '').trim().replace(/[^\w-]/g, '').slice(0, 80);
+}
+
+function parseHistoryTimestamp(key, record = {}) {
+  const serverReceived = Number(record.server_received_at || record.last_seen);
+  if (Number.isFinite(serverReceived) && serverReceived > 0) return serverReceived > 10_000_000_000 ? Math.floor(serverReceived / 1000) : Math.floor(serverReceived);
+  const timestamp = Number(record.timestamp || key);
+  if (Number.isFinite(timestamp) && timestamp > 0) return timestamp > 10_000_000_000 ? Math.floor(timestamp / 1000) : Math.floor(timestamp);
+  return null;
+}
+
+function formatHistoryTime(ts) {
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Bangkok',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(ts * 1000));
+}
+
+function historyHour(ts) {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok',
+    hour: 'numeric',
+    hour12: false,
+  }).format(new Date(ts * 1000))) % 24;
+}
+
+function parseHistoryTimeFilter(value) {
+  const match = String(value || '').match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
+  return Number(match[1]) * 3600 + Number(match[2]) * 60;
+}
+
+function secondsOfDayBangkok(ts) {
+  const [hh, mm, ss] = formatHistoryTime(ts).split(':').map(Number);
+  return hh * 3600 + mm * 60 + ss;
+}
+
+function normalizeHistoryPoint(vehicleId, key, record = {}) {
+  const lat = Number(record.lat);
+  const lng = Number(record.lng);
+  const ts = parseHistoryTimestamp(key, record);
+  if (!ts || !validLatLng(lat, lng)) return null;
+  const numberOrNull = value => {
+    const num = Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+  return {
+    vehicleId,
+    ts,
+    time: formatHistoryTime(ts),
+    lat,
+    lng,
+    speed: numberOrNull(record.speed) ?? 0,
+    battery: numberOrNull(record.battery),
+    rssi: numberOrNull(record.rssi ?? record.received_rssi),
+    hop: numberOrNull(record.hop) ?? 0,
+    direction: record.direction || 'unknown',
+    gps_fix: record.gps_fix !== false,
+    routeId: record.route_id || record.routeId || 'unassigned',
+    source: record.source || '',
+  };
+}
+
+function historyPointsFromVehicle(vehicleId, vehicleHistory = {}, filters = {}) {
+  const fromSeconds = parseHistoryTimeFilter(filters.from);
+  const toSeconds = parseHistoryTimeFilter(filters.to);
+  return Object.entries(vehicleHistory || {})
+    .map(([key, record]) => normalizeHistoryPoint(vehicleId, key, record))
+    .filter(Boolean)
+    .filter(point => {
+      const daySecond = secondsOfDayBangkok(point.ts);
+      if (fromSeconds !== null && daySecond < fromSeconds) return false;
+      if (toSeconds !== null && daySecond > toSeconds) return false;
+      return true;
+    })
+    .sort((a, b) => a.ts - b.ts);
+}
+
+function activeSecondsForHistory(points) {
+  if (points.length < 2) return 0;
+  let active = 0;
+  for (let i = 1; i < points.length; i++) {
+    const gap = points[i].ts - points[i - 1].ts;
+    if (gap > 0 && gap <= 300) active += gap;
+  }
+  return active;
+}
+
+function summarizeHistoryPoints(points) {
+  const speeds = points.map(point => Number(point.speed)).filter(Number.isFinite);
+  const batteries = points.map(point => Number(point.battery)).filter(Number.isFinite);
+  let distanceM = 0;
+  for (let i = 1; i < points.length; i++) {
+    distanceM += haversineDistanceMeters(points[i - 1], points[i]);
+  }
+  const activeSeconds = activeSecondsForHistory(points);
+  const spanSeconds = points.length > 1 ? Math.max(1, points[points.length - 1].ts - points[0].ts) : 0;
+  const avgSpeed = speeds.length ? speeds.reduce((sum, value) => sum + value, 0) / speeds.length : 0;
+  return {
+    totalPoints: points.length,
+    avgSpeed: Number(avgSpeed.toFixed(1)),
+    maxSpeed: speeds.length ? Math.max(...speeds) : 0,
+    minBattery: batteries.length ? Math.min(...batteries) : null,
+    startTime: points[0]?.time || null,
+    endTime: points[points.length - 1]?.time || null,
+    distanceKm: Number((distanceM / 1000).toFixed(2)),
+    onlineRatio: points.length <= 1 ? (points.length ? 1 : 0) : Number(Math.min(1, activeSeconds / spanSeconds).toFixed(2)),
+    activeHours: Number((activeSeconds / 3600).toFixed(2)),
+    batteryStart: batteries.length ? points.find(point => Number.isFinite(Number(point.battery)))?.battery ?? null : null,
+    batteryEnd: batteries.length ? [...points].reverse().find(point => Number.isFinite(Number(point.battery)))?.battery ?? null : null,
+  };
+}
+
+function topHistoryHours(points, analyticsHours = {}) {
+  const counts = {};
+  Object.entries(analyticsHours || {}).forEach(([hour, count]) => {
+    const h = Number(hour);
+    if (Number.isInteger(h) && h >= 0 && h < 24 && Number(count) > 0) counts[h] = Number(count);
+  });
+  if (!Object.keys(counts).length) {
+    points.forEach(point => {
+      const hour = historyHour(point.ts);
+      counts[hour] = (counts[hour] || 0) + 1;
+    });
+  }
+  return Object.entries(counts)
+    .sort((a, b) => Number(b[1]) - Number(a[1]) || Number(a[0]) - Number(b[0]))
+    .slice(0, 4)
+    .map(([hour]) => Number(hour));
+}
+
 function isValidCoord(lat, lng) {
   return typeof lat === 'number' && typeof lng === 'number' &&
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
@@ -1372,6 +1512,114 @@ app.get('/api/analytics/peak-hours', async (req, res) => {
 // ============================================================
 //  GOOGLE MAPS PROXY APIs — ซ่อน API Key + Memory Cache 5 นาที
 // ============================================================
+app.get('/api/history/vehicles', authMiddleware, async (req, res) => {
+  const date = normalizeHistoryDate(req.query.date);
+  try {
+    const snap = await db.ref(`history/${date}`).once('value');
+    const raw = snap.val() || {};
+    const vehicles = [];
+    let totalRecords = 0;
+    for (const [vehicleId, history] of Object.entries(raw)) {
+      const count = Object.keys(history || {}).length;
+      if (count > 0) {
+        vehicles.push(vehicleId);
+        totalRecords += count;
+      }
+    }
+    vehicles.sort((a, b) => a.localeCompare(b));
+    return res.json({ date, vehicles, totalRecords });
+  } catch (error) {
+    console.error('[GET /api/history/vehicles]', error);
+    return res.status(500).json({ error: 'Failed to fetch history vehicles' });
+  }
+});
+
+app.get('/api/history/trail', authMiddleware, async (req, res) => {
+  const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
+  const date = normalizeHistoryDate(req.query.date);
+  if (!vehicleId) return res.status(400).json({ error: 'vehicleId is required' });
+  try {
+    const snap = await db.ref(`history/${date}/${vehicleId}`).once('value');
+    const points = historyPointsFromVehicle(vehicleId, snap.val() || {}, {
+      from: req.query.from,
+      to: req.query.to,
+    });
+    return res.json({
+      vehicleId,
+      date,
+      points: points.map(({ vehicleId: _vehicleId, gps_fix, routeId, source, ...point }) => point),
+      summary: summarizeHistoryPoints(points),
+    });
+  } catch (error) {
+    console.error('[GET /api/history/trail]', error);
+    return res.status(500).json({ error: 'Failed to fetch vehicle history trail' });
+  }
+});
+
+app.get('/api/history/analytics', authMiddleware, async (req, res) => {
+  const date = normalizeHistoryDate(req.query.date);
+  const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
+  try {
+    const [historySnap, peakSnap] = await Promise.all([
+      vehicleId ? db.ref(`history/${date}/${vehicleId}`).once('value') : db.ref(`history/${date}`).once('value'),
+      db.ref(`analytics/peak_hours/${date}`).once('value'),
+    ]);
+    const peakRaw = peakSnap.val() || {};
+    const historyRaw = vehicleId ? { [vehicleId]: historySnap.val() || {} } : historySnap.val() || {};
+    const vehicles = Object.entries(historyRaw)
+      .map(([id, history]) => {
+        const points = historyPointsFromVehicle(id, history || {});
+        const summary = summarizeHistoryPoints(points);
+        return {
+          vehicleId: id,
+          avgSpeed: summary.avgSpeed,
+          maxSpeed: summary.maxSpeed,
+          totalDistanceKm: summary.distanceKm,
+          activeHours: summary.activeHours,
+          batteryStart: summary.batteryStart,
+          batteryEnd: summary.batteryEnd,
+          totalPoints: summary.totalPoints,
+          onlineRatio: summary.onlineRatio,
+          peakHours: topHistoryHours(points, peakRaw[id]),
+        };
+      })
+      .filter(item => item.totalPoints > 0 || vehicleId);
+
+    const totalPoints = vehicles.reduce((sum, item) => sum + item.totalPoints, 0);
+    const weightedSpeed = vehicles.reduce((sum, item) => sum + item.avgSpeed * item.totalPoints, 0);
+    const weightedOnline = vehicles.reduce((sum, item) => sum + item.onlineRatio * item.totalPoints, 0);
+    return res.json({
+      date,
+      vehicles,
+      fleet: {
+        avgSpeed: totalPoints ? Number((weightedSpeed / totalPoints).toFixed(1)) : 0,
+        totalDistanceKm: Number(vehicles.reduce((sum, item) => sum + item.totalDistanceKm, 0).toFixed(2)),
+        onlineRatio: totalPoints ? Number((weightedOnline / totalPoints).toFixed(2)) : 0,
+      },
+    });
+  } catch (error) {
+    console.error('[GET /api/history/analytics]', error);
+    return res.status(500).json({ error: 'Failed to fetch history analytics' });
+  }
+});
+
+app.get('/api/history/dates', authMiddleware, async (req, res) => {
+  const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
+  try {
+    const snap = await db.ref('history').once('value');
+    const raw = snap.val() || {};
+    const dates = Object.entries(raw)
+      .filter(([, byVehicle]) => !vehicleId || byVehicle?.[vehicleId])
+      .map(([date]) => date)
+      .filter(date => /^\d{4}-\d{2}-\d{2}$/.test(date))
+      .sort((a, b) => b.localeCompare(a));
+    return res.json({ dates, ...(vehicleId ? { vehicleId } : {}) });
+  } catch (error) {
+    console.error('[GET /api/history/dates]', error);
+    return res.status(500).json({ error: 'Failed to fetch history dates' });
+  }
+});
+
 const GMAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || '';
 const _mapsCache = new Map(); // key → { data, ts }
 const CACHE_TTL = 5 * 60 * 1000; // 5 min

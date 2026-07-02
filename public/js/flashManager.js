@@ -26,16 +26,6 @@
       .replace(/'/g, '&#39;');
   }
 
-  function arrayBufferToBinaryString(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const chunkSize = 0x8000;
-    let result = '';
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      result += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
-    }
-    return result;
-  }
-
   function formatBytes(bytes) {
     if (!Number.isFinite(bytes)) return '-';
     if (bytes < 1024) return `${bytes} B`;
@@ -169,7 +159,7 @@
         write: data => data && this.emit('log', String(data)),
       };
       const flasher = new ESPLoader({ transport, baudrate: FLASH_BAUD, terminal });
-      await flasher.main_fn();
+      await flasher.main();
       const chipInfo = {
         chipName: typeof flasher.chipName === 'function' ? flasher.chipName() : flasher.chipName || 'ESP8266',
         macAddress: typeof flasher.macAddr === 'function' ? flasher.macAddr() : '',
@@ -267,22 +257,24 @@
       const flasher = new ESPLoader({ transport, baudrate: FLASH_BAUD, terminal });
 
       try {
-        await flasher.main_fn();
+        await flasher.main();
         this.emit('log', `[${time()}] Connected. Downloading ${firmware.filename}...`);
         const binData = await this.fetchFirmwareBin(firmware.filename);
-        const fileArray = [{ data: arrayBufferToBinaryString(binData), address: offset }];
+        const fileArray = [{ data: new Uint8Array(binData), address: offset }];
 
-        await flasher.write_flash({
+        await flasher.writeFlash({
           fileArray,
-          flash_mode: 'dio',
-          flash_freq: '80m',
-          flash_size: 'detect',
+          flashMode: firmware.flashMode || 'dio',
+          flashFreq: firmware.flashFreq || '40m',
+          flashSize: firmware.flashSize || '4MB',
+          eraseAll: false,
           compress: true,
           reportProgress: (_fileIndex, written, total) => {
             const percent = total > 0 ? Math.round((written / total) * 100) : 0;
             this.emit('progress', { portId: board.portId, percent, written, total });
           },
         });
+        await flasher.after('hard_reset');
       } finally {
         await transport.disconnect().catch(() => {});
       }
