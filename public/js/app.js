@@ -393,7 +393,7 @@ async function fetchVehicles() {
     requestSelectedEta();
     renderVehicleCard(vehicleData[selectedVehicleId]);
     renderRecommendedStops();
-    document.getElementById('no-vehicles-notice').style.display = visibleVehicles.some(vehicle => vehicle.status === 'online') ? 'none' : 'block';
+    updateVehicleNotice(selectedVehicleId ? '' : (visibleVehicles.some(vehicle => vehicle.status === 'online') ? 'ไม่มีรถที่กำลังมาถึงจุดนี้' : ''));
   } catch (error) {
     console.error('[vehicles]', error);
   }
@@ -491,16 +491,137 @@ function startVehicleAnimation() {
   requestAnimationFrame(frame);
 }
 
+function routeCoordsForEta() {
+  const route = routesById[currentRouteId];
+  const outbound = directionCoords(route, 'outbound');
+  if (outbound.length) return outbound;
+  return directionCoords(route, currentDirection);
+}
+
+function snapToRoute(lat, lng, routeCoords) {
+  const targetLat = Number(lat);
+  const targetLng = Number(lng);
+  if (!Number.isFinite(targetLat) || !Number.isFinite(targetLng) || !Array.isArray(routeCoords) || !routeCoords.length) return -1;
+  let bestIndex = -1;
+  let bestDistance = Infinity;
+  routeCoords.forEach((point, index) => {
+    const distance = haversineKm(targetLat, targetLng, point.lat, point.lng);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      bestIndex = index;
+    }
+  });
+  return bestIndex;
+}
+
+function routeDistanceKm(routeCoords, fromIdx, toIdx) {
+  if (!Array.isArray(routeCoords) || routeCoords.length < 2) return 0;
+  const start = Math.max(0, Math.min(routeCoords.length - 1, Math.min(fromIdx, toIdx)));
+  const end = Math.max(0, Math.min(routeCoords.length - 1, Math.max(fromIdx, toIdx)));
+  let distance = 0;
+  for (let index = start; index < end; index += 1) {
+    const from = routeCoords[index];
+    const to = routeCoords[index + 1];
+    distance += haversineKm(from.lat, from.lng, to.lat, to.lng);
+  }
+  return distance;
+}
+
+function canonicalVehicleDirection(vehicle) {
+  const raw = String(vehicle?.direction || vehicle?.route_direction || '').toLowerCase();
+  if (raw.includes('inbound') || raw.includes('กลับ')) return 'inbound';
+  if (raw.includes('outbound') || raw.includes('ไป')) return 'outbound';
+  return raw || 'unknown';
+}
+
+function routeEtaCandidate(vehicle, target, routeCoords) {
+  const vehicleIndex = snapToRoute(vehicle.lat, vehicle.lng, routeCoords);
+  const targetIndex = snapToRoute(target.lat, target.lng, routeCoords);
+  if (vehicleIndex < 0 || targetIndex < 0) return null;
+  const delta = currentDirection === 'inbound'
+    ? vehicleIndex - targetIndex
+    : targetIndex - vehicleIndex;
+  if (delta <= 0) return null;
+  const distanceKm = routeDistanceKm(routeCoords, vehicleIndex, targetIndex);
+  const speedKmh = Number(vehicle.speed) > 0 ? Number(vehicle.speed) : 30;
+  return {
+    vehicle,
+    vehicleIndex,
+    targetIndex,
+    delta,
+    distanceKm,
+    etaMin: Math.max(1, Math.round((distanceKm / speedKmh) * 60)),
+  };
+}
+
+function updateVehicleNotice(message = '') {
+  const notice = document.getElementById('no-vehicles-notice');
+  if (!notice) return;
+  const hasOnlineVehicles = Object.values(vehicleData).some(vehicle => vehicle.status === 'online');
+  if (message) {
+    notice.textContent = message;
+    notice.style.display = 'block';
+    return;
+  }
+  notice.textContent = 'ยังไม่มีรถออนไลน์ในเส้นทางนี้';
+  notice.style.display = hasOnlineVehicles ? 'none' : 'block';
+}
+
+function selectApproachingVehicle(target) {
+  if (!target) return null;
+  const routeCoords = routeCoordsForEta();
+  const onlineVehicles = Object.values(vehicleData).filter(vehicle => (
+    vehicle.status === 'online'
+    && vehicle.gps_fix !== false
+    && String(vehicle.route_id || vehicle.routeId || currentRouteId) === String(currentRouteId)
+  ));
+  if (!onlineVehicles.length) {
+    selectedVehicleId = null;
+    etaState = { key: null, value: null, fetchedAt: Date.now() };
+    updateVehicleNotice();
+    return null;
+  }
+  if (!routeCoords.length) {
+    onlineVehicles.sort((a, b) => haversineKm(a.lat, a.lng, target.lat, target.lng) - haversineKm(b.lat, b.lng, target.lat, target.lng));
+    const vehicle = onlineVehicles[0];
+    selectedVehicleId = vehicle.vehicle_id;
+    etaState = { key: `fallback:${vehicle.vehicle_id}`, value: null, fetchedAt: Date.now() };
+    updateVehicleNotice();
+    return vehicle;
+  }
+  const candidates = onlineVehicles
+    .filter(vehicle => canonicalVehicleDirection(vehicle) === currentDirection)
+    .map(vehicle => routeEtaCandidate(vehicle, target, routeCoords))
+    .filter(Boolean)
+    .sort((a, b) => a.delta - b.delta || a.distanceKm - b.distanceKm);
+  if (!candidates.length) {
+    selectedVehicleId = null;
+    etaState = { key: `none:${currentRouteId}:${currentDirection}:${Date.now()}`, value: null, fetchedAt: Date.now() };
+    updateVehicleNotice('ไม่มีรถที่กำลังมาถึงจุดนี้');
+    if (selectedOrigin) updateOriginStatus('ไม่มีรถที่กำลังมาถึงจุดนี้');
+    return null;
+  }
+  const best = candidates[0];
+  selectedVehicleId = best.vehicle.vehicle_id;
+  etaState = {
+    key: `route:${selectedVehicleId}:${currentDirection}:${best.vehicleIndex}:${best.targetIndex}:${best.vehicle.last_seen || ''}`,
+    value: {
+      vehicle_id: selectedVehicleId,
+      eta_min: best.etaMin,
+      distance_m: Math.round(best.distanceKm * 1000),
+      route_based: true,
+    },
+    fetchedAt: Date.now(),
+  };
+  updateVehicleNotice();
+  if (selectedOrigin) updateOriginStatus(`${selectedOrigin.name}: ${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
+  return best.vehicle;
+}
+
 function chooseNearestVehicle() {
   const target = selectedOrigin || selectedDestination;
   if (!target) return;
-  const candidates = Object.values(vehicleData).filter(vehicle => vehicle.status === 'online' && vehicle.gps_fix !== false);
-  if (!candidates.length) {
-    selectedVehicleId = null;
-    return;
-  }
-  candidates.sort((a, b) => haversineKm(a.lat, a.lng, target.lat, target.lng) - haversineKm(b.lat, b.lng, target.lat, target.lng));
-  selectedVehicleId = candidates[0].vehicle_id;
+  selectApproachingVehicle(target);
 }
 
 function selectVehicle(vehicleId) {
@@ -512,26 +633,13 @@ function selectVehicle(vehicleId) {
 }
 
 async function requestSelectedEta(force = false) {
-  const vehicle = vehicleData[selectedVehicleId];
   const target = selectedOrigin || selectedDestination;
-  if (!vehicle || !target) {
+  if (!target) {
     etaState = { key: null, value: null, fetchedAt: Date.now() };
     return;
   }
-  const key = `${vehicle.vehicle_id}:${Number(target.lat).toFixed(5)},${Number(target.lng).toFixed(5)}`;
-  if (!force && etaState.key === key && Date.now() - etaState.fetchedAt < 30000) return;
-  etaState = { key, value: null, fetchedAt: Date.now() };
-  try {
-    etaState.value = await fetchMapsEta(
-      `${vehicle.lat},${vehicle.lng}`,
-      `${target.lat},${target.lng}`,
-      vehicle.vehicle_id
-    );
-  } catch (_) {
-    etaState.value = null;
-  }
-  etaState.fetchedAt = Date.now();
-  renderVehicleCard(vehicleData[selectedVehicleId]);
+  const selected = selectApproachingVehicle(target);
+  renderVehicleCard(selected || null);
 }
 
 function renderVehicleCard(vehicle) {
