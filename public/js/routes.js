@@ -68,7 +68,7 @@ function ensureActiveStopForRoute() {
 function allStops() {
   const map = new Map();
   routeList.forEach(route => {
-    routeStops(route).forEach(stop => {
+    routeDisplayStops(route).forEach(stop => {
       const key = `${stop.name}:${Number(stop.lat).toFixed(5)}:${Number(stop.lng).toFixed(5)}`;
       const existing = map.get(key) || { ...stop, routes: [] };
       existing.routes.push(route);
@@ -76,6 +76,48 @@ function allStops() {
     });
   });
   return [...map.values()];
+}
+
+function routeDisplayStops(route, dir = 'outbound') {
+  const directionalStops = directionStopsForRoute(route, dir);
+  if (directionalStops.length) return directionalStops;
+  if (dir === 'outbound') {
+    const legacyStops = routeStops(route);
+    if (legacyStops.length) return legacyStops;
+  }
+  const coords = directionCoords(route, dir);
+  if (!coords.length && dir !== 'outbound') {
+    return routeDisplayStops(route, 'outbound').map(stop => ({ ...stop })).reverse();
+  }
+  if (!coords.length) return [];
+  const routeName = route?.shortName || route?.name || route?.route_id || 'Route';
+  const first = coords[0];
+  const last = coords[coords.length - 1];
+  if (coords.length === 1) {
+    return [{
+      id: `${route?.route_id || 'route'}-${dir}-point`,
+      name: `${routeName} จุดเส้นทาง`,
+      lat: Number(first.lat),
+      lng: Number(first.lng),
+      synthetic: true,
+    }];
+  }
+  return [
+    {
+      id: `${route?.route_id || 'route'}-${dir}-start`,
+      name: `${routeName} ต้นทาง`,
+      lat: Number(first.lat),
+      lng: Number(first.lng),
+      synthetic: true,
+    },
+    {
+      id: `${route?.route_id || 'route'}-${dir}-end`,
+      name: `${routeName} ปลายทาง`,
+      lat: Number(last.lat),
+      lng: Number(last.lng),
+      synthetic: true,
+    },
+  ];
 }
 
 function renderStopList() {
@@ -171,7 +213,8 @@ function renderStopTimeline() {
     document.getElementById('route-stop-list').innerHTML = '<div class="empty-state">No route data</div>';
     return;
   }
-  const stops = activeDirection === 'inbound' ? [...routeStops(route)].reverse() : routeStops(route);
+  const timelineDirection = activeDirection === 'inbound' ? 'inbound' : 'outbound';
+  const stops = routeDisplayStops(route, timelineDirection);
   document.getElementById('route-stop-heading').textContent = `เส้นทางสาย ${route?.name || '—'}`;
   document.getElementById('route-stop-list').innerHTML = stops.map(stop => `
     <div class="vertical-stop ${stop.name === activeStop.name ? 'current' : ''}">${stop.name}</div>`).join('');
