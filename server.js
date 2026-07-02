@@ -1030,6 +1030,7 @@ app.get('/api/locations', async (req, res) => {
   logLegacy(req);
   try {
     const { routeId } = req.query;
+    await ensureDemoFleetRunning('locations');
     const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
     const raw = fleetSnap.val() || {};
 
@@ -1065,6 +1066,7 @@ app.get('/api/v1/vehicles', async (req, res) => {
   try {
     const routeId = req.query.route_id ? canonicalRouteId(req.query.route_id) : null;
     const now = unixNow();
+    await ensureDemoFleetRunning('v1_vehicles');
     const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
     const fleet = fleetSnap.val() || {};
     const vehicles = Object.entries(fleet)
@@ -1466,6 +1468,11 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     patch.updatedAt = Date.now();
     await db.ref('system/config').update(patch);
+    if (patch.demoMode === true) {
+      await ensureDemoFleetRunning('config_enabled');
+    } else if (patch.demoMode === false) {
+      await stopDemoFleet();
+    }
     console.log('[CONFIG]', patch);
     return res.json({ ok: true, config: patch });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1504,6 +1511,8 @@ let _demoRouteCoordSource = 'none';
 let _demoSpeedMultiplier = 1;
 let _demoVehicles = new Map();
 let _demoWriteLogCounts = new Map();
+let _demoLastTickAt = 0;
+let _demoLastError = null;
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -1670,22 +1679,58 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
 async function stopDemoFleet() {
   console.log('[DEMO] stopDemoFleet clearing interval and removing demo fleet entries');
   clearInterval(_demoTimer); _demoTimer = null; _demoVehicles = new Map();
+  _demoLastTickAt = 0;
+  _demoLastError = null;
   const cleanup = { 'fleet/TWIN_01': null };
   DEMO_IDS.forEach(id => { cleanup[`fleet/${id}`] = null; });
   await db.ref().update(cleanup);
 }
 
 async function demoFleetTick() {
-  if (!await getDemoMode()) { await stopDemoFleet(); return; }
-  const timestamp = Date.now();
-  const updates = {};
-  DEMO_IDS.forEach(vehicleId => moveDemoVehicle(vehicleId, timestamp, updates));
-  console.log(`[DEMO] demoFleetTick updates=${Object.keys(updates).length} coordCount=${demoRouteCoords.length}`);
-  await db.ref().update(updates);
+  try {
+    if (!await getDemoMode()) { await stopDemoFleet(); return; }
+    const timestamp = Date.now();
+    const updates = {};
+    DEMO_IDS.forEach(vehicleId => moveDemoVehicle(vehicleId, timestamp, updates));
+    const count = Object.keys(updates).length;
+    console.log(`[DEMO] demoFleetTick updates=${count} coordCount=${demoRouteCoords.length}`);
+    if (count > 0) {
+      await db.ref().update(updates);
+      _demoLastTickAt = Date.now();
+      _demoLastError = null;
+    } else {
+      _demoLastError = 'no_demo_updates';
+    }
+  } catch (error) {
+    _demoLastError = error.message;
+    console.error('[DEMO] demoFleetTick failed:', error);
+  }
 }
 
 function activeDemoIntervalCount() {
   return _demoTimer ? 1 : 0;
+}
+
+function scheduleDemoFleetTick() {
+  clearInterval(_demoTimer);
+  _demoTimer = setInterval(() => {
+    demoFleetTick().catch(error => {
+      _demoLastError = error.message;
+      console.error('[DEMO] async tick failed:', error);
+    });
+  }, 1000);
+}
+
+async function ensureDemoFleetRunning(reason = 'watchdog') {
+  const demoMode = await getDemoMode();
+  if (!demoMode) return { demoMode, running: false, started: false, reason };
+  const stale = !_demoLastTickAt || Date.now() - _demoLastTickAt > 5000;
+  if (_demoTimer && !stale && demoRouteCoords.length) {
+    return { demoMode, running: true, started: false, reason, lastTickAt: _demoLastTickAt };
+  }
+  console.warn(`[DEMO] watchdog restarting simulator reason=${reason} timer=${!!_demoTimer} stale=${stale} coords=${demoRouteCoords.length}`);
+  await startDemoFleet();
+  return { demoMode: true, running: true, started: true, reason, lastTickAt: _demoLastTickAt };
 }
 
 function normalizeDemoRouteCoords(coords = []) {
@@ -1744,8 +1789,7 @@ async function startDemoFleet() {
   console.log(`[DEMO] route=${_demoRouteId} coords=${demoRouteCoords.length} source=${_demoRouteCoordSource} format=${_demoRouteCoordFormat}`);
   await db.ref('system/config').update({ demoMode: true, demoVehicles: 3, demoRouteId: _demoRouteId, demoSpeed: _demoSpeedMultiplier, updatedAt: Date.now() });
   initializeDemoFleet();
-  clearInterval(_demoTimer);
-  _demoTimer = setInterval(demoFleetTick, 1000);
+  scheduleDemoFleetTick();
   await demoFleetTick();
 }
 
@@ -1778,8 +1822,18 @@ app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
 
 app.get('/api/demo/status', async (req,res)=>{
   try {
-    const demoMode = await getDemoMode();
-    return res.json({ running: demoMode && _demoTimer !== null, demoMode, vehicles: DEMO_IDS, ids: DEMO_IDS });
+    const watchdog = await ensureDemoFleetRunning('status');
+    const demoMode = watchdog.demoMode;
+    return res.json({
+      running: demoMode && _demoTimer !== null,
+      demoMode,
+      vehicles: DEMO_IDS,
+      ids: DEMO_IDS,
+      lastTickAt: _demoLastTickAt,
+      lastTickAgeMs: _demoLastTickAt ? Date.now() - _demoLastTickAt : null,
+      lastError: _demoLastError,
+      restarted: watchdog.started === true,
+    });
   } catch (error) {
     res.status(500).json({ error: 'Failed to read demo status' });
   }
@@ -2090,6 +2144,7 @@ app.get('/api/routes/:id/vehicles', async (req, res) => {
 // ============================================================
 app.get('/api/fleet', async (req, res) => {
   try {
+    await ensureDemoFleetRunning('fleet');
     const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
     const fleet = fleetSnap.val() || {};
     const result = {};
@@ -2218,6 +2273,7 @@ app.post('/api/admin/purge-ghosts', authMiddleware, async (req, res) => {
 app.get('/api/v1/network', async (req, res) => {
   try {
     const { route_id, direction, online_only } = req.query;
+    await ensureDemoFleetRunning('network');
     const [fleetSnap, configSnap] = await Promise.all([
       db.ref('fleet').once('value'),
       db.ref('system/config').once('value')
