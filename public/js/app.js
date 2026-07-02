@@ -13,12 +13,12 @@ let selectedVehicleId = null;
 let routesById = {};
 let vehicleData = {};
 let vehicleMarkers = {};
-let vehicleMotion = {};
 let vehicleSpeedDisplay = {};
-let vehicleAnimationStarted = false;
 let stopMarkers = [];
 let etaState = { key: null, value: null, fetchedAt: 0 };
 let serverClock = { serverTime: 0, perfAt: 0 };
+const VEHICLE_POLL_INTERVAL_MS = 3500;
+const VEHICLE_ANIMATION_DURATION_MS = VEHICLE_POLL_INTERVAL_MS - 200;
 
 document.addEventListener('DOMContentLoaded', initPassengerPage);
 
@@ -91,10 +91,9 @@ async function initMap() {
   });
 
   if (window.MeshOverlay) window.MeshOverlay.init(map);
-  startVehicleAnimation();
   await loadRoutes();
   await fetchVehicles();
-  setInterval(fetchVehicles, 3500);
+  setInterval(fetchVehicles, VEHICLE_POLL_INTERVAL_MS);
   setInterval(() => renderVehicleCard(vehicleData[selectedVehicleId]), 1000);
 }
 
@@ -415,24 +414,17 @@ function renderVehicleMarkers(vehicles) {
         zIndex: selected ? 600 : 500,
       });
       vehicleMarkers[vehicle.vehicle_id].addListener('click', () => selectVehicle(vehicle.vehicle_id));
-      vehicleMotion[vehicle.vehicle_id] = {
-        current: position,
-        from: position,
-        target: position,
-        startedAt: performance.now(),
-        duration: 1,
-      };
     } else {
-      setVehicleMotionTarget(vehicle.vehicle_id, position);
+      smoothMoveMarker(vehicleMarkers[vehicle.vehicle_id], position.lat, position.lng, VEHICLE_ANIMATION_DURATION_MS);
       vehicleMarkers[vehicle.vehicle_id].content = createVehicleMarkerContent(vehicle.speed, online, false, selected, vehicle.heading);
       vehicleMarkers[vehicle.vehicle_id].zIndex = selected ? 600 : 500;
     }
   });
   Object.keys(vehicleMarkers).forEach(id => {
     if (!ids.has(id)) {
+      if (vehicleMarkers[id]._animFrame) cancelAnimationFrame(vehicleMarkers[id]._animFrame);
       vehicleMarkers[id].map = null;
       delete vehicleMarkers[id];
-      delete vehicleMotion[id];
       delete vehicleSpeedDisplay[id];
     }
   });
@@ -441,27 +433,47 @@ function renderVehicleMarkers(vehicles) {
 function setVehicleMotionTarget(vehicleId, target) {
   const marker = vehicleMarkers[vehicleId];
   if (!marker) return;
-  const motion = vehicleMotion[vehicleId] || {};
-  const current = motion.current || markerPosition(marker) || target;
-  const distance = haversineKm(current.lat, current.lng, target.lat, target.lng);
-  if (!Number.isFinite(distance) || distance > 2.5) {
-    marker.position = target;
-    vehicleMotion[vehicleId] = {
-      current: target,
-      from: target,
-      target,
-      startedAt: performance.now(),
-      duration: 1,
-    };
+  smoothMoveMarker(marker, target.lat, target.lng, VEHICLE_ANIMATION_DURATION_MS);
+}
+
+function setMarkerPosition(marker, lat, lng) {
+  const pos = new google.maps.LatLng(Number(lat), Number(lng));
+  if (typeof marker.setPosition === 'function') {
+    marker.setPosition(pos);
+  } else {
+    marker.position = pos;
+  }
+}
+
+function smoothMoveMarker(marker, newLat, newLng, durationMs = VEHICLE_ANIMATION_DURATION_MS) {
+  if (!marker || !window.google?.maps) return;
+  const targetLat = Number(newLat);
+  const targetLng = Number(newLng);
+  if (!Number.isFinite(targetLat) || !Number.isFinite(targetLng)) return;
+  if (marker._animFrame) cancelAnimationFrame(marker._animFrame);
+
+  const start = markerPosition(marker) || { lat: targetLat, lng: targetLng };
+  const startTime = performance.now();
+  const distanceM = haversineKm(start.lat, start.lng, targetLat, targetLng) * 1000;
+  if (!Number.isFinite(distanceM) || distanceM > 500 || durationMs <= 0) {
+    setMarkerPosition(marker, targetLat, targetLng);
     return;
   }
-  vehicleMotion[vehicleId] = {
-    current,
-    from: current,
-    target,
-    startedAt: performance.now(),
-    duration: Math.max(900, Math.min(3200, distance * 100000)),
+
+  const step = now => {
+    const elapsed = now - startTime;
+    const t = Math.min(elapsed / durationMs, 1);
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    const lat = start.lat + (targetLat - start.lat) * ease;
+    const lng = start.lng + (targetLng - start.lng) * ease;
+    setMarkerPosition(marker, lat, lng);
+    if (t < 1) {
+      marker._animFrame = requestAnimationFrame(step);
+    } else {
+      marker._animFrame = null;
+    }
   };
+  marker._animFrame = requestAnimationFrame(step);
 }
 
 function markerPosition(marker) {
@@ -470,25 +482,6 @@ function markerPosition(marker) {
   const lat = typeof position.lat === 'function' ? position.lat() : position.lat;
   const lng = typeof position.lng === 'function' ? position.lng() : position.lng;
   return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null;
-}
-
-function startVehicleAnimation() {
-  if (vehicleAnimationStarted) return;
-  vehicleAnimationStarted = true;
-  const frame = now => {
-    Object.entries(vehicleMotion).forEach(([id, motion]) => {
-      const marker = vehicleMarkers[id];
-      if (!marker || !motion?.target) return;
-      const t = motion.duration <= 1 ? 1 : Math.min(1, (now - motion.startedAt) / motion.duration);
-      const eased = t < 1 ? 1 - Math.pow(1 - t, 3) : 1;
-      const lat = motion.from.lat + (motion.target.lat - motion.from.lat) * eased;
-      const lng = motion.from.lng + (motion.target.lng - motion.from.lng) * eased;
-      motion.current = { lat, lng };
-      marker.position = motion.current;
-    });
-    requestAnimationFrame(frame);
-  };
-  requestAnimationFrame(frame);
 }
 
 function routeCoordsForEta() {

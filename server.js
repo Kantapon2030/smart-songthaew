@@ -1513,6 +1513,7 @@ let _demoVehicles = new Map();
 let _demoWriteLogCounts = new Map();
 let _demoLastTickAt = 0;
 let _demoLastError = null;
+const DEMO_MAX_METERS_PER_TICK = 100;
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -1587,6 +1588,7 @@ function initializeDemoFleet() {
       id: DEMO_IDS[index],
       coordIndex: Math.max(0, Math.min(len - 1, idx)),
       segmentIndex: Math.max(0, Math.min(len - 1, idx)),
+      subStep: 0,
       speed: [34, 43, 55][index],
       battery: [93, 86, 79][index],
     }
@@ -1607,23 +1609,35 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
     : Math.max(0, Math.min(len - 1, Number(vehicle.segmentIndex || 0)));
   const coord = demoRouteCoords[coordIndex];
   const nextCoord = demoRouteCoords[(coordIndex + 1) % len];
-  if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) {
+  if (!coord || !nextCoord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng) || !Number.isFinite(nextCoord.lat) || !Number.isFinite(nextCoord.lng)) {
     console.error(`[DEMO] Invalid coord for ${vehicleId} idx=${coordIndex}`);
     return null;
   }
+  const segmentMeters = haversineDistanceMeters(coord, nextCoord);
+  const stepsForCoord = Math.max(1, Math.ceil(segmentMeters / DEMO_MAX_METERS_PER_TICK));
+  const subStep = Number.isInteger(vehicle.subStep) ? Math.max(0, Math.min(stepsForCoord - 1, vehicle.subStep)) : 0;
+  const t = stepsForCoord <= 1 ? 0 : subStep / stepsForCoord;
+  const lat = coord.lat + (nextCoord.lat - coord.lat) * t;
+  const lng = coord.lng + (nextCoord.lng - coord.lng) * t;
   const wave = Math.sin(timestamp / 9000 + index * 1.7);
   const targetSpeed = ([31, 38, 45][index] + wave * 5) * _demoSpeedMultiplier;
   vehicle.speed = Math.max(8, Math.min(65, vehicle.speed + (targetSpeed - vehicle.speed) * 0.28));
   vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
   vehicle.segmentIndex = coordIndex;
-  vehicle.coordIndex = (coordIndex + 1) % len;
-  const bearing = nextCoord ? bearingCalc(coord.lat, coord.lng, nextCoord.lat, nextCoord.lng) : 0;
+  vehicle.subStep = subStep + 1;
+  if (vehicle.subStep >= stepsForCoord) {
+    vehicle.coordIndex = (coordIndex + 1) % len;
+    vehicle.subStep = 0;
+  } else {
+    vehicle.coordIndex = coordIndex;
+  }
+  const bearing = bearingCalc(lat, lng, nextCoord.lat, nextCoord.lng);
 
   const current = {
     vehicle_id: vehicleId,
     plate: DEMO_PLATES[vehicleId] || vehicleId,
-    lat: coord.lat,
-    lng: coord.lng,
+    lat,
+    lng,
     speed: Number(vehicle.speed.toFixed(1)),
     battery: Number(vehicle.battery.toFixed(1)),
     bearing: Number(bearing.toFixed(1)),
@@ -1667,10 +1681,10 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   updates[`fleet/${vehicleId}/description`] = `Demo vehicle ${index + 1}`;
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
   updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
-  console.log(`[DEMO tick] ${vehicleId} idx:${coordIndex} lat:${Number(coord.lat).toFixed(6)} lng:${Number(coord.lng).toFixed(6)}`);
+  console.log(`[DEMO tick] ${vehicleId} idx:${coordIndex} sub:${subStep}/${stepsForCoord} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
   const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
   if (logCount < 3) {
-    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${coordIndex} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
+    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${coordIndex} sub=${subStep}/${stepsForCoord} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
     _demoWriteLogCounts.set(vehicleId, logCount + 1);
   }
   return current;
@@ -1857,6 +1871,7 @@ app.get('/api/demo/debug', async (_req, res) => {
         lng: Number.isFinite(Number(current.lng)) ? Number(current.lng) : null,
         coordIndex: memory?.coordIndex ?? null,
         segmentIndex: memory?.segmentIndex ?? null,
+        subStep: memory?.subStep ?? null,
       };
     });
     return res.json({
