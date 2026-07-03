@@ -807,3 +807,117 @@ async function removeVehicleFromRoute(routeId, vehicleId) {
 async function fetchRouteVehicles(routeId) {
   try { return await fetch(`/api/routes/${routeId}/vehicles`).then(r => r.json()); } catch (_) { return {}; }
 }
+
+/* ─────────────────────────────────────────
+   Mobile Bottom Navigation
+   Injects a fixed bottom nav bar on mobile (<768px).
+   Call renderMobileBottomNav() on DOMContentLoaded,
+   or let it auto-inject by including this file.
+───────────────────────────────────────── */
+function renderMobileBottomNav() {
+  if (document.getElementById('mobile-bottom-nav')) return; // already injected
+
+  var path = window.location.pathname.replace(/\/$/, '') || '/';
+  function isActive(href) {
+    if (href === '/') return path === '' || path === '/' || path === '/index.html';
+    return path === href || path.endsWith(href);
+  }
+
+  var nav = document.createElement('nav');
+  nav.id = 'mobile-bottom-nav';
+  nav.className = 'mobile-bottom-nav';
+  nav.setAttribute('aria-label', 'เมนูหลัก (มือถือ)');
+
+  var items = [
+    {
+      href: '/',
+      label: 'หน้าหลัก',
+      svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M3 12L12 3l9 9M5 10v9a1 1 0 0 0 1 1h4v-5h4v5h4a1 1 0 0 0 1-1v-9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+    },
+    {
+      href: '/routes.html',
+      label: 'เส้นทาง',
+      svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M3 17c3-3 4-7 9-7s6 4 9 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M3 7c3 3 4 7 9 7s6-4 9-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    },
+    {
+      href: '/dashboard.html',
+      label: 'Dashboard',
+      svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="5" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="19" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M7 12h5M14 7l3-1M14 17l3 1M12 12l2-5M12 12l2 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+    },
+    {
+      href: '/history.html',
+      label: 'ประวัติ',
+      svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+    },
+  ];
+
+  items.forEach(function(item) {
+    var a = document.createElement('a');
+    a.href = item.href;
+    a.className = isActive(item.href) ? 'active' : '';
+    a.innerHTML = item.svg + '<span>' + item.label + '</span>';
+    nav.appendChild(a);
+  });
+
+  // "เมนู" button — opens slide-up sheet
+  var menuBtn = document.createElement('button');
+  menuBtn.type = 'button';
+  menuBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg><span>เมนู</span>';
+  menuBtn.addEventListener('click', function() { openMobileMenu(); });
+  nav.appendChild(menuBtn);
+
+  document.body.appendChild(nav);
+  ensureMobileMenuOverlay();
+}
+
+function ensureMobileMenuOverlay() {
+  if (document.getElementById('mobile-menu-overlay')) return;
+
+  var overlay = document.createElement('div');
+  overlay.id = 'mobile-menu-overlay';
+  overlay.className = 'mobile-menu-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-label', 'เมนูเพิ่มเติม');
+
+  overlay.innerHTML = '<div class="mobile-menu-sheet">' +
+    '<div class="mobile-menu-handle" aria-hidden="true"></div>' +
+    '<div class="mobile-menu-title">เมนูทั้งหมด</div>' +
+    '<a class="mobile-menu-item" href="/operations.html">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="3" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/><rect x="14" y="14" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.8"/></svg>' +
+      'ภาพรวมการปฏิบัติการ' +
+    '</a>' +
+    '<a class="mobile-menu-item" href="/admin.html">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" stroke-width="1.8"/><path d="M20 21a8 8 0 1 0-16 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>' +
+      'ผู้ดูแลระบบ' +
+    '</a>' +
+    '<a class="mobile-menu-item" href="/about.html">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="5" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="19" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M7 12h5M14 7l3-1M14 17l3 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>' +
+      'เกี่ยวกับ VIBE' +
+    '</a>' +
+    '<button class="mobile-menu-item" type="button" onclick="openHelpModal();closeMobileMenu();" style="background:none;border:none;border-bottom:1px solid var(--color-border);width:100%;text-align:left;cursor:pointer;">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z" stroke="currentColor" stroke-width="1.8"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>' +
+      'ช่วยเหลือ' +
+    '</button>' +
+  '</div>';
+
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) closeMobileMenu(); });
+  document.body.appendChild(overlay);
+}
+
+function openMobileMenu() {
+  ensureMobileMenuOverlay();
+  document.getElementById('mobile-menu-overlay').classList.add('open');
+}
+
+function closeMobileMenu() {
+  var el = document.getElementById('mobile-menu-overlay');
+  if (el) el.classList.remove('open');
+}
+
+// Auto-inject bottom nav when DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', renderMobileBottomNav);
+} else {
+  renderMobileBottomNav();
+}

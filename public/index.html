@@ -113,7 +113,7 @@
     }
 
     .destination-button {
-      min-height: 40px;
+      min-height: 44px;
       justify-content: flex-start;
       text-align: left;
       padding: 5px 7px;
@@ -281,7 +281,7 @@
         top: auto;
         left: 0;
         right: 0;
-        bottom: 0;
+        bottom: 56px; /* sit above mobile bottom-nav */
         width: 100%;
         max-width: 100%;
         max-height: 45dvh;
@@ -295,14 +295,14 @@
       .vehicle-card {
         right: 8px;
         left: 8px;
-        bottom: calc(45dvh + 12px);
+        bottom: calc(45dvh + 56px + 12px); /* above sidebar + bottom-nav */
         width: auto;
         max-width: 100%;
       }
 
       #mesh-toggle-wrap {
         right: 8px;
-        bottom: calc(45dvh + 210px);
+        bottom: calc(45dvh + 56px + 210px);
       }
 
       .popular-grid {
@@ -315,9 +315,13 @@
     }
 
     @media (max-width: 480px) {
-      .popular-grid,
       .vehicle-stats {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
+      }
+      /* keep popular-grid 3-col even on very small screens */
+      .popular-grid {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 4px;
       }
     }
 

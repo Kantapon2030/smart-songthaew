@@ -51,7 +51,7 @@ function applyConfigToUI(cfg) {
   document.getElementById('cfg-announcement').value       = cfg.announcement   ?? '';
   const ground = cfg.groundStation || {};
   if (document.getElementById('cfg-ground-id')) document.getElementById('cfg-ground-id').value = ground.id || 'GROUND_01';
-  if (document.getElementById('cfg-ground-label')) document.getElementById('cfg-ground-label').value = ground.label || 'Ground Station';
+  if (document.getElementById('cfg-ground-label')) document.getElementById('cfg-ground-label').value = ground.label || 'สถานีภาคพื้น';
   if (document.getElementById('cfg-ground-lat')) document.getElementById('cfg-ground-lat').value = ground.lat ?? 8.4304;
   if (document.getElementById('cfg-ground-lng')) document.getElementById('cfg-ground-lng').value = ground.lng ?? 99.9631;
 
@@ -160,12 +160,6 @@ async function saveConfig() {
     routeName:      document.getElementById('cfg-route').value.trim(),
     offlineTimeout: parseInt(document.getElementById('cfg-timeout').value),
     announcement:   document.getElementById('cfg-announcement').value.trim(),
-    groundStation: {
-      id:    document.getElementById('cfg-ground-id')?.value.trim() || 'GROUND_01',
-      label: document.getElementById('cfg-ground-label')?.value.trim() || 'Ground Station',
-      lat:   Number(document.getElementById('cfg-ground-lat')?.value),
-      lng:   Number(document.getElementById('cfg-ground-lng')?.value),
-    },
   };
   try {
     await authFetch('/api/config', {
@@ -177,6 +171,54 @@ async function saveConfig() {
     showToast();
     syncConfig();
   } catch (e) { addLog('err', e.message); }
+}
+
+function readGroundStationForm() {
+  const lat = Number(document.getElementById('cfg-ground-lat')?.value);
+  const lng = Number(document.getElementById('cfg-ground-lng')?.value);
+  if (!Number.isFinite(lat) || lat < 5.5 || lat > 20.5) {
+    throw new Error('Latitude ต้องอยู่ระหว่าง 5.5–20.5');
+  }
+  if (!Number.isFinite(lng) || lng < 97.5 || lng > 105.7) {
+    throw new Error('Longitude ต้องอยู่ระหว่าง 97.5–105.7');
+  }
+  return {
+    id: document.getElementById('cfg-ground-id')?.value.trim() || 'GROUND_01',
+    label: document.getElementById('cfg-ground-label')?.value.trim() || 'สถานีภาคพื้น',
+    lat,
+    lng,
+  };
+}
+
+async function saveGroundStationConfig() {
+  try {
+    const groundStation = readGroundStationForm();
+    const response = await authFetch('/api/config/ground-station', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(groundStation),
+    });
+    if (!response) return;
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(body.error || 'บันทึกตำแหน่งสถานีภาคพื้นไม่สำเร็จ');
+    addLog('ok', `บันทึกสถานีภาคพื้น: ${body.groundStation.lat}, ${body.groundStation.lng}`);
+    showToast('บันทึกตำแหน่งสถานีภาคพื้นแล้ว');
+    await syncConfig();
+  } catch (e) {
+    addLog('err', e.message);
+    alert(e.message);
+  }
+}
+
+function showGroundStationOnMap() {
+  try {
+    const groundStation = readGroundStationForm();
+    const url = `https://www.google.com/maps?q=${groundStation.lat},${groundStation.lng}`;
+    window.open(url, '_blank', 'noopener');
+  } catch (e) {
+    addLog('err', e.message);
+    alert(e.message);
+  }
 }
 
 // ── Status ────────────────────────────────────────────────────

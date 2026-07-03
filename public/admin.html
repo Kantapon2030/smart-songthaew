@@ -714,24 +714,6 @@
         <input class="admin-input" id="cfg-route" value="นครศรีธรรมราช ↔ พรหมคีรี" placeholder="ชื่อเส้นทาง"/>
       </div>
       <div class="admin-form-row">
-        <label class="admin-label">Ground Station ID</label>
-        <input class="admin-input" id="cfg-ground-id" value="GROUND_01" placeholder="GROUND_01"/>
-      </div>
-      <div class="admin-form-row">
-        <label class="admin-label">ชื่อ Ground Station</label>
-        <input class="admin-input" id="cfg-ground-label" value="Ground Station" placeholder="เช่น: สถานีฐานโรงเรียน"/>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-        <div class="admin-form-row">
-          <label class="admin-label">Ground Latitude</label>
-          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lat" value="8.4304" placeholder="8.430400"/>
-        </div>
-        <div class="admin-form-row">
-          <label class="admin-label">Ground Longitude</label>
-          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lng" value="99.9631" placeholder="99.963100"/>
-        </div>
-      </div>
-      <div class="admin-form-row">
         <label class="admin-label">
           Offline Timeout (วินาที) — <span id="cfg-timeout-val">15</span>s
         </label>
@@ -743,6 +725,36 @@
         <label class="admin-label">ประกาศถึงผู้ใช้ (ว่างเปล่า = ไม่แสดง)</label>
         <textarea class="admin-input admin-textarea" id="cfg-announcement"
           placeholder="เช่น: รถกำลังวิ่งช้าเนื่องจากสภาพถนน"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="admin-card-head">
+      <div class="admin-card-title">ตำแหน่งสถานีภาคพื้น</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="admin-btn admin-btn-outline" type="button" onclick="showGroundStationOnMap()">แสดงบนแผนที่</button>
+        <button class="admin-btn admin-btn-primary" type="button" onclick="saveGroundStationConfig()">บันทึก</button>
+      </div>
+    </div>
+    <div class="admin-card-body">
+      <div class="admin-form-row">
+        <label class="admin-label">Ground Station ID</label>
+        <input class="admin-input" id="cfg-ground-id" value="GROUND_01" placeholder="GROUND_01"/>
+      </div>
+      <div class="admin-form-row">
+        <label class="admin-label">ชื่อสถานี</label>
+        <input class="admin-input" id="cfg-ground-label" value="สถานีภาคพื้น" placeholder="เช่น: สถานีฐานโรงเรียน"/>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div class="admin-form-row">
+          <label class="admin-label">Latitude</label>
+          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lat" value="8.4304" placeholder="8.430400"/>
+        </div>
+        <div class="admin-form-row">
+          <label class="admin-label">Longitude</label>
+          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lng" value="99.9631" placeholder="99.963100"/>
+        </div>
       </div>
     </div>
   </div>

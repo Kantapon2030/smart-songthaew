@@ -213,7 +213,7 @@ function validLatLng(lat, lng) {
 
 const DEFAULT_GROUND_STATION = {
   id: 'GROUND_01',
-  label: 'Ground Station',
+  label: 'สถานีภาคพื้น',
   lat: 8.4304,
   lng: 99.9631,
 };
@@ -1750,6 +1750,37 @@ app.post('/api/config', authMiddleware, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+app.patch('/api/config/ground-station', authMiddleware, async (req, res) => {
+  try {
+    const lat = Number(req.body?.lat);
+    const lng = Number(req.body?.lng);
+    if (!validLatLng(lat, lng)) {
+      return res.status(400).json({ error: 'lat must be 5.5-20.5 and lng must be 97.5-105.7' });
+    }
+
+    const patch = { lat, lng, updatedAt: Date.now() };
+    if (req.body?.id !== undefined) {
+      patch.id = String(req.body.id || DEFAULT_GROUND_STATION.id)
+        .trim()
+        .replace(/[^\w-]/g, '')
+        .slice(0, 40) || DEFAULT_GROUND_STATION.id;
+    }
+    if (req.body?.label !== undefined) {
+      patch.label = String(req.body.label || DEFAULT_GROUND_STATION.label)
+        .trim()
+        .slice(0, 80) || DEFAULT_GROUND_STATION.label;
+    }
+
+    const ref = db.ref('system/config/groundStation');
+    await ref.update(patch);
+    const snap = await ref.once('value');
+    return res.json({ ok: true, groundStation: normalizeGroundStationConfig(snap.val() || {}) });
+  } catch (e) {
+    console.error('[CONFIG ground-station]', e);
+    return res.status(500).json({ error: e.message });
+  }
+});
+
 // Demo fleet simulation
 function bearingCalc(la1,lo1,la2,lo2){
   const dO=(lo2-lo1)*Math.PI/180;
@@ -1786,6 +1817,11 @@ let _demoWriteLogCounts = new Map();
 let _demoLastTickAt = 0;
 let _demoLastError = null;
 const DEMO_MAX_METERS_PER_TICK = 100;
+const demoVehicleState = {
+  DEMO_1: { coordIndex: 0, direction: 'outbound', forward: true },
+  DEMO_2: { coordIndex: 0, direction: 'outbound', forward: true },
+  DEMO_3: { coordIndex: 0, direction: 'inbound', forward: false },
+};
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -1863,55 +1899,50 @@ function initializeDemoFleet() {
     Math.floor(len / 3),
     Math.floor((2 * len) / 3)
   ];
-  _demoVehicles = new Map(indices.map((idx, index) => [
-    DEMO_IDS[index],
-    {
-      id: DEMO_IDS[index],
-      coordIndex: Math.max(0, Math.min(len - 1, idx)),
-      segmentIndex: Math.max(0, Math.min(len - 1, idx)),
-      subStep: 0,
+  DEMO_IDS.forEach((id, index) => {
+    Object.assign(demoVehicleState[id], {
+      id,
+      coordIndex: Math.max(0, Math.min(len - 1, indices[index])),
+      direction: index === 2 ? 'inbound' : 'outbound',
+      forward: index !== 2,
       speed: [34, 43, 55][index],
       battery: [93, 86, 79][index],
-    }
-  ]));
+    });
+  });
+  _demoVehicles = new Map(DEMO_IDS.map(id => [id, demoVehicleState[id]]));
   _demoWriteLogCounts = new Map(DEMO_IDS.map(id => [id, 0]));
   for (const vehicle of _demoVehicles.values()) {
-    console.log(`[DEMO] ${vehicle.id} starts at idx=${vehicle.coordIndex}`);
+    console.log(`[DEMO] ${vehicle.id} starts at idx=${vehicle.coordIndex} direction=${vehicle.direction} forward=${vehicle.forward}`);
   }
 }
 
 function moveDemoVehicle(vehicleId, timestamp, updates) {
-  const vehicle = _demoVehicles.get(vehicleId);
+  const vehicle = demoVehicleState[vehicleId] || _demoVehicles.get(vehicleId);
   if (!vehicle || !demoRouteCoords.length) return null;
   const len = demoRouteCoords.length;
   const index = DEMO_IDS.indexOf(vehicleId);
   const coordIndex = Number.isInteger(vehicle.coordIndex)
     ? ((vehicle.coordIndex % len) + len) % len
-    : Math.max(0, Math.min(len - 1, Number(vehicle.segmentIndex || 0)));
+    : 0;
   const coord = demoRouteCoords[coordIndex];
-  const nextCoord = demoRouteCoords[(coordIndex + 1) % len];
-  if (!coord || !nextCoord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng) || !Number.isFinite(nextCoord.lat) || !Number.isFinite(nextCoord.lng)) {
+  const nextIndex = vehicle.forward ? (coordIndex + 1) % len : (coordIndex - 1 + len) % len;
+  const nextCoord = demoRouteCoords[nextIndex] || coord;
+  if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) {
     console.error(`[DEMO] Invalid coord for ${vehicleId} idx=${coordIndex}`);
     return null;
   }
-  const segmentMeters = haversineDistanceMeters(coord, nextCoord);
-  const stepsForCoord = Math.max(1, Math.ceil(segmentMeters / DEMO_MAX_METERS_PER_TICK));
-  const subStep = Number.isInteger(vehicle.subStep) ? Math.max(0, Math.min(stepsForCoord - 1, vehicle.subStep)) : 0;
-  const t = stepsForCoord <= 1 ? 0 : subStep / stepsForCoord;
-  const lat = coord.lat + (nextCoord.lat - coord.lat) * t;
-  const lng = coord.lng + (nextCoord.lng - coord.lng) * t;
-  const direction = demoPointDirection(coord, demoPointDirection(nextCoord, 'outbound'));
+  const lat = coord.lat;
+  const lng = coord.lng;
+  const direction = vehicle.direction;
   const wave = Math.sin(timestamp / 9000 + index * 1.7);
   const targetSpeed = ([31, 38, 45][index] + wave * 5) * _demoSpeedMultiplier;
   vehicle.speed = Math.max(8, Math.min(65, vehicle.speed + (targetSpeed - vehicle.speed) * 0.28));
   vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
-  vehicle.segmentIndex = coordIndex;
-  vehicle.subStep = subStep + 1;
-  if (vehicle.subStep >= stepsForCoord) {
+  if (vehicle.forward) {
     vehicle.coordIndex = (coordIndex + 1) % len;
-    vehicle.subStep = 0;
   } else {
-    vehicle.coordIndex = coordIndex;
+    vehicle.coordIndex = coordIndex - 1;
+    if (vehicle.coordIndex < 0) vehicle.coordIndex = len - 1;
   }
   const bearing = bearingCalc(lat, lng, nextCoord.lat, nextCoord.lng);
 
@@ -1963,10 +1994,10 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   updates[`fleet/${vehicleId}/description`] = `Demo vehicle ${index + 1}`;
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
   updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
-  console.log(`[DEMO tick] ${vehicleId} idx:${coordIndex} sub:${subStep}/${stepsForCoord} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
+  console.log(`[DEMO tick] ${vehicleId} idx:${coordIndex} direction:${direction} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
   const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
   if (logCount < 3) {
-    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${coordIndex} sub=${subStep}/${stepsForCoord} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
+    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${coordIndex} direction=${direction} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
     _demoWriteLogCounts.set(vehicleId, logCount + 1);
   }
   return current;
@@ -2058,17 +2089,11 @@ function buildDemoRoutePath(route = {}) {
     : [];
   const outbound = normalizeDemoRouteCoords(outboundRaw);
   const inbound = normalizeDemoRouteCoords(inboundRaw);
-  const fallbackInbound = outbound.coords.length > 1 ? [...outbound.coords].reverse() : [];
-  const path = [];
-  appendDemoDirectionCoords(path, outbound.coords, 'outbound');
-  appendDemoDirectionCoords(path, inbound.coords.length > 1 ? inbound.coords : fallbackInbound, 'inbound');
   return {
-    coords: path,
-    format: inbound.coords.length > 1
-      ? `${outbound.format}+${inbound.format}`
-      : `${outbound.format}+reverse-outbound`,
+    coords: outbound.coords,
+    format: outbound.format,
     outboundCount: outbound.coords.length,
-    inboundCount: inbound.coords.length > 1 ? inbound.coords.length : fallbackInbound.length,
+    inboundCount: inbound.coords.length,
     hasInbound: inbound.coords.length > 1,
   };
 }
@@ -2112,11 +2137,9 @@ async function startDemoFleet(options = {}) {
     _demoRouteCoordSource = 'firebase';
     _demoRouteId = routeId;
   } else {
-    const fallbackPath = [];
-    appendDemoDirectionCoords(fallbackPath, DEMO_FALLBACK_COORDS, 'outbound');
-    appendDemoDirectionCoords(fallbackPath, [...DEMO_FALLBACK_COORDS].reverse(), 'inbound');
-    demoRouteCoords = fallbackPath;
-    _demoRouteCoordFormat = 'object-lat-lng+reverse-outbound';
+    const fallback = normalizeDemoRouteCoords(DEMO_FALLBACK_COORDS);
+    demoRouteCoords = fallback.coords;
+    _demoRouteCoordFormat = fallback.format;
     _demoRouteCoordSource = 'fallback';
     _demoRouteId = preferredRouteId || _demoRouteId;
     console.error('[DEMO] Using fallback hardcoded route');
@@ -2196,8 +2219,8 @@ app.get('/api/demo/debug', async (_req, res) => {
         lat: Number.isFinite(Number(current.lat)) ? Number(current.lat) : null,
         lng: Number.isFinite(Number(current.lng)) ? Number(current.lng) : null,
         coordIndex: memory?.coordIndex ?? null,
-        segmentIndex: memory?.segmentIndex ?? null,
-        subStep: memory?.subStep ?? null,
+        direction: memory?.direction ?? null,
+        forward: memory?.forward ?? null,
       };
     });
     return res.json({
@@ -2625,14 +2648,14 @@ app.get('/api/v1/network', async (req, res) => {
     const fleetData = fleetSnap.val() || {};
     const sysConfig = configSnap.val() || {};
     const demoMode = sysConfig.demoMode === true;
-    const configuredGroundStation = normalizeGroundStationConfig(sysConfig.groundStation);
+    const gs = sysConfig.groundStation || {};
     const groundStation = {
-      id: configuredGroundStation.id,
+      id: gs.id || 'GROUND_01',
       type: 'ground_station',
-      lat: configuredGroundStation.lat,
-      lng: configuredGroundStation.lng,
+      lat: typeof gs.lat === 'number' ? gs.lat : 8.4304,
+      lng: typeof gs.lng === 'number' ? gs.lng : 99.9631,
       status: 'online',
-      label: configuredGroundStation.label
+      label: gs.label || 'สถานีภาคพื้น'
     };
     const offlineTimeoutMs = Math.max(90, Number(sysConfig.offlineTimeout) || 90) * 1000;
     const nodes = Object.entries(fleetData)

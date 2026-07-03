@@ -9,12 +9,105 @@
   <style>
     body[data-page="about"] {
       background: var(--color-background);
+      scroll-behavior: smooth;
     }
+
+    html { scroll-behavior: smooth; }
 
     .about-shell {
       max-width: 900px;
       margin: 0 auto;
-      padding: 24px 16px 60px;
+      padding: 24px 16px 80px;
+    }
+
+    /* ── Sticky mini-nav for section anchors ── */
+    .about-mini-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      overflow-x: auto;
+      scrollbar-width: none;
+      -webkit-overflow-scrolling: touch;
+      gap: 2px;
+      padding: 6px 0;
+      background: var(--color-background);
+      border-bottom: 1px solid var(--color-border);
+      margin-bottom: 16px;
+    }
+
+    .about-mini-nav::-webkit-scrollbar { display: none; }
+
+    .about-mini-nav a {
+      flex: 0 0 auto;
+      padding: 5px 12px;
+      border-radius: var(--radius-pill);
+      border: 1px solid var(--color-border);
+      background: #fff;
+      color: var(--color-muted);
+      font-size: 11px;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+
+    .about-mini-nav a:hover,
+    .about-mini-nav a.active {
+      background: var(--color-primary);
+      border-color: var(--color-primary);
+      color: #fff;
+    }
+
+    /* ── Mobile accordion ── */
+    @media (max-width: 767px) {
+      .about-section {
+        padding: 0;
+        overflow: hidden;
+      }
+
+      .about-section-toggle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 14px 16px;
+        background: none;
+        border: none;
+        cursor: pointer;
+        text-align: left;
+        font: inherit;
+        gap: 8px;
+      }
+
+      .about-section-toggle .section-title {
+        margin: 0;
+      }
+
+      .about-section-chevron {
+        flex: 0 0 auto;
+        transition: transform 0.2s;
+        color: var(--color-muted);
+      }
+
+      .about-section.open .about-section-chevron {
+        transform: rotate(180deg);
+      }
+
+      .about-section-body {
+        padding: 0 16px 16px;
+        display: none;
+      }
+
+      .about-section.open .about-section-body {
+        display: block;
+      }
+    }
+
+    @media (min-width: 768px) {
+      .about-section-toggle { display: none; }
+      .about-section-body { display: block !important; }
+      .about-section-chevron { display: none; }
     }
 
     /* ── HERO ── */
@@ -471,6 +564,16 @@
 
   <main class="about-shell" id="about-main">
 
+    <!-- ── Sticky mini-nav ── -->
+    <nav class="about-mini-nav" aria-label="ไปยังหัวข้อ">
+      <a href="#section-problem">ปัญหา</a>
+      <a href="#section-how">วิธีทำงาน</a>
+      <a href="#section-concepts">แนวคิด</a>
+      <a href="#section-predict">VIBE Predict</a>
+      <a href="#section-live">สถานะสด</a>
+      <a href="#section-specs">สเปก</a>
+    </nav>
+
     <!-- ── 1. HERO ── -->
     <div class="vibe-hero">
       <div class="vibe-hero-content">
@@ -484,8 +587,12 @@
     </div>
 
     <!-- ── 2. THE PROBLEM ── -->
-    <section class="about-section" aria-labelledby="problem-heading">
-      <h2 class="section-title" id="problem-heading">ปัญหาที่ VIBE แก้</h2>
+    <section class="about-section" id="section-problem" aria-labelledby="problem-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="problem-heading">ปัญหาที่ VIBE แก้</h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
       <div class="problem-grid">
         <div class="problem-card">
           <div class="problem-icon" aria-hidden="true">💸</div>
@@ -503,11 +610,16 @@
           <div class="problem-desc">รถที่ไม่มีซิมหรือสัญญาณหายไม่สามารถส่งข้อมูลตำแหน่งกลับศูนย์ควบคุมได้</div>
         </div>
       </div>
+      </div>
     </section>
 
     <!-- ── 3. HOW IT WORKS ── -->
-    <section class="about-section" aria-labelledby="how-heading">
-      <h2 class="section-title" id="how-heading">วิธีการทำงานของ VIBE</h2>
+    <section class="about-section" id="section-how" aria-labelledby="how-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="how-heading">วิธีการทำงานของ VIBE</h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
 
       <div class="flow-diagram" role="img" aria-label="ไดอะแกรม LoRa Mesh: รถ A ส่งผ่าน LoRa ไปยัง รถ B แล้วต่อไปยัง รถ C แล้วต่อไปยัง สถานีฐาน แล้วผ่าน 4G ไปยัง Cloud">
         <div class="flow-node">
@@ -552,11 +664,16 @@
         รถแต่ละคันคือ <strong>node</strong> ในเครือข่าย ช่วยส่งต่อข้อมูลเป็นทอดๆ —
         แม้รถ A ไม่มีสัญญาณ 4G ข้อมูลก็ยังถึง Cloud ผ่านรถ B หรือ C
       </div>
+      </div>
     </section>
 
     <!-- ── 4. KEY CONCEPTS ── -->
-    <section class="about-section" aria-labelledby="concepts-heading">
-      <h2 class="section-title" id="concepts-heading">แนวคิดสำคัญของ VIBE</h2>
+    <section class="about-section" id="section-concepts" aria-labelledby="concepts-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="concepts-heading">แนวคิดสำคัญของ VIBE</h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
       <div class="concepts-grid">
         <div class="concept-card">
           <span class="concept-tag">ADS-B Inspired</span>
@@ -579,11 +696,16 @@
           <div class="concept-desc">ข้อมูลกระโดดข้ามรถได้สูงสุด 3 hop ก่อนถึงสถานีฐาน ขยายระยะครอบคลุมเครือข่ายโดยไม่เพิ่มต้นทุน</div>
         </div>
       </div>
+      </div>
     </section>
 
     <!-- ── 5. VIBE PREDICT ── -->
-    <section class="about-section" aria-labelledby="predict-heading">
-      <h2 class="section-title" id="predict-heading">VIBE Predict — AI ในระบบ</h2>
+    <section class="about-section" id="section-predict" aria-labelledby="predict-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="predict-heading">VIBE Predict — AI ในระบบ</h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
       <p style="font-size:12px;color:var(--color-muted);margin-bottom:14px;">
         <strong style="color:var(--color-text);">VIBE Predict</strong> คือ Route-Aware Prediction Engine ที่ทำงานอยู่เบื้องหลัง คำนวณ ETA จาก 3 ขั้นตอน:
       </p>
@@ -613,14 +735,19 @@
       <div class="predict-result">
         <strong>ETA แม่นยำ พร้อมระดับความเชื่อมั่น (Confidence Score)</strong>
       </div>
+      </div>
     </section>
 
     <!-- ── 6. LIVE NETWORK STATUS ── -->
-    <section class="about-section" aria-labelledby="live-heading">
-      <h2 class="section-title" id="live-heading">
-        สถานะเครือข่าย VIBE แบบเรียลไทม์
-        <span id="live-mode-badge" class="small-badge status-warning" style="margin-left:auto;" aria-live="polite">กำลังโหลด...</span>
-      </h2>
+    <section class="about-section" id="section-live" aria-labelledby="live-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="live-heading">
+          สถานะเครือข่าย VIBE แบบเรียลไทม์
+          <span id="live-mode-badge" class="small-badge status-warning" style="margin-left:auto;" aria-live="polite">กำลังโหลด...</span>
+        </h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
       <div class="live-status-grid" id="live-status-grid">
         <div class="live-stat">
           <div class="live-stat-value" id="live-vehicles">—</div>
@@ -640,11 +767,16 @@
         </div>
       </div>
       <div class="live-refresh-note" id="live-refresh-note">อัปเดตอัตโนมัติทุก 10 วินาที</div>
+      </div>
     </section>
 
     <!-- ── 7. TECHNICAL SPECS ── -->
-    <section class="about-section" aria-labelledby="specs-heading">
-      <h2 class="section-title" id="specs-heading">ข้อมูลทางเทคนิค</h2>
+    <section class="about-section" id="section-specs" aria-labelledby="specs-heading">
+      <button class="about-section-toggle" type="button" onclick="this.closest('.about-section').classList.toggle('open')" aria-expanded="false">
+        <h2 class="section-title" id="specs-heading">ข้อมูลทางเทคนิค</h2>
+        <svg class="about-section-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      </button>
+      <div class="about-section-body">
       <table class="specs-table" aria-label="ข้อมูลทางเทคนิคของ VIBE">
         <tbody>
           <tr><td>Protocol</td><td>LoRa 915 / 923 MHz</td></tr>
@@ -656,6 +788,7 @@
           <tr><td>AI Engine</td><td>VIBE Predict (Map Matching + Kalman Filter)</td></tr>
         </tbody>
       </table>
+      </div>
     </section>
 
   </main>

@@ -79,12 +79,84 @@
       .history-summary { grid-template-columns: 1fr; }
       .history-shell { padding: 8px 10px; }
     }
+
+    /* ── Mobile: tab-based content switching ── */
+    @media (max-width: 767px) {
+      html, body { overflow: auto; }
+      .history-shell {
+        height: auto;
+        padding: 0;
+        gap: 0;
+        grid-template-rows: auto 1fr;
+      }
+
+      /* Controls: compact 2-row */
+      .history-controls-card {
+        border-radius: 0;
+        border-left: none;
+        border-right: none;
+      }
+      .history-controls {
+        grid-template-columns: 1fr 1fr;
+        gap: 6px;
+      }
+      /* date and vehicle on first row */
+      #history-date    { grid-column: 1; }
+      #history-vehicle { grid-column: 2; }
+      /* time range on second row */
+      #history-from    { grid-column: 1; }
+      #history-to      { grid-column: 2; }
+      /* buttons third row */
+      #history-search  { grid-column: 1; }
+      #history-export  { grid-column: 2; }
+      #history-status  { grid-column: 1 / -1; justify-self: start; }
+
+      /* Tab panels */
+      .history-workspace { display: block; }
+      .history-tab-panel { display: none; }
+      .history-tab-panel.active { display: block; padding: 10px; }
+
+      .history-map-card {
+        height: calc(100dvh - 56px - 52px - 56px); /* viewport - bottomnav - tabs - controls */
+        border-radius: 0;
+      }
+
+      .history-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        grid-template-rows: none;
+      }
+
+      .history-summary {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .history-chart-card { min-height: 180px; }
+      .history-chart { height: 160px; }
+
+      .history-table-card {
+        min-height: 300px;
+        max-height: none;
+        overflow: visible;
+        display: flex;
+        flex-direction: column;
+        grid-template-rows: none;
+      }
+
+      .history-table-card .table-wrap {
+        flex: 1;
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: 40dvh;
+      }
+    }
   </style>
 </head>
 <body data-page="history">
   <div id="navbar-root"></div>
   <main class="history-shell">
-    <section class="card">
+    <section class="card history-controls-card">
       <div class="card-body history-controls">
         <input id="history-date" class="form-control" type="date" aria-label="วันที่"/>
         <select id="history-vehicle" class="select-control" aria-label="รถ"></select>
@@ -96,12 +168,21 @@
       </div>
     </section>
 
+    <!-- Mobile-only section tabs -->
+    <div class="mobile-section-tabs" id="history-mobile-tabs" aria-label="เลือกมุมมอง">
+      <button class="active" data-history-tab="map" type="button">🗺️ แผนที่</button>
+      <button data-history-tab="charts" type="button">📈 กราฟ</button>
+      <button data-history-tab="table" type="button">📋 ตาราง</button>
+    </div>
+
     <section class="history-workspace">
-      <section class="history-map-card card">
+      <!-- Map panel -->
+      <section class="history-map-card card history-tab-panel active" id="history-panel-map">
         <div id="history-map" class="map-canvas"></div>
       </section>
 
-      <section class="history-panel">
+      <!-- Charts + Table panel -->
+      <section class="history-panel history-tab-panel active" id="history-panel-charts">
         <div class="history-summary">
           <div class="metric-card"><div class="metric-content"><div class="metric-label">ระยะทางรวม</div><div id="summary-distance" class="metric-value">—</div></div></div>
           <div class="metric-card"><div class="metric-content"><div class="metric-label">ความเร็วเฉลี่ย</div><div id="summary-speed" class="metric-value">—</div></div></div>
@@ -119,7 +200,7 @@
           <div class="card-body history-chart"><canvas id="battery-chart"></canvas></div>
         </div>
 
-        <div class="card history-table-card">
+        <div class="card history-table-card" id="history-panel-table">
           <div class="card-header">
             <h1 class="card-title">ข้อมูลย้อนหลัง</h1>
             <input id="history-filter" class="search-control" type="search" placeholder="กรองข้อมูล" style="max-width:180px;"/>
@@ -155,5 +236,56 @@
 
   <script src="/js/shared.js"></script>
   <script src="/js/history.js"></script>
+  <script>
+    'use strict';
+    // Mobile tab switching for history page
+    (function() {
+      var tabs = document.querySelectorAll('[data-history-tab]');
+      if (!tabs.length) return;
+
+      var mobileTabsEl = document.getElementById('history-mobile-tabs');
+
+      function isMobile() { return window.innerWidth <= 767; }
+
+      function switchHistoryTab(tab) {
+        if (!isMobile()) return;
+        tabs.forEach(function(btn) {
+          btn.classList.toggle('active', btn.dataset.historyTab === tab);
+        });
+        var mapPanel = document.getElementById('history-panel-map');
+        var chartsPanel = document.getElementById('history-panel-charts');
+        if (tab === 'map') {
+          mapPanel.classList.add('active');
+          chartsPanel.classList.remove('active');
+        } else if (tab === 'charts' || tab === 'table') {
+          mapPanel.classList.remove('active');
+          chartsPanel.classList.add('active');
+          // scroll to table if table tab clicked
+          if (tab === 'table') {
+            setTimeout(function() {
+              var tableEl = document.getElementById('history-panel-table');
+              if (tableEl) tableEl.scrollIntoView({ behavior: 'smooth' });
+            }, 50);
+          }
+        }
+      }
+
+      tabs.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          switchHistoryTab(btn.dataset.historyTab);
+        });
+      });
+
+      // On desktop: show mobile-tabs hidden via CSS media-query; show all panels
+      function applyLayout() {
+        if (!isMobile()) {
+          document.getElementById('history-panel-map').classList.add('active');
+          document.getElementById('history-panel-charts').classList.add('active');
+        }
+      }
+      applyLayout();
+      window.addEventListener('resize', applyLayout);
+    }());
+  </script>
 </body>
 </html>

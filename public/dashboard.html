@@ -328,14 +328,20 @@
 
     @media (max-width: 720px) {
       .mesh-status-grid {
-        grid-template-columns: 1fr;
+        grid-template-columns: repeat(2, 1fr);
         gap: 8px;
       }
+      /* hide 4th card (farthest link) on very small mobile */
+      .mesh-status-card:nth-child(4) { display: none; }
       .mesh-canvas-wrap {
-        min-height: 300px;
+        min-height: 280px;
       }
       #mesh-graph-canvas {
         height: 280px;
+      }
+      /* side panel becomes full-width stacked below canvas on mobile */
+      .mesh-workspace {
+        grid-template-columns: 1fr;
       }
     }
 
