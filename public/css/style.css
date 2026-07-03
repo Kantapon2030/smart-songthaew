@@ -1038,6 +1038,11 @@ canvas.sparkline { display: block; }
   display: none;
 }
 
+/* Hidden on desktop — only shown inside @media (max-width: 767px) */
+.mobile-menu-overlay {
+  display: none;
+}
+
 @media (max-width: 767px) {
   /* ── Typography: slightly larger for readability ── */
   body { font-size: 13px; }
