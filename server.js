@@ -75,8 +75,19 @@ if (!JWT_SECRET) {
 const JWT_EXPIRES = '8h'; // 8 hours
 
 // ── Rate Limiting Store ───────────────────────────────────────────────────────
-const rateLimitStore = new Map(); // vehicleId -> lastRequestTime
-const RATE_LIMIT_MS = 2000; // 2 seconds between requests
+const rateLimitStore = new Map(); // client/IP -> telemetry burst window
+const TELEMETRY_RATE_WINDOW_MS = 1000;
+const TELEMETRY_RATE_MAX = 150;
+let locationsCache = { key: null, expiresAt: 0, payload: null };
+const LOCATIONS_CACHE_MS = 1000;
+
+function clearLocationsCache() {
+  locationsCache = { key: null, expiresAt: 0, payload: null };
+}
+
+function firebaseKeyPart(value) {
+  return String(value || '').replace(/[.#$\/\[\]]/g, '_');
+}
 
 // ── Auth Middleware ───────────────────────────────────────────────────────────
 function authMiddleware(req, res, next) {
@@ -97,20 +108,23 @@ function authMiddleware(req, res, next) {
 
 // ── Rate Limit Middleware ───────────────────────────────────────────────────
 function rateLimitMiddleware(req, res, next) {
-  const vehicleId = req.body.vehicleId || req.body.vehicle_id || req.query.vehicleId || req.query.vehicle_id;
-  if (!vehicleId) return next(); // Skip if no vehicleId
-  
   const now = Date.now();
-  const lastRequest = rateLimitStore.get(vehicleId);
-  
-  if (lastRequest && (now - lastRequest) < RATE_LIMIT_MS) {
-    return res.status(429).json({ 
-      error: 'Too Many Requests', 
-      retryAfter: Math.ceil((RATE_LIMIT_MS - (now - lastRequest)) / 1000)
+  const key = req.ip || req.headers['x-forwarded-for'] || 'telemetry';
+  const current = rateLimitStore.get(key);
+
+  if (!current || now - current.startedAt >= TELEMETRY_RATE_WINDOW_MS) {
+    rateLimitStore.set(key, { startedAt: now, count: 1 });
+    return next();
+  }
+
+  current.count += 1;
+  if (current.count > TELEMETRY_RATE_MAX) {
+    return res.status(429).json({
+      error: 'Too many telemetry bursts from VIBE nodes',
+      retryAfter: Math.ceil((TELEMETRY_RATE_WINDOW_MS - (now - current.startedAt)) / 1000),
     });
   }
-  
-  rateLimitStore.set(vehicleId, now);
+
   next();
 }
 
@@ -994,7 +1008,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const snr = typeof req.body.snr === 'number' ? req.body.snr : null;
   const seq = typeof req.body.seq === 'number' ? req.body.seq : null;
   const boot_id = req.body.boot_id || null;
-  const packet_id = req.body.packet_id || null;
+  const packet_id = req.body.packet_id || req.body.packetId || null;
   const ttl = typeof req.body.ttl === 'number' ? req.body.ttl : null;
   const store_forward = req.body.store_forward === true;
   const source = req.body.source || 'vehicle';
@@ -1043,6 +1057,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       patch.bearing = headingValue;
     }
     await currentRef.update(patch);
+    clearLocationsCache();
     return res.status(200).json({ message: 'Heartbeat updated', status: 'heartbeat', timestamp: ts });
   }
 
@@ -1118,6 +1133,25 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   if (version_summary.length > 0) data.version_summary = version_summary;
 
   try {
+    if (packet_id) {
+      const dedupRef = db.ref(`dedup/${firebaseKeyPart(vehicleId)}/${firebaseKeyPart(packet_id)}`);
+      const dedupResult = await dedupRef.transaction(current => (
+        current || {
+          packet_id,
+          processedAt: ts,
+          date: today,
+        }
+      ));
+      if (!dedupResult.committed) {
+        return res.status(200).json({
+          status: 'duplicate',
+          message: 'Packet already processed.',
+          packet_id,
+          timestamp: ts,
+        });
+      }
+    }
+
     if (boot_id && seq !== null) {
       const previous = (await db.ref(`fleet/${vehicleId}/current`).once('value')).val();
       const decision = telemetryDecision(previous, { boot_id, seq, gps_time: gpsTime, gps_fix: gpsFix });
@@ -1166,6 +1200,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       admin.database.ServerValue.increment(1);
 
     await db.ref().update(updates);
+    clearLocationsCache();
 
     const gpsStatus = hasValidGPS ? `${latF},${lngF}` : 'no-fix';
   console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${direction}`);
@@ -1190,11 +1225,17 @@ app.get('/api/locations', async (req, res) => {
   logLegacy(req);
   try {
     const { routeId } = req.query;
+    const cacheKey = `locations:${routeId || 'all'}`;
+    if (locationsCache.key === cacheKey && locationsCache.expiresAt > Date.now()) {
+      res.set('X-Cache', 'HIT');
+      return res.status(200).json(locationsCache.payload);
+    }
+
     await ensureDemoFleetRunning('locations');
     const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
     const raw = fleetSnap.val() || {};
 
-    const result = {};
+    const result = [];
     for (const [id, val] of Object.entries(raw)) {
       // TWIN_ / DEMO_ เสมอส่ง — ไม่ต้อง filter ด้วย routeId
       if (!demoMode && isDemoVehicle(id, val)) continue;
@@ -1202,16 +1243,27 @@ app.get('/api/locations', async (req, res) => {
       const entryRouteId = val.routeId || val.current?.routeId || val.current?.route_id || 'unassigned';
       if (routeId && canonicalRouteId(entryRouteId) !== canonicalRouteId(routeId) && !isDemoVehicle(id, val)) continue;
       if (val?.current) {
-        result[id] = {
-          current: currentForFleetResponse(id, val, demoMode),
+        const current = currentForFleetResponse(id, val, demoMode);
+        result.push({
+          vehicleId: id,
+          vehicle_id: id,
+          ...current,
+          current,
           routeId: entryRouteId,
+          route_id: current.route_id || entryRouteId,
           type: val.type,
           plate: sanitizePlate(val.plate || val.current?.plate) || '',
           description: val.description || '',
-        };
+        });
       }
     }
 
+    locationsCache = {
+      key: cacheKey,
+      expiresAt: Date.now() + LOCATIONS_CACHE_MS,
+      payload: result,
+    };
+    res.set('X-Cache', 'MISS');
     return res.status(200).json(result);
   } catch (err) {
     console.error('[GET /api/locations]', err);

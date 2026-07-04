@@ -30,6 +30,7 @@
 #include <SoftwareSerial.h>
 #include <SPI.h>
 #include <TinyGPS++.h>
+#include <ESP8266WiFi.h>
 #include <math.h>
 #if __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
@@ -110,6 +111,15 @@ unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
 
+// Power Management State
+bool peripheralPower = false;
+unsigned long currentTxInterval = TX_INTERVAL_NORMAL;
+int stationaryCount = 0;
+float lastLat = 0.0f;
+float lastLng = 0.0f;
+unsigned long lastSleepCheck = 0;
+bool isStationary = false;
+
 volatile bool ppsFlag = false;
 volatile unsigned long ppsTickMs = 0;
 
@@ -182,7 +192,7 @@ unsigned long txJitterMs() {
 }
 
 void scheduleNextTx(unsigned long baseMs, const char* mode = "fallback") {
-  nextTxMs = baseMs + TX_INTERVAL_MS + txJitterMs();
+  nextTxMs = baseMs + currentTxInterval + txJitterMs();
   nextTxMode = mode;
 }
 
@@ -203,7 +213,7 @@ uint16_t gpsMsIntoMinute() {
 bool gpsTxSlotDue() {
   if (!gpsTimeValid || ppsRecentlySeen()) return false;
 
-  const uint16_t periodMs = (uint16_t)TX_INTERVAL_MS;
+  const uint16_t periodMs = (uint16_t)currentTxInterval;
   const uint16_t slotStart = (uint16_t)(vehicleTxOffsetMs() % periodMs);
   const uint16_t elapsed = gpsMsIntoMinute() % periodMs;
   const uint16_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
@@ -236,7 +246,7 @@ void processPpsSync() {
   ppsLastSeenMs = millis();
   if (!gpsTimeValid) return;
 
-  const uint8_t periodSec = (uint8_t)(TX_INTERVAL_MS / 1000UL);
+  const uint8_t periodSec = (uint8_t)(currentTxInterval / 1000UL);
   const uint8_t second = gps.time.second();
   if (periodSec == 0 || (second % periodSec) != 0 || second == lastPpsSlotSecond) return;
 
@@ -477,49 +487,29 @@ void addVersionSummary(JsonDocument& doc) {
   if (added == 0) doc.remove("vs");
 }
 
-String shortVehicleId(const char* vehicleId) {
-  if (vehicleId == nullptr || vehicleId[0] == '\0') return "";
-
-  if (strncmp(vehicleId, "DEMO_", 5) == 0) return "D" + String(atoi(vehicleId + 5));
-  if (strncmp(vehicleId, "BUS_", 4) == 0) return "B" + String(atoi(vehicleId + 4));
-  if (strncmp(vehicleId, "GROUND_", 7) == 0) return "G" + String(atoi(vehicleId + 7));
-
-  String id = String(vehicleId);
-  id.replace("_", "");
-  return id.substring(0, min(6, (int)id.length()));
-}
-
-String fullVehicleIdFromShort(const char* shortId) {
-  if (shortId == nullptr || shortId[0] == '\0') return "";
+void fullVehicleIdFromShortToBuffer(const char* shortId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (shortId == nullptr || shortId[0] == '\0') return;
 
   int number = atoi(shortId + 1);
-  char out[16];
   if (shortId[0] == 'B') {
-    snprintf(out, sizeof(out), "BUS_%02d", number);
-    return String(out);
+    snprintf(out, outSize, "BUS_%02d", number);
+    return;
   }
   if (shortId[0] == 'D') {
-    snprintf(out, sizeof(out), "DEMO_%d", number);
-    return String(out);
+    snprintf(out, outSize, "DEMO_%d", number);
+    return;
   }
   if (shortId[0] == 'G') {
-    snprintf(out, sizeof(out), "GROUND_%02d", number);
-    return String(out);
+    snprintf(out, outSize, "GROUND_%02d", number);
+    return;
   }
-  return String(shortId);
+  strncpy(out, shortId, outSize - 1);
+  out[outSize - 1] = '\0';
 }
 
-String shortRouteId(const char* routeId) {
-  if (routeId == nullptr || routeId[0] == '\0') return "";
-  if (strncmp(routeId, "route_", 6) == 0) return "R" + String(atoi(routeId + 6));
-  String id = String(routeId);
-  id.replace("route", "R");
-  id.replace("_", "");
-  id.replace("-", "");
-  return id.substring(0, min(8, (int)id.length()));
-}
-
-String directionCode(const char* direction) {
+const char* directionCode(const char* direction) {
   if (direction == nullptr || direction[0] == '\0') return "U";
   char c = direction[0];
   if (c == 'i' || c == 'I') return "I";
@@ -527,7 +517,9 @@ String directionCode(const char* direction) {
   return "U";
 }
 
-String packetHash6(const char* packetId) {
+void packetHash6ToBuffer(const char* packetId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
   uint32_t hash = 2166136261UL;
   if (packetId != nullptr) {
     while (*packetId) {
@@ -535,13 +527,79 @@ String packetHash6(const char* packetId) {
       hash *= 16777619UL;
     }
   }
-
-  char out[7];
-  snprintf(out, sizeof(out), "%06lX", (unsigned long)(hash & 0xFFFFFFUL));
-  return String(out);
+  snprintf(out, outSize, "%06lX", (unsigned long)(hash & 0xFFFFFFUL));
 }
 
-String buildNeighborCompact(Neighbor* table, int count) {
+void shortVehicleIdToBuffer(const char* vehicleId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (vehicleId == nullptr || vehicleId[0] == '\0') return;
+
+  if (strncmp(vehicleId, "DEMO_", 5) == 0) {
+    snprintf(out, outSize, "D%d", atoi(vehicleId + 5));
+    return;
+  }
+  if (strncmp(vehicleId, "BUS_", 4) == 0) {
+    snprintf(out, outSize, "B%d", atoi(vehicleId + 4));
+    return;
+  }
+  if (strncmp(vehicleId, "GROUND_", 7) == 0) {
+    snprintf(out, outSize, "G%d", atoi(vehicleId + 7));
+    return;
+  }
+
+  size_t write = 0;
+  for (size_t read = 0; vehicleId[read] != '\0' && write < outSize - 1 && write < 6; read++) {
+    if (vehicleId[read] == '_') continue;
+    out[write++] = vehicleId[read];
+  }
+  out[write] = '\0';
+}
+
+void shortRouteIdToBuffer(const char* routeId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (routeId == nullptr || routeId[0] == '\0') return;
+  if (strncmp(routeId, "route_", 6) == 0) {
+    snprintf(out, outSize, "R%d", atoi(routeId + 6));
+    return;
+  }
+
+  size_t write = 0;
+  for (size_t read = 0; routeId[read] != '\0' && write < outSize - 1 && write < 8; read++) {
+    if (routeId[read] == '_' || routeId[read] == '-') continue;
+    if (strncmp(routeId + read, "route", 5) == 0) {
+      out[write++] = 'R';
+      read += 4;
+      continue;
+    }
+    out[write++] = routeId[read];
+  }
+  out[write] = '\0';
+}
+
+void appendCompactToken(char* out, size_t outSize, const char* token) {
+  if (outSize == 0 || token == nullptr || token[0] == '\0') return;
+  size_t used = strlen(out);
+  if (used >= outSize - 1) return;
+  snprintf(out + used, outSize - used, "%s%s", used > 0 ? "," : "", token);
+}
+
+void trimCompactListTo(char* out, size_t maxLen) {
+  while (strlen(out) > maxLen) {
+    char* comma = strchr(out, ',');
+    if (comma == nullptr) {
+      size_t len = strlen(out);
+      memmove(out, out + len - maxLen, maxLen + 1);
+      return;
+    }
+    memmove(out, comma + 1, strlen(comma + 1) + 1);
+  }
+}
+
+void buildNeighborCompact(char* out, size_t outSize, Neighbor* table, int count) {
+  if (outSize == 0) return;
+  out[0] = '\0';
   int best[3] = { -1, -1, -1 };
   unsigned long now = millis();
 
@@ -558,87 +616,77 @@ String buildNeighborCompact(Neighbor* table, int count) {
     }
   }
 
-  String out;
   for (int slot = 0; slot < 3; slot++) {
     int index = best[slot];
     if (index < 0) continue;
-    if (out.length() > 0) out += ",";
-    out += shortVehicleId(table[index].vehicleId);
-    out += ":";
-    out += String((int)table[index].rssi);
-    out += ":";
-    out += String((int)round(table[index].snr * 10.0f));
+    char shortId[8];
+    char token[32];
+    shortVehicleIdToBuffer(table[index].vehicleId, shortId, sizeof(shortId));
+    snprintf(token, sizeof(token), "%s:%d:%d", shortId, (int)table[index].rssi, (int)round(table[index].snr * 10.0f));
+    appendCompactToken(out, outSize, token);
   }
-  return out;
 }
 
-String buildRelayChainCompact(String* chain, int len) {
-  String out;
-  for (int i = 0; i < len; i++) {
-    if (chain[i].length() == 0 || chain[i] == shortVehicleId(VEHICLE_ID)) continue;
-    if (out.length() > 0) out += ",";
-    out += chain[i];
-  }
-
-  while (out.length() > 30) {
-    int comma = out.indexOf(',');
-    if (comma < 0) {
-      out = out.substring(out.length() - 30);
-      break;
-    }
-    out = out.substring(comma + 1);
-  }
-  return out;
-}
-
-String buildRelayChainCompactFromDoc(JsonDocument& doc) {
-  String chain[MAX_HOPS + 1];
-  int len = 0;
+void buildRelayChainCompactFromDoc(JsonDocument& doc, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  char ownShort[8];
+  shortVehicleIdToBuffer(VEHICLE_ID, ownShort, sizeof(ownShort));
 
   if (doc["rc"].is<JsonArray>()) {
     for (JsonVariant item : doc["rc"].as<JsonArray>()) {
-      if (len >= MAX_HOPS + 1) break;
-      chain[len++] = shortVehicleId(item.as<const char*>());
+      char shortId[8];
+      shortVehicleIdToBuffer(item.as<const char*>(), shortId, sizeof(shortId));
+      if (shortId[0] == '\0' || strcmp(shortId, ownShort) == 0) continue;
+      appendCompactToken(out, outSize, shortId);
     }
   }
 
   const char* relayFrom = doc["rf"] | "";
-  if (relayFrom[0] != '\0' && len < MAX_HOPS + 1) chain[len++] = shortVehicleId(relayFrom);
-  return buildRelayChainCompact(chain, len);
+  if (relayFrom[0] != '\0') {
+    char shortId[8];
+    shortVehicleIdToBuffer(relayFrom, shortId, sizeof(shortId));
+    if (shortId[0] != '\0' && strcmp(shortId, ownShort) != 0) appendCompactToken(out, outSize, shortId);
+  }
+  trimCompactListTo(out, 30);
 }
 
-String buildVersionSummaryCompact() {
-  String out;
+void buildVersionSummaryCompact(char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
   unsigned long now = millis();
   int added = 0;
   for (int i = 0; i < SHARED_STATE_SIZE && added < VERSION_SUMMARY_LIMIT; i++) {
     if (!sharedStates[i].used || sameId(sharedStates[i].vehicleId, VEHICLE_ID)) continue;
     if (now - sharedStates[i].lastSeen > MESH_SEEN_TIMEOUT_MS) continue;
-    if (out.length() > 0) out += ",";
-    out += shortVehicleId(sharedStates[i].vehicleId);
-    out += ":";
-    out += String(sharedStates[i].seq);
-    out += ":";
+    char shortId[8];
+    char bootPrefix[3] = "";
+    char token[32];
+    shortVehicleIdToBuffer(sharedStates[i].vehicleId, shortId, sizeof(shortId));
     if (strlen(sharedStates[i].bootId) >= 2) {
-      out += sharedStates[i].bootId[0];
-      out += sharedStates[i].bootId[1];
+      bootPrefix[0] = sharedStates[i].bootId[0];
+      bootPrefix[1] = sharedStates[i].bootId[1];
+      bootPrefix[2] = '\0';
     } else {
-      out += sharedStates[i].bootId;
+      strncpy(bootPrefix, sharedStates[i].bootId, sizeof(bootPrefix) - 1);
     }
+    snprintf(token, sizeof(token), "%s:%lu:%s", shortId, (unsigned long)sharedStates[i].seq, bootPrefix);
+    appendCompactToken(out, outSize, token);
     added++;
   }
-  return out;
 }
 
-String buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packetSeq,
+bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packetSeq,
                        const char* packetBootId, uint32_t packetGpsTs,
                        float lat, float lng, float speed, int heading, int battery,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
-                       const String& relayChain, bool gpsFix) {
+                       const char* relayChain, bool gpsFix, char* payload, size_t payloadSize) {
   StaticJsonDocument<256> doc;
 
-  doc["id"] = shortVehicleId(vehicleId);
+  char shortId[8];
+  shortVehicleIdToBuffer(vehicleId, shortId, sizeof(shortId));
+  doc["id"] = shortId;
   doc["sq"] = packetSeq;
   doc["bi"] = packetBootId;
   doc["ts"] = packetGpsTs;
@@ -654,44 +702,55 @@ String buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t pac
   doc["sp"] = (int)round(speed);
   doc["bt"] = battery;
   doc["hp"] = hop;
-  doc["pk"] = packetHash6(packetId);
+  char packetHash[7];
+  packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
+  doc["pk"] = packetHash;
   doc["tt"] = ttl;
 
   if (measureJson(doc) < 140) {
     doc["hd"] = heading;
-    String route = shortRouteId(routeId);
-    if (route.length() > 0) doc["ri"] = route;
+    char route[10];
+    shortRouteIdToBuffer(routeId, route, sizeof(route));
+    if (route[0] != '\0') doc["ri"] = route;
     doc["dr"] = directionCode(direction);
-    if (relayFrom != nullptr && relayFrom[0] != '\0') doc["rf"] = shortVehicleId(relayFrom);
+    if (relayFrom != nullptr && relayFrom[0] != '\0') {
+      char relayShort[8];
+      shortVehicleIdToBuffer(relayFrom, relayShort, sizeof(relayShort));
+      doc["rf"] = relayShort;
+    }
     doc["lq"] = linkQualityValue;
     if (storeForward) doc["sf"] = 1;
   }
 
   if (measureJson(doc) < 180) {
-    if (relayChain.length() > 0) doc["rc"] = relayChain;
-    String compactNeighbors = buildNeighborCompact(neighbors, neighborCount);
-    if (compactNeighbors.length() > 0) doc["nb"] = compactNeighbors;
+    if (relayChain != nullptr && relayChain[0] != '\0') doc["rc"] = relayChain;
+    char compactNeighbors[80];
+    buildNeighborCompact(compactNeighbors, sizeof(compactNeighbors), neighbors, neighborCount);
+    if (compactNeighbors[0] != '\0') doc["nb"] = compactNeighbors;
   }
 
   if (measureJson(doc) < 195) {
-    String versionSummary = buildVersionSummaryCompact();
-    if (versionSummary.length() > 0) doc["vs"] = versionSummary;
+    char versionSummary[96];
+    buildVersionSummaryCompact(versionSummary, sizeof(versionSummary));
+    if (versionSummary[0] != '\0') doc["vs"] = versionSummary;
   }
 
   while (measureJson(doc) > MAX_LORA_PACKET_BYTES && doc.containsKey("vs")) doc.remove("vs");
   if (measureJson(doc) > MAX_LORA_PACKET_BYTES && doc.containsKey("nb")) {
-    String compactNeighbors = doc["nb"].as<String>();
-    while (measureJson(doc) > MAX_LORA_PACKET_BYTES && compactNeighbors.indexOf(',') >= 0) {
-      compactNeighbors = compactNeighbors.substring(0, compactNeighbors.lastIndexOf(','));
+    char compactNeighbors[80];
+    strncpy(compactNeighbors, doc["nb"] | "", sizeof(compactNeighbors) - 1);
+    compactNeighbors[sizeof(compactNeighbors) - 1] = '\0';
+    while (measureJson(doc) > MAX_LORA_PACKET_BYTES && strrchr(compactNeighbors, ',') != nullptr) {
+      *strrchr(compactNeighbors, ',') = '\0';
       doc["nb"] = compactNeighbors;
     }
     if (measureJson(doc) > MAX_LORA_PACKET_BYTES) doc.remove("nb");
   }
   while (measureJson(doc) > MAX_LORA_PACKET_BYTES && doc.containsKey("rc")) doc.remove("rc");
 
-  String payload;
-  serializeJson(doc, payload);
-  return payload;
+  if (payloadSize == 0 || measureJson(doc) > MAX_LORA_PACKET_BYTES) return false;
+  size_t len = serializeJson(doc, payload, payloadSize);
+  return len > 0 && len <= MAX_LORA_PACKET_BYTES;
 }
 
 void addNeighborArray(JsonDocument& doc) {
@@ -862,8 +921,8 @@ void queueCarryPacket(JsonDocument& doc, const char* reason) {
   Serial.printf("[CARRY] queued %s reason:%s\n", packetId, reason);
 }
 
-void queueCarryPayload(const char* packetId, const String& payload, const char* reason) {
-  if (packetId == nullptr || packetId[0] == '\0' || payload.length() == 0 || findCarryIndex(packetId) >= 0) return;
+void queueCarryPayload(const char* packetId, const char* payload, const char* reason) {
+  if (packetId == nullptr || packetId[0] == '\0' || payload == nullptr || payload[0] == '\0' || findCarryIndex(packetId) >= 0) return;
 
   int slot = firstFreeCarryIndex();
   if (slot < 0) {
@@ -874,7 +933,7 @@ void queueCarryPayload(const char* packetId, const String& payload, const char* 
 
   strncpy(carryBuffer[slot].packetId, packetId, sizeof(carryBuffer[slot].packetId) - 1);
   carryBuffer[slot].packetId[sizeof(carryBuffer[slot].packetId) - 1] = '\0';
-  strncpy(carryBuffer[slot].payload, payload.c_str(), sizeof(carryBuffer[slot].payload) - 1);
+  strncpy(carryBuffer[slot].payload, payload, sizeof(carryBuffer[slot].payload) - 1);
   carryBuffer[slot].payload[sizeof(carryBuffer[slot].payload) - 1] = '\0';
   carryBuffer[slot].used = true;
   carryBuffer[slot].attempts = 0;
@@ -966,41 +1025,49 @@ void transmitPacket(const char* txMode = "auto") {
 
   updateOwnSharedState(packetId, battery, hop);
 
-  String payload = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
-                                   gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
-                                   gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
-                                   ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
-                                   !hasRoute, "", gpsValid);
+  char payload[MAX_LORA_PACKET_BYTES + 1] = "";
+  bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
+                               gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
+                               gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
+                               ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
+                               !hasRoute, "", gpsValid, payload, sizeof(payload));
 
-  bool sent = payload.length() <= MAX_LORA_PACKET_BYTES && sendRawPayload(payload.c_str());
+  bool sent = built && sendRawPayload(payload);
   if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
   if (hasRoute) flushCarryBuffer();
   Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f %s\n",
-                VEHICLE_ID, txMode, hop, payload.length(), bestRssi, sent ? "sent" : "failed");
+                VEHICLE_ID, txMode, hop, strlen(payload), bestRssi, sent ? "sent" : "failed");
 }
 
 bool wouldCreateLoop(JsonVariantConst relayChain, const char* myId) {
   if (!relayChain.is<JsonArrayConst>()) return false;
-  String myShort = shortVehicleId(myId);
+  char myShort[8];
+  shortVehicleIdToBuffer(myId, myShort, sizeof(myShort));
   for (JsonVariantConst item : relayChain.as<JsonArrayConst>()) {
     const char* id = item.as<const char*>();
     if (id == nullptr || id[0] == '\0') continue;
-    if (sameId(id, myId) || String(id) == myShort) return true;
+    if (sameId(id, myId) || strcmp(id, myShort) == 0) return true;
   }
   return false;
 }
 
-bool wouldCreateLoopCompact(const String& rcCompact, const char* myId) {
-  if (rcCompact.length() == 0) return false;
+bool wouldCreateLoopCompact(const char* rcCompact, const char* myId) {
+  if (rcCompact == nullptr || rcCompact[0] == '\0') return false;
 
-  String myShort = shortVehicleId(myId);
-  int start = 0;
-  while (start < (int)rcCompact.length()) {
-    int comma = rcCompact.indexOf(',', start);
-    String entry = comma >= 0 ? rcCompact.substring(start, comma) : rcCompact.substring(start);
-    start = comma >= 0 ? comma + 1 : rcCompact.length();
-    entry.trim();
-    if (entry == myShort || entry == String(myId)) return true;
+  char myShort[8];
+  shortVehicleIdToBuffer(myId, myShort, sizeof(myShort));
+  const char* start = rcCompact;
+  while (*start != '\0') {
+    while (*start == ' ' || *start == ',') start++;
+    const char* end = strchr(start, ',');
+    size_t len = end ? (size_t)(end - start) : strlen(start);
+    while (len > 0 && start[len - 1] == ' ') len--;
+    if ((strlen(myShort) == len && strncmp(start, myShort, len) == 0) ||
+        (strlen(myId) == len && strncmp(start, myId, len) == 0)) {
+      return true;
+    }
+    if (end == nullptr) break;
+    start = end + 1;
   }
   return false;
 }
@@ -1075,18 +1142,20 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   const char* vehicleId = doc["vid"] | "";
   const char* packetId = doc["pid"] | "";
   const char* packetBootId = doc["bid"] | "";
-  String relayChain = buildRelayChainCompactFromDoc(doc);
-  String payload = buildLoRaPacket(vehicleId, packetId, doc["seq"] | 0UL, packetBootId,
-                                   doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
-                                   doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
-                                   hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
-                                   VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
-                                   doc["fix"] | false);
+  char relayChain[40];
+  char payload[MAX_LORA_PACKET_BYTES + 1] = "";
+  buildRelayChainCompactFromDoc(doc, relayChain, sizeof(relayChain));
+  bool built = buildLoRaPacket(vehicleId, packetId, doc["seq"] | 0UL, packetBootId,
+                               doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
+                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
+                               hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
+                               VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
+                               doc["fix"] | false, payload, sizeof(payload));
 
-  bool sent = payload.length() <= MAX_LORA_PACKET_BYTES && sendRawPayload(payload.c_str());
+  bool sent = built && sendRawPayload(payload);
   if (!hasForwardPath() || !sent) queueCarryPayload(packetId, payload, sent ? "relay_wait" : "relay_tx_fail");
   Serial.printf("[RELAY] %s hop:%d bytes:%d rssi:%.0f %s\n",
-                vehicleId[0] ? vehicleId : "?", hop + 1, payload.length(), rssi, sent ? "sent" : "failed");
+                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, sent ? "sent" : "failed");
 }
 
 void handleBeacon(JsonDocument& doc, float rssi, float snr) {
@@ -1112,8 +1181,7 @@ void handleVehicleData(JsonDocument& doc, float rssi, float snr) {
   if (alreadySeen(pid)) return;
   markSeen(pid);
   if (!updateSharedStateFromDoc(doc)) return;
-  String compactId = shortVehicleId(vid);
-  updateKnownVehicle(vid, compactId.c_str(), doc["seq"] | 0UL, doc["bid"] | "");
+  updateKnownVehicle(vid, "", doc["seq"] | 0UL, doc["bid"] | "");
 
   if (shouldRelay(doc, hop)) {
     relayVehiclePacket(doc, hop, rssi, snr);
@@ -1126,10 +1194,13 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   const char* boot = compact["bi"] | "";
   if (shortId[0] == '\0' || packetHash[0] == '\0' || boot[0] == '\0') return false;
 
-  String fullId = fullVehicleIdFromShort(shortId);
+  char fullId[16];
+  fullVehicleIdFromShortToBuffer(shortId, fullId, sizeof(fullId));
   uint32_t packetSeq = compact["sq"] | 0UL;
   uint32_t packetTs = compact["ts"] | 0UL;
-  String packetId = fullId + "_" + String(packetSeq) + "_" + String(boot) + "_" + String(packetTs) + "_" + String(packetHash);
+  char packetId[64];
+  snprintf(packetId, sizeof(packetId), "%s_%lu_%s_%lu_%s",
+           fullId, (unsigned long)packetSeq, boot, (unsigned long)packetTs, packetHash);
 
   expanded["type"] = "vehicle_data";
   expanded["vid"] = fullId;
@@ -1153,24 +1224,34 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["fix"] = gpsFix;
 
   if (compact["rf"].is<const char*>()) {
-    String relayFrom = fullVehicleIdFromShort(compact["rf"] | "");
+    char relayFrom[16];
+    fullVehicleIdFromShortToBuffer(compact["rf"] | "", relayFrom, sizeof(relayFrom));
     expanded["rf"] = relayFrom;
   }
 
   if (compact["rc"].is<const char*>()) {
-    String rc = compact["rc"] | "";
+    const char* rc = compact["rc"] | "";
     if (wouldCreateLoopCompact(rc, VEHICLE_ID)) {
-      Serial.printf("[RELAY] skip compact loop: %s\n", rc.c_str());
+      Serial.printf("[RELAY] skip compact loop: %s\n", rc);
       return false;
     }
     JsonArray chain = expanded.createNestedArray("rc");
-    int start = 0;
-    while (start < rc.length()) {
-      int comma = rc.indexOf(',', start);
-      String item = comma >= 0 ? rc.substring(start, comma) : rc.substring(start);
-      item.trim();
-      if (item.length() > 0) chain.add(fullVehicleIdFromShort(item.c_str()));
-      if (comma < 0) break;
+    const char* start = rc;
+    while (*start != '\0') {
+      while (*start == ' ' || *start == ',') start++;
+      const char* comma = strchr(start, ',');
+      size_t len = comma ? (size_t)(comma - start) : strlen(start);
+      while (len > 0 && start[len - 1] == ' ') len--;
+      if (len > 0) {
+        char item[16];
+        char expandedId[16];
+        size_t copyLen = min(len, sizeof(item) - 1);
+        memcpy(item, start, copyLen);
+        item[copyLen] = '\0';
+        fullVehicleIdFromShortToBuffer(item, expandedId, sizeof(expandedId));
+        chain.add(expandedId);
+      }
+      if (comma == nullptr) break;
       start = comma + 1;
     }
   }
@@ -1227,9 +1308,135 @@ bool initLoRa() {
   return true;
 }
 
+void setPower(bool on) {
+  if (on == peripheralPower) return;
+  digitalWrite(PWR_EN_PIN, on ? PWR_ON : PWR_OFF);
+  peripheralPower = on;
+  Serial.println(on ? F("[PWR] Peripherals ON") : F("[PWR] Peripherals OFF"));
+}
+
+/*
+ * IRF9540N High-side Power Switch
+ * --------------------------------
+ * Viewed from front (text side):
+ *   Pin 1 = Gate
+ *   Pin 2 = Drain
+ *   Pin 3 = Source
+ *
+ * Connections:
+ *   3.3V_MAIN -> Source (pin 3)
+ *   Drain (pin 2) -> 3.3V_SW -> GPS VCC + LoRa VCC
+ *   Gate (pin 1) -> ESP8266 D3 / GPIO0
+ *   100k ohm resistor between Source and Gate (pull-up)
+ *
+ * Logic:
+ *   D3 = LOW  -> MOSFET conducts -> GPS + LoRa powered ON
+ *   D3 = HIGH -> MOSFET off      -> GPS + LoRa powered OFF
+ *
+ * Deep sleep note:
+ *   For ESP.deepSleep() to work, GPIO16 must be connected to RST.
+ *   Otherwise deep sleep wakes up only on external reset.
+ */
+void initPowerPin() {
+  digitalWrite(PWR_EN_PIN, PWR_ON);
+  pinMode(PWR_EN_PIN, OUTPUT);
+  setPower(true);
+}
+
+void updateStationaryStatus() {
+  if (!gpsValid) {
+    stationaryCount = 0;
+    isStationary = false;
+    return;
+  }
+
+  float dist = 0.0f;
+  if (lastLat != 0.0f && lastLng != 0.0f) {
+    dist = haversineDistance(lastLat, lastLng, gpsLat, gpsLng);
+  }
+
+  if (dist < STATIONARY_DIST_M) {
+    stationaryCount++;
+  } else {
+    stationaryCount = 0;
+    isStationary = false;
+  }
+
+  if (stationaryCount >= STATIONARY_COUNT && !isStationary) {
+    isStationary = true;
+    Serial.println(F("[PWR] Vehicle stationary detected"));
+  }
+
+  lastLat = gpsLat;
+  lastLng = gpsLng;
+}
+
+void updateTxInterval() {
+  float bat = readBattery();
+  unsigned long newInterval = TX_INTERVAL_NORMAL;
+
+  if (isStationary) {
+    newInterval = TX_INTERVAL_STATIONARY;
+  } else if (bat <= BAT_LOW_PCT) {
+    newInterval = TX_INTERVAL_LOW_BAT;
+  }
+
+  if (newInterval != currentTxInterval) {
+    currentTxInterval = newInterval;
+    Serial.printf("[PWR] TX interval -> %lums (bat:%.0f%% stationary:%d)\n",
+                  currentTxInterval, bat, isStationary);
+  }
+}
+
+void enableModemSleep() {
+  WiFi.mode(WIFI_OFF);
+  WiFi.forceSleepBegin();
+  Serial.println(F("[PWR] WiFi modem sleep ON"));
+}
+
+void checkCriticalBattery() {
+  if (millis() - lastSleepCheck < SLEEP_CHECK_MS) return;
+  lastSleepCheck = millis();
+
+  float bat = readBattery();
+  if (bat <= 0.0f || bat > BAT_CRITICAL_PCT) return;
+
+  Serial.printf("[PWR] CRITICAL battery %.0f%% - sending alert\n", bat);
+
+  StaticJsonDocument<128> alertDoc;
+  alertDoc["vid"] = VEHICLE_ID;
+  alertDoc["bat"] = (int)bat;
+  alertDoc["alert"] = "critical_battery";
+  alertDoc["ts"] = millis();
+
+  char alertBuf[128];
+  serializeJson(alertDoc, alertBuf, sizeof(alertBuf));
+
+  if (loraReady) {
+    LoRa.beginPacket();
+    LoRa.print(alertBuf);
+    LoRa.endPacket();
+  }
+
+  Serial.println(F("[PWR] Alert sent - entering deep sleep"));
+  Serial.flush();
+  setPower(false);
+  ESP.deepSleep(5 * 60 * 1000000ULL);
+}
+
+void printPowerStatus() {
+  Serial.printf("[PWR] bat:%.0f%% interval:%lums stationary:%d mosfet:%s\n",
+                readBattery(),
+                currentTxInterval,
+                isStationary,
+                peripheralPower ? "ON" : "OFF");
+}
+
 void setup() {
   Serial.begin(115200);
   ESP.wdtEnable(8000);
+  initPowerPin();
+  enableModemSleep();
   gpsSerial.begin(GPS_BAUD);
   pinMode(GPS_PPS_PIN, INPUT);
   attachInterrupt(digitalPinToInterrupt(GPS_PPS_PIN), onGpsPps, RISING);
@@ -1263,6 +1470,14 @@ void loop() {
   if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
     lastExpireMs = now;
     expireNeighbors();
+  }
+
+  static unsigned long lastPwrUpdate = 0;
+  if (now - lastPwrUpdate >= currentTxInterval) {
+    lastPwrUpdate = now;
+    updateStationaryStatus();
+    updateTxInterval();
+    checkCriticalBattery();
   }
 
   if ((long)(now - nextTxMs) >= 0) {

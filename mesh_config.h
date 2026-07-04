@@ -94,4 +94,23 @@
 // Optional current sensor placeholder
 #define INA219_ENABLED false
 
+// Power Management
+#define PWR_EN_PIN              0     // D3 / GPIO0 - IRF9540N Gate
+#define PWR_ON                  LOW   // LOW = MOSFET conducts = power ON
+#define PWR_OFF                 HIGH  // HIGH = MOSFET off = power OFF
+
+// Battery thresholds
+#define BAT_CRITICAL_PCT        20    // below this -> deep sleep
+#define BAT_LOW_PCT             30    // below this -> reduce TX frequency
+
+// Adaptive TX intervals (ms)
+#define TX_INTERVAL_NORMAL      5000UL
+#define TX_INTERVAL_LOW_BAT     15000UL
+#define TX_INTERVAL_STATIONARY  30000UL
+#define SLEEP_CHECK_MS          60000UL // check sleep condition every 60s
+
+// Stationary detection
+#define STATIONARY_DIST_M       5.0f  // meters - if moved less than this
+#define STATIONARY_COUNT        3     // consecutive readings before stationary
+
 #endif // MESH_CONFIG_H
