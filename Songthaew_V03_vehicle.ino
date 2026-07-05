@@ -1473,19 +1473,37 @@ void loop() {
   }
 
   static unsigned long lastPwrUpdate = 0;
+  static bool lastStationary = false;
+  static bool loraSleepingDuringStationary = false;
   if (now - lastPwrUpdate >= currentTxInterval) {
     lastPwrUpdate = now;
     updateStationaryStatus();
     updateTxInterval();
+    if (isStationary != lastStationary) {
+      lastStationary = isStationary;
+      if (isStationary) setPower(false);
+      else { setPower(true); delay(2000); }
+    }
     checkCriticalBattery();
   }
 
   if ((long)(now - nextTxMs) >= 0) {
+    if (loraSleepingDuringStationary) {
+      loraReady = LoRa.begin(LORA_FREQ);
+      loraSleepingDuringStationary = false;
+    }
     transmitPacket(nextTxMode);
     scheduleNextTx(now);
   } else if (gpsTxSlotDue()) {
+    if (loraSleepingDuringStationary) {
+      loraReady = LoRa.begin(LORA_FREQ);
+      loraSleepingDuringStationary = false;
+    }
     transmitPacket("gps");
     scheduleNextTx(now);
+  } else if (isStationary && loraReady && !loraSleepingDuringStationary) {
+    LoRa.sleep();
+    loraSleepingDuringStationary = true;
   }
 
   yield();
