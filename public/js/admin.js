@@ -546,12 +546,14 @@ function renderPdrActive(session) {
     return;
   }
   const pdr = Number(session.pdr || 0);
+  const source = session.pdrSource === 'live_packets' ? 'live packet counter' : 'history fallback';
+  const lastPacket = session.lastPacketAt ? new Date(session.lastPacketAt).toLocaleTimeString('th-TH', { hour12: false }) : '-';
   el.innerHTML = `
     <div class="diagnostics-metric">
-      <div class="diagnostics-metric-label">${escapeHtml(session.status || 'running')} · ${escapeHtml(session.sessionId || '')}</div>
-      <div class="diagnostics-metric-value">${escapeHtml(session.received || 0)} / ${escapeHtml(session.targetPackets || 0)} packets · ${escapeHtml(pdr.toFixed(1))}%</div>
+      <div class="diagnostics-metric-label">${escapeHtml(session.status || 'running')} | ${escapeHtml(session.sessionId || '')}</div>
+      <div class="diagnostics-metric-value">${escapeHtml(session.received || 0)} / ${escapeHtml(session.targetPackets || 0)} packets | ${escapeHtml(pdr.toFixed(1))}%</div>
       <div class="diagnostics-progress"><div style="width:${Math.max(0, Math.min(100, pdr))}%"></div></div>
-      <div class="diagnostics-muted">Elapsed ${escapeHtml(session.elapsed_s || 0)}s · RSSI ${escapeHtml(session.avgRSSI ?? '-')} dBm · SNR ${escapeHtml(session.avgSNR ?? '-')} dB</div>
+      <div class="diagnostics-muted">Elapsed ${escapeHtml(session.elapsed_s || 0)}s | RSSI ${escapeHtml(session.avgRSSI ?? '-')} dBm | SNR ${escapeHtml(session.avgSNR ?? '-')} dB | Last packet ${escapeHtml(lastPacket)} | ${escapeHtml(source)}</div>
     </div>
   `;
 }
@@ -565,6 +567,7 @@ function renderPdrResults(session) {
       ${diagnosticsMetric('PDR', session.pdr, '%')}
       ${diagnosticsMetric('Avg RSSI', session.avgRSSI, ' dBm')}
       ${diagnosticsMetric('Elapsed', session.elapsed_s, 's')}
+      ${diagnosticsMetric('Source', session.pdrSource === 'live_packets' ? 'Live' : 'History')}
     </div>
   `;
 }

@@ -267,6 +267,7 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   }
   out["speed"] = compact["sp"] | 0;
   out["battery"] = compact["bt"] | -1;
+  out["battVoltage"] = compact["bv"] | -1;
   out["hop"] = compact["hp"] | 0;
   out["packet_id"] = packetId;
   out["packet_hash"] = packetHash;
@@ -678,12 +679,13 @@ void printPostLog(JsonDocument& post, int code) {
   float lng = post["lng"] | 0.0f;
   float spd = post["speed"] | 0.0f;
   int bat = post["battery"] | -1;
+  int battVoltage = post["battVoltage"] | -1;
   float rssi = post["received_rssi"] | 0.0f;
   float snr = post["received_snr"] | 0.0f;
 
   Serial.println("--------------------");
   Serial.printf("[RX] %s | hop:%d | rssi:%.0f | snr:%.1f\n", vid, hop, rssi, snr);
-  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%%\n", lat, lng, spd, bat);
+  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%% | vbat:%dmV\n", lat, lng, spd, bat, battVoltage);
   if (code >= 200 && code < 300) {
     Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
   } else if (code >= 400 && code < 500) {

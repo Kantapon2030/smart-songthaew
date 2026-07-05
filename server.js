@@ -753,16 +753,145 @@ function summarizePdrRows(rows, targetPackets, startTime, endTime) {
   };
 }
 
+function pdrSampleValues(samples = {}) {
+  return Object.values(samples || {})
+    .filter(sample => sample && typeof sample === 'object')
+    .sort((a, b) => Number(a.receivedAt || 0) - Number(b.receivedAt || 0));
+}
+
+function summarizePdrSamples(samples = [], session = {}, endTime = Date.now()) {
+  const targetPackets = Number(session.targetPackets || 100);
+  const startTime = Number(session.startTime || session.startedAt || endTime);
+  const scoped = samples.filter(sample => {
+    const receivedAt = Number(sample.receivedAt || 0);
+    return receivedAt >= startTime && receivedAt <= endTime;
+  });
+  const rssiValues = scoped.map(sample => finiteNumberOrNull(sample.rssi)).filter(Number.isFinite);
+  const snrValues = scoped.map(sample => finiteNumberOrNull(sample.snr)).filter(Number.isFinite);
+  const received = scoped.length;
+  const lastPacketAt = scoped.length ? Math.max(...scoped.map(sample => Number(sample.receivedAt || 0))) : null;
+  return {
+    received,
+    targetPackets,
+    pdr: targetPackets > 0 ? Number(Math.min(100, (received / targetPackets) * 100).toFixed(1)) : 0,
+    avgRSSI: average(rssiValues, 1),
+    avgSNR: average(snrValues, 1),
+    elapsed_s: Math.max(0, Math.round((endTime - startTime) / 1000)),
+    lastPacketAt,
+    pdrSource: 'live_packets',
+  };
+}
+
 async function calculatePdrSessionProgress(session = {}) {
   const vehicleId = sanitizeHistoryVehicleId(session.vehicleId);
   const startTime = Number(session.startTime || session.startedAt || Date.now());
   const endTime = session.status === 'running' ? Date.now() : Number(session.endTime || Date.now());
+  const samples = pdrSampleValues(session.samples);
+  if (samples.length || session.pdrSource === 'live_packets') {
+    return summarizePdrSamples(samples, session, endTime);
+  }
   const dates = [...new Set([localDateFromMs(startTime), localDateFromMs(endTime)])];
   const allRows = [];
   for (const date of dates) {
     allRows.push(...await loadDiagnosticRows(vehicleId, date));
   }
-  return summarizePdrRows(allRows, Number(session.targetPackets || 100), startTime, endTime);
+  return {
+    ...summarizePdrRows(allRows, Number(session.targetPackets || 100), startTime, endTime),
+    pdrSource: 'history_fallback',
+  };
+}
+
+const PDR_SESSION_CACHE_MS = 1000;
+const pdrSessionCache = new Map();
+
+function clearPdrSessionCache(vehicleId) {
+  if (vehicleId) pdrSessionCache.delete(sanitizeHistoryVehicleId(vehicleId));
+  else pdrSessionCache.clear();
+}
+
+function pdrPacketKey(packet = {}) {
+  if (packet.packet_id) return `packet_${firebaseKeyPart(packet.packet_id)}`;
+  if (packet.boot_id && packet.seq !== null && packet.seq !== undefined) {
+    return `seq_${firebaseKeyPart(packet.boot_id)}_${firebaseKeyPart(packet.seq)}`;
+  }
+  return `rx_${Number(packet.receivedAtMs || Date.now())}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function getRunningPdrSessionsForVehicle(vehicleId) {
+  const cleanVehicleId = sanitizeHistoryVehicleId(vehicleId);
+  const now = Date.now();
+  const cached = pdrSessionCache.get(cleanVehicleId);
+  if (cached && cached.expiresAt > now) return cached.sessions;
+
+  const snap = await db.ref('diagnostics/pdrTests').orderByChild('vehicleId').equalTo(cleanVehicleId).once('value');
+  const sessions = Object.entries(snap.val() || {})
+    .filter(([, session]) => session?.status === 'running');
+  pdrSessionCache.set(cleanVehicleId, {
+    expiresAt: now + PDR_SESSION_CACHE_MS,
+    sessions,
+  });
+  return sessions;
+}
+
+async function recordPdrPacketForVehicle(vehicleId, packet = {}) {
+  const cleanVehicleId = sanitizeHistoryVehicleId(vehicleId);
+  if (!cleanVehicleId) return 0;
+  const receivedAt = Number(packet.receivedAtMs || Date.now());
+  const sessions = await getRunningPdrSessionsForVehicle(cleanVehicleId);
+  let counted = 0;
+
+  for (const [sessionId, session] of sessions) {
+    if (!session || session.status !== 'running') continue;
+    const startTime = Number(session.startTime || 0);
+    const endTime = Number(session.endTime || 0);
+    if (startTime && receivedAt < startTime) continue;
+    if (endTime && receivedAt > endTime) continue;
+
+    const key = pdrPacketKey(packet);
+    const sample = {
+      receivedAt,
+      packet_id: packet.packet_id || null,
+      boot_id: packet.boot_id || null,
+      seq: packet.seq ?? null,
+      rssi: finiteNumberOrNull(packet.rssi ?? packet.received_rssi),
+      snr: finiteNumberOrNull(packet.snr ?? packet.received_snr),
+      hop: finiteNumberOrNull(packet.hop),
+      gps_fix: packet.gps_fix === true,
+      source: packet.source || 'telemetry',
+      routeId: packet.routeId || packet.route_id || 'unassigned',
+    };
+    const sampleRef = db.ref(`diagnostics/pdrTests/${sessionId}/samples/${key}`);
+    const sampleResult = await sampleRef.transaction(current => current ? undefined : sample);
+    if (!sampleResult.committed) continue;
+
+    const update = {
+      received: admin.database.ServerValue.increment(1),
+      updatedAt: receivedAt,
+      lastPacketAt: receivedAt,
+      pdrSource: 'live_packets',
+    };
+    if (sample.rssi !== null) {
+      update.rssiSum = admin.database.ServerValue.increment(sample.rssi);
+      update.rssiCount = admin.database.ServerValue.increment(1);
+    }
+    if (sample.snr !== null) {
+      update.snrSum = admin.database.ServerValue.increment(sample.snr);
+      update.snrCount = admin.database.ServerValue.increment(1);
+    }
+    await db.ref(`diagnostics/pdrTests/${sessionId}`).update(update);
+    counted += 1;
+  }
+
+  return counted;
+}
+
+async function recordPdrPacketSafely(vehicleId, packet = {}) {
+  try {
+    return await recordPdrPacketForVehicle(vehicleId, packet);
+  } catch (error) {
+    console.warn('[PDR] packet counter skipped:', error.message);
+    return 0;
+  }
 }
 
 function isValidCoord(lat, lng) {
@@ -1137,6 +1266,16 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       patch.bearing = headingValue;
     }
     await currentRef.update(patch);
+    await recordPdrPacketSafely(vehicleId, {
+      ...patch,
+      packet_id,
+      boot_id,
+      seq,
+      hop,
+      rssi: received_rssi ?? rssi,
+      snr: received_snr,
+      receivedAtMs: ts,
+    });
     clearLocationsCache();
     return res.status(200).json({ message: 'Heartbeat updated', status: 'heartbeat', timestamp: ts });
   }
@@ -1280,6 +1419,10 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       admin.database.ServerValue.increment(1);
 
     await db.ref().update(updates);
+    await recordPdrPacketSafely(vehicleId, {
+      ...data,
+      receivedAtMs: ts,
+    });
     clearLocationsCache();
 
     const gpsStatus = hasValidGPS ? `${latF},${lngF}` : 'no-fix';
@@ -1554,6 +1697,14 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
       updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
     }
     await db.ref().update(updates);
+    await recordPdrPacketSafely(vehicleId, {
+      ...current,
+      packet_id: req.body.packet_id || req.body.packetId || null,
+      boot_id: bootId,
+      seq,
+      snr: req.body.snr ?? req.body.received_snr ?? null,
+      receivedAtMs: receivedAt * 1000,
+    });
     return res.json({ ok: true, status: 'accepted', server_received_at: receivedAt, last_seen: receivedAt });
   } catch (error) {
     console.error('[POST /api/v1/telemetry]', error);
@@ -3036,11 +3187,13 @@ app.post('/api/diagnostics/pdr-test', authMiddleware, async (req, res) => {
       startTime: now,
       received: 0,
       pdr: 0,
+      pdrSource: 'live_packets',
       createdBy: req.user?.username || req.user?.sub || 'admin',
       createdAt: now,
       updatedAt: now,
     };
     await db.ref(`diagnostics/pdrTests/${sessionId}`).set(session);
+    clearPdrSessionCache(vehicleId);
     return res.status(201).json(session);
   } catch (error) {
     console.error('[POST /api/diagnostics/pdr-test]', error);
@@ -3058,8 +3211,9 @@ app.get('/api/diagnostics/pdr-test/:sessionId', authMiddleware, async (req, res)
     if (!snap.exists()) return res.status(404).json({ error: 'PDR test session not found' });
     const session = snap.val() || {};
     const progress = await calculatePdrSessionProgress(session);
+    const { samples: _samples, ...sessionPublic } = session;
     const payload = {
-      ...session,
+      ...sessionPublic,
       ...progress,
       updatedAt: Date.now(),
     };
@@ -3091,6 +3245,7 @@ app.post('/api/diagnostics/pdr-test/:sessionId/stop', authMiddleware, async (req
     const session = snap.val() || {};
     const endTime = Date.now();
     const progress = await calculatePdrSessionProgress({ ...session, status: 'stopped', endTime });
+    const { samples: _samples, ...sessionPublic } = session;
     const update = {
       status: 'stopped',
       endTime,
@@ -3098,7 +3253,8 @@ app.post('/api/diagnostics/pdr-test/:sessionId/stop', authMiddleware, async (req
       updatedAt: endTime,
     };
     await ref.update(update);
-    return res.json({ ...session, ...update });
+    clearPdrSessionCache(session.vehicleId);
+    return res.json({ ...sessionPublic, ...update });
   } catch (error) {
     console.error('[POST /api/diagnostics/pdr-test/:sessionId/stop]', error);
     return res.status(500).json({ error: 'Failed to stop PDR test' });

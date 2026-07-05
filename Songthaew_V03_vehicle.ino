@@ -31,6 +31,7 @@
 #include <SPI.h>
 #include <TinyGPS++.h>
 #include <ESP8266WiFi.h>
+#include <EEPROM.h>
 #include <math.h>
 #if __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
@@ -75,6 +76,13 @@ struct CarryPacket {
   unsigned long lastAttempt;
 };
 
+struct BatteryCalibration {
+  uint32_t magic;
+  float fullV;
+  float emptyV;
+  uint32_t checksum;
+};
+
 TinyGPSPlus gps;
 SoftwareSerial gpsSerial(GPS_RX_PIN, -1);
 
@@ -111,6 +119,11 @@ unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
 
+BatteryCalibration batteryCal;
+bool batteryCalValid = false;
+bool batteryCalDirty = false;
+unsigned long lastBatteryCalSaveMs = 0;
+
 // Power Management State
 bool peripheralPower = false;
 unsigned long currentTxInterval = TX_INTERVAL_NORMAL;
@@ -118,6 +131,7 @@ int stationaryCount = 0;
 float lastLat = 0.0f;
 float lastLng = 0.0f;
 unsigned long lastSleepCheck = 0;
+unsigned long lastBatteryPrintMs = 0;
 bool isStationary = false;
 
 volatile bool ppsFlag = false;
@@ -678,7 +692,7 @@ void buildVersionSummaryCompact(char* out, size_t outSize) {
 
 bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packetSeq,
                        const char* packetBootId, uint32_t packetGpsTs,
-                       float lat, float lng, float speed, int heading, int battery,
+                       float lat, float lng, float speed, int heading, int battery, int batteryVoltageMv,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
                        const char* relayChain, bool gpsFix, char* payload, size_t payloadSize) {
@@ -701,6 +715,7 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   }
   doc["sp"] = (int)round(speed);
   doc["bt"] = battery;
+  doc["bv"] = batteryVoltageMv;
   doc["hp"] = hop;
   char packetHash[7];
   packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
@@ -981,12 +996,114 @@ bool sendJson(JsonDocument& doc) {
   return sendRawPayload(payload);
 }
 
-float readBattery() {
+uint32_t batteryCalChecksum(const BatteryCalibration& cal) {
+  const uint8_t* data = (const uint8_t*)&cal;
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < sizeof(BatteryCalibration) - sizeof(uint32_t); i++) {
+    hash ^= data[i];
+    hash *= 16777619UL;
+  }
+  return hash;
+}
+
+float readBatteryVoltageRaw() {
   int raw = analogRead(BAT_PIN);
   float vOut = (raw / 1023.0f) * BAT_VCC;
-  float vBat = vOut * (BAT_R1 + BAT_R2) / BAT_R2;
-  float percent = ((vBat * 100.0f) - 330.0f) * 100.0f / (420.0f - 330.0f);
+  return vOut * BAT_DIVIDER_RATIO;
+}
+
+void saveBatteryCalibration(bool force = false) {
+  if (!BAT_AUTO_CALIBRATE || !batteryCalDirty) return;
+  unsigned long now = millis();
+  if (!force && now - lastBatteryCalSaveMs < BAT_CAL_SAVE_INTERVAL_MS) return;
+
+  batteryCal.checksum = batteryCalChecksum(batteryCal);
+  EEPROM.put(0, batteryCal);
+  EEPROM.commit();
+  batteryCalDirty = false;
+  lastBatteryCalSaveMs = now;
+  Serial.printf("[BAT-CAL] saved full:%.2fV empty:%.2fV\n", batteryCal.fullV, batteryCal.emptyV);
+}
+
+void updateBatteryCalibration(float vBat) {
+  if (!BAT_AUTO_CALIBRATE || vBat <= 0.0f) return;
+
+  if (!batteryCalValid) {
+    batteryCal.magic = 0x53425443UL;
+    batteryCal.fullV = vBat > BAT_FULL_V ? vBat : BAT_FULL_V;
+    batteryCal.emptyV = BAT_EMPTY_V;
+    batteryCalValid = true;
+    batteryCalDirty = true;
+    saveBatteryCalibration(true);
+    return;
+  }
+
+  if (vBat > batteryCal.fullV + BAT_CAL_UPDATE_STEP_V) {
+    batteryCal.fullV = vBat;
+    batteryCalDirty = true;
+  }
+  if (vBat < batteryCal.emptyV - BAT_CAL_UPDATE_STEP_V) {
+    batteryCal.emptyV = vBat;
+    batteryCalDirty = true;
+  }
+  saveBatteryCalibration(false);
+}
+
+void initBatteryCalibration() {
+  EEPROM.begin(128);
+  EEPROM.get(0, batteryCal);
+  batteryCalValid = batteryCal.magic == 0x53425443UL &&
+                    batteryCal.checksum == batteryCalChecksum(batteryCal) &&
+                    batteryCal.fullV > batteryCal.emptyV &&
+                    batteryCal.fullV > 3.0f &&
+                    batteryCal.fullV < 5.5f &&
+                    batteryCal.emptyV > 2.0f &&
+                    batteryCal.emptyV < 4.2f;
+
+  if (!batteryCalValid) {
+    float vBat = readBatteryVoltageRaw();
+    batteryCal.magic = 0x53425443UL;
+    batteryCal.fullV = vBat > BAT_FULL_V ? vBat : BAT_FULL_V;
+    batteryCal.emptyV = BAT_EMPTY_V;
+    batteryCalValid = true;
+    batteryCalDirty = true;
+    saveBatteryCalibration(true);
+  }
+
+  Serial.printf("[BAT-CAL] full:%.2fV empty:%.2fV auto:%d\n",
+                batteryCal.fullV, batteryCal.emptyV, BAT_AUTO_CALIBRATE);
+}
+
+float readBatteryVoltage() {
+  float vBat = readBatteryVoltageRaw();
+  updateBatteryCalibration(vBat);
+  return vBat;
+}
+
+float batteryPercentFromVoltage(float vBat) {
+  float emptyV = batteryCalValid ? batteryCal.emptyV : BAT_EMPTY_V;
+  float fullV = batteryCalValid ? batteryCal.fullV : BAT_FULL_V;
+  if (fullV - emptyV < BAT_CAL_MIN_RANGE_V) {
+    emptyV = BAT_EMPTY_V;
+    fullV = BAT_FULL_V;
+  }
+  float percent = (vBat - emptyV) * 100.0f / (fullV - emptyV);
   return constrain(percent, 0.0f, 100.0f);
+}
+
+float readBattery() {
+  float vBat = readBatteryVoltage();
+  return batteryPercentFromVoltage(vBat);
+}
+
+void printBatteryStatus() {
+  int raw = analogRead(BAT_PIN);
+  float vOut = (raw / 1023.0f) * BAT_VCC;
+  float vBat = vOut * BAT_DIVIDER_RATIO;
+  updateBatteryCalibration(vBat);
+  float percent = batteryPercentFromVoltage(vBat);
+  Serial.printf("[BAT] raw:%d vout:%.2fV vbat:%.2fV percent:%.0f%% cal:%.2f-%.2fV\n",
+                raw, vOut, vBat, percent, batteryCal.emptyV, batteryCal.fullV);
 }
 
 void readGPS() {
@@ -1017,6 +1134,7 @@ void transmitPacket(const char* txMode = "auto") {
   float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
   float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
   int battery = (int)round(readBattery());
+  int batteryVoltageMv = (int)round(readBatteryVoltage() * 1000.0f);
 
   seq++;
   char packetId[40];
@@ -1028,7 +1146,7 @@ void transmitPacket(const char* txMode = "auto") {
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
   bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
                                gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
-                               gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
+                               gpsSpeed, (int)gpsHeading, battery, batteryVoltageMv, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
                                !hasRoute, "", gpsValid, payload, sizeof(payload));
 
@@ -1147,7 +1265,7 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   buildRelayChainCompactFromDoc(doc, relayChain, sizeof(relayChain));
   bool built = buildLoRaPacket(vehicleId, packetId, doc["seq"] | 0UL, packetBootId,
                                doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
-                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
+                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1, doc["bv"] | -1,
                                hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
                                VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
                                doc["fix"] | false, payload, sizeof(payload));
@@ -1213,6 +1331,7 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["spd"] = compact["sp"] | 0;
   expanded["hdg"] = compact["hd"] | 0;
   expanded["bat"] = compact["bt"] | -1;
+  expanded["bv"] = compact["bv"] | -1;
   expanded["hop"] = compact["hp"] | 0;
   expanded["ttl"] = compact["tt"] | (MAX_HOPS - (int)(compact["hp"] | 0));
   expanded["lq"] = compact["lq"] | 0;
@@ -1418,6 +1537,11 @@ void checkCriticalBattery() {
     LoRa.endPacket();
   }
 
+  if (BAT_CAL_CUTOFF_TEST_MODE) {
+    Serial.println(F("[PWR] Critical battery alert sent - cutoff calibration test mode keeps device awake"));
+    return;
+  }
+
   Serial.println(F("[PWR] Alert sent - entering deep sleep"));
   Serial.flush();
   setPower(false);
@@ -1435,6 +1559,7 @@ void printPowerStatus() {
 void setup() {
   Serial.begin(115200);
   ESP.wdtEnable(8000);
+  initBatteryCalibration();
   initPowerPin();
   enableModemSleep();
   gpsSerial.begin(GPS_BAUD);
@@ -1470,6 +1595,11 @@ void loop() {
   if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
     lastExpireMs = now;
     expireNeighbors();
+  }
+
+  if (now - lastBatteryPrintMs >= 5000UL) {
+    lastBatteryPrintMs = now;
+    printBatteryStatus();
   }
 
   static unsigned long lastPwrUpdate = 0;

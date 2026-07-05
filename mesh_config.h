@@ -55,6 +55,14 @@
 #define BAT_R1          330000.0
 #define BAT_R2          82000.0
 #define BAT_VCC         3.3
+#define BAT_DIVIDER_RATIO 6.8833  // Calibrated: 4.13V battery -> 0.60V at A0
+#define BAT_EMPTY_V     3.30
+#define BAT_FULL_V      4.13
+#define BAT_AUTO_CALIBRATE true
+#define BAT_CAL_CUTOFF_TEST_MODE true
+#define BAT_CAL_MIN_RANGE_V 0.50
+#define BAT_CAL_SAVE_INTERVAL_MS 60000UL
+#define BAT_CAL_UPDATE_STEP_V 0.01
 
 // TDMA and timing
 #define TX_INTERVAL_MS        5000UL
