@@ -685,6 +685,86 @@ function topHistoryHours(points, analyticsHours = {}) {
     .map(([hour]) => Number(hour));
 }
 
+function finiteNumberOrNull(value) {
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function normalizeBatteryPercent(record = {}) {
+  const value = finiteNumberOrNull(record.battery ?? record.batteryPct ?? record.battery_percent);
+  if (value === null || value < 0) return null;
+  return Number(Math.min(100, value).toFixed(1));
+}
+
+function normalizeBatteryVoltage(record = {}) {
+  const raw = finiteNumberOrNull(record.battVoltage ?? record.batteryVoltage ?? record.voltage ?? record.vbat);
+  if (raw === null || raw <= 0) return null;
+  const volts = raw > 20 ? raw / 1000 : raw;
+  return Number(volts.toFixed(2));
+}
+
+function diagnosticRowsFromVehicleHistory(vehicleId, vehicleHistory = {}) {
+  return Object.entries(vehicleHistory || {})
+    .map(([key, record = {}]) => {
+      const ts = parseHistoryTimestamp(key, record);
+      if (!ts) return null;
+      return {
+        key,
+        vehicleId,
+        ts,
+        time: formatHistoryTime(ts),
+        record,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.ts - b.ts);
+}
+
+async function loadDiagnosticRows(vehicleId, date) {
+  const snap = await db.ref(`history/${date}/${vehicleId}`).once('value');
+  return diagnosticRowsFromVehicleHistory(vehicleId, snap.val() || {});
+}
+
+function localDateFromMs(ms) {
+  return new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+}
+
+function average(values, digits = 1) {
+  const clean = values.filter(Number.isFinite);
+  if (!clean.length) return null;
+  return Number((clean.reduce((sum, value) => sum + value, 0) / clean.length).toFixed(digits));
+}
+
+function summarizePdrRows(rows, targetPackets, startTime, endTime) {
+  const scoped = rows.filter(row => {
+    const ms = row.ts * 1000;
+    return ms >= startTime && ms <= endTime;
+  });
+  const rssiValues = scoped.map(row => finiteNumberOrNull(row.record.rssi ?? row.record.received_rssi)).filter(Number.isFinite);
+  const snrValues = scoped.map(row => finiteNumberOrNull(row.record.snr ?? row.record.received_snr)).filter(Number.isFinite);
+  const received = scoped.length;
+  return {
+    received,
+    targetPackets,
+    pdr: targetPackets > 0 ? Number(Math.min(100, (received / targetPackets) * 100).toFixed(1)) : 0,
+    avgRSSI: average(rssiValues, 1),
+    avgSNR: average(snrValues, 1),
+    elapsed_s: Math.max(0, Math.round((endTime - startTime) / 1000)),
+  };
+}
+
+async function calculatePdrSessionProgress(session = {}) {
+  const vehicleId = sanitizeHistoryVehicleId(session.vehicleId);
+  const startTime = Number(session.startTime || session.startedAt || Date.now());
+  const endTime = session.status === 'running' ? Date.now() : Number(session.endTime || Date.now());
+  const dates = [...new Set([localDateFromMs(startTime), localDateFromMs(endTime)])];
+  const allRows = [];
+  for (const date of dates) {
+    allRows.push(...await loadDiagnosticRows(vehicleId, date));
+  }
+  return summarizePdrRows(allRows, Number(session.targetPackets || 100), startTime, endTime);
+}
+
 function isValidCoord(lat, lng) {
   return typeof lat === 'number' && typeof lng === 'number' &&
     lat >= 5.5 && lat <= 20.5 && lng >= 97.5 && lng <= 105.7;
@@ -2818,6 +2898,210 @@ app.get('/api/v1/fieldtest/sessions', authMiddleware, async (_req, res) => {
   } catch (error) {
     console.error('[FIELDTEST] list failed:', error);
     res.status(500).json({ error: 'Failed to list field test sessions' });
+  }
+});
+
+// ============================================================
+//  FIELD TEST & DIAGNOSTICS (admin only)
+// ============================================================
+app.get('/api/diagnostics/battery-log', authMiddleware, async (req, res) => {
+  const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
+  const date = normalizeHistoryDate(req.query.date);
+  const intervalMin = Math.max(1, Math.min(60, Number.parseInt(req.query.interval || '5', 10) || 5));
+  if (!vehicleId) return res.status(400).json({ error: 'vehicleId is required' });
+
+  try {
+    const rows = await loadDiagnosticRows(vehicleId, date);
+    const bucketMs = intervalMin * 60 * 1000;
+    const buckets = new Map();
+    rows.forEach(row => {
+      const battery = normalizeBatteryPercent(row.record);
+      const battVoltage = normalizeBatteryVoltage(row.record);
+      if (battery === null && battVoltage === null) return;
+      const bucket = Math.floor((row.ts * 1000) / bucketMs) * bucketMs;
+      buckets.set(bucket, {
+        ts: row.ts,
+        time: row.time,
+        battery,
+        battVoltage,
+      });
+    });
+
+    const samples = [...buckets.values()].sort((a, b) => a.ts - b.ts);
+    const batteries = samples.filter(sample => sample.battery !== null);
+    const startPct = batteries[0]?.battery ?? null;
+    const endPct = batteries[batteries.length - 1]?.battery ?? null;
+    const durationHours = batteries.length > 1
+      ? Math.max(0, (batteries[batteries.length - 1].ts - batteries[0].ts) / 3600)
+      : 0;
+    const dropPerHour = startPct !== null && endPct !== null && durationHours > 0
+      ? Math.max(0, (startPct - endPct) / durationHours)
+      : null;
+
+    return res.json({
+      vehicleId,
+      date,
+      interval_min: intervalMin,
+      samples,
+      summary: {
+        startPct,
+        endPct,
+        durationHours: Number(durationHours.toFixed(2)),
+        dropPerHour: dropPerHour === null ? null : Number(dropPerHour.toFixed(2)),
+        estimatedFullHours: dropPerHour && startPct !== null ? Number((startPct / dropPerHour).toFixed(1)) : null,
+        sampleCount: samples.length,
+      },
+    });
+  } catch (error) {
+    console.error('[GET /api/diagnostics/battery-log]', error);
+    return res.status(500).json({ error: 'Failed to fetch battery diagnostics' });
+  }
+});
+
+app.get('/api/diagnostics/lora-signal', authMiddleware, async (req, res) => {
+  const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
+  const date = normalizeHistoryDate(req.query.date);
+  if (!vehicleId) return res.status(400).json({ error: 'vehicleId is required' });
+
+  try {
+    const [rows, configSnap] = await Promise.all([
+      loadDiagnosticRows(vehicleId, date),
+      db.ref('system/config/groundStation').once('value'),
+    ]);
+    const groundStation = normalizeGroundStationConfig(configSnap.val() || {});
+    const samples = rows
+      .map(row => {
+        const rssi = finiteNumberOrNull(row.record.rssi ?? row.record.received_rssi);
+        if (rssi === null) return null;
+        const lat = finiteNumberOrNull(row.record.lat);
+        const lng = finiteNumberOrNull(row.record.lng);
+        const distanceFromGround = validLatLng(lat, lng)
+          ? Math.round(haversineDistanceMeters({ lat, lng }, groundStation))
+          : null;
+        return {
+          ts: row.ts,
+          time: row.time,
+          rssi,
+          snr: finiteNumberOrNull(row.record.snr ?? row.record.received_snr),
+          distanceFromGround_m: distanceFromGround,
+          hop: finiteNumberOrNull(row.record.hop) ?? 0,
+        };
+      })
+      .filter(Boolean);
+
+    const rssiValues = samples.map(sample => sample.rssi).filter(Number.isFinite);
+    const snrValues = samples.map(sample => sample.snr).filter(Number.isFinite);
+    const worst = samples.reduce((current, sample) => !current || sample.rssi < current.rssi ? sample : current, null);
+    const farthest = samples
+      .filter(sample => Number.isFinite(sample.distanceFromGround_m))
+      .reduce((current, sample) => !current || sample.distanceFromGround_m > current.distanceFromGround_m ? sample : current, null);
+
+    return res.json({
+      vehicleId,
+      date,
+      groundStation,
+      samples,
+      summary: {
+        totalPackets: rows.length,
+        packetsWithRSSI: samples.length,
+        pdr: rows.length ? Number(((samples.length / rows.length) * 100).toFixed(1)) : 0,
+        avgRSSI: average(rssiValues, 1),
+        minRSSI: rssiValues.length ? Math.min(...rssiValues) : null,
+        maxRSSI: rssiValues.length ? Math.max(...rssiValues) : null,
+        avgSNR: average(snrValues, 1),
+        bestDistance_m: farthest?.distanceFromGround_m ?? null,
+        worstRSSIDistance_m: worst?.distanceFromGround_m ?? null,
+      },
+    });
+  } catch (error) {
+    console.error('[GET /api/diagnostics/lora-signal]', error);
+    return res.status(500).json({ error: 'Failed to fetch LoRa diagnostics' });
+  }
+});
+
+app.post('/api/diagnostics/pdr-test', authMiddleware, async (req, res) => {
+  const vehicleId = sanitizeHistoryVehicleId(req.body?.vehicleId || req.body?.vehicle_id);
+  const targetPackets = Math.max(1, Math.min(5000, Number.parseInt(req.body?.targetPackets || '100', 10) || 100));
+  if (!vehicleId) return res.status(400).json({ error: 'vehicleId is required' });
+
+  try {
+    const sessionId = `pdr_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const now = Date.now();
+    const session = {
+      sessionId,
+      vehicleId,
+      label: String(req.body?.label || `PDR ${vehicleId}`).trim().slice(0, 120),
+      targetPackets,
+      status: 'running',
+      startTime: now,
+      received: 0,
+      pdr: 0,
+      createdBy: req.user?.username || req.user?.sub || 'admin',
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.ref(`diagnostics/pdrTests/${sessionId}`).set(session);
+    return res.status(201).json(session);
+  } catch (error) {
+    console.error('[POST /api/diagnostics/pdr-test]', error);
+    return res.status(500).json({ error: 'Failed to start PDR test' });
+  }
+});
+
+app.get('/api/diagnostics/pdr-test/:sessionId', authMiddleware, async (req, res) => {
+  const sessionId = String(req.params.sessionId || '').replace(/[^\w-]/g, '');
+  if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+  try {
+    const ref = db.ref(`diagnostics/pdrTests/${sessionId}`);
+    const snap = await ref.once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'PDR test session not found' });
+    const session = snap.val() || {};
+    const progress = await calculatePdrSessionProgress(session);
+    const payload = {
+      ...session,
+      ...progress,
+      updatedAt: Date.now(),
+    };
+    if (session.status === 'running') {
+      await ref.update({
+        received: progress.received,
+        pdr: progress.pdr,
+        avgRSSI: progress.avgRSSI,
+        avgSNR: progress.avgSNR,
+        elapsed_s: progress.elapsed_s,
+        updatedAt: payload.updatedAt,
+      });
+    }
+    return res.json(payload);
+  } catch (error) {
+    console.error('[GET /api/diagnostics/pdr-test/:sessionId]', error);
+    return res.status(500).json({ error: 'Failed to fetch PDR test' });
+  }
+});
+
+app.post('/api/diagnostics/pdr-test/:sessionId/stop', authMiddleware, async (req, res) => {
+  const sessionId = String(req.params.sessionId || '').replace(/[^\w-]/g, '');
+  if (!sessionId) return res.status(400).json({ error: 'Invalid session id' });
+
+  try {
+    const ref = db.ref(`diagnostics/pdrTests/${sessionId}`);
+    const snap = await ref.once('value');
+    if (!snap.exists()) return res.status(404).json({ error: 'PDR test session not found' });
+    const session = snap.val() || {};
+    const endTime = Date.now();
+    const progress = await calculatePdrSessionProgress({ ...session, status: 'stopped', endTime });
+    const update = {
+      status: 'stopped',
+      endTime,
+      ...progress,
+      updatedAt: endTime,
+    };
+    await ref.update(update);
+    return res.json({ ...session, ...update });
+  } catch (error) {
+    console.error('[POST /api/diagnostics/pdr-test/:sessionId/stop]', error);
+    return res.status(500).json({ error: 'Failed to stop PDR test' });
   }
 });
 

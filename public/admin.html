@@ -621,12 +621,146 @@
 
     .firmware-empty { padding: 16px; color: var(--slate-400); text-align: center; font-size: 12px; }
 
+    .diagnostics-card { overflow: hidden; }
+    .diagnostics-toggle {
+      width: 100%;
+      border: 0;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+      text-align: left;
+    }
+    .diagnostics-toggle .admin-card-head { margin: 0; }
+    .diagnostics-chevron {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      background: var(--slate-100);
+      color: var(--slate-500);
+      font-weight: 900;
+      transition: transform .18s ease;
+    }
+    .diagnostics-card.open .diagnostics-chevron { transform: rotate(90deg); }
+    .diagnostics-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid var(--slate-200);
+      padding-bottom: 10px;
+    }
+    .diagnostics-tab-btn {
+      border: 1px solid var(--slate-200);
+      background: #fff;
+      color: var(--slate-600);
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .diagnostics-tab-btn.active {
+      background: var(--blue);
+      border-color: var(--blue);
+      color: #fff;
+      box-shadow: var(--shadow-sm);
+    }
+    .diagnostics-tab-panel { display: none; }
+    .diagnostics-tab-panel.active { display: block; }
+    .diagnostics-controls {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+    .diagnostics-chart {
+      position: relative;
+      min-height: 280px;
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 12px;
+      background: #fff;
+    }
+    .diagnostics-summary {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(120px, 1fr));
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .diagnostics-metric {
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      background: var(--slate-50);
+      padding: 10px;
+    }
+    .diagnostics-metric-label {
+      font-size: 10px;
+      font-weight: 900;
+      color: var(--slate-400);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .diagnostics-metric-value {
+      margin-top: 4px;
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 900;
+      color: var(--slate-700);
+    }
+    .diagnostics-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .diagnostics-table th,
+    .diagnostics-table td {
+      padding: 8px;
+      border-bottom: 1px solid var(--slate-200);
+      text-align: left;
+    }
+    .diagnostics-table th {
+      color: var(--slate-400);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+    .diagnostics-progress {
+      height: 10px;
+      border-radius: 999px;
+      background: var(--slate-100);
+      overflow: hidden;
+      margin: 10px 0;
+    }
+    .diagnostics-progress > div {
+      height: 100%;
+      width: 0;
+      background: var(--green);
+      transition: width .2s ease;
+    }
+    .diagnostics-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .diagnostics-muted {
+      color: var(--slate-400);
+      font-size: 12px;
+    }
+
     @media (max-width: 760px) {
       .route-list-card { grid-template-columns: 1fr; align-items: stretch; }
       .route-editor-grid, .route-stop-inline { grid-template-columns: 1fr; }
       .fw-row { grid-template-columns: 1fr; align-items: stretch; }
       .flash-toolbar { align-items: stretch; }
       .flash-toolbar > div { display: flex; gap: 8px; flex-wrap: wrap; }
+      .diagnostics-controls,
+      .diagnostics-summary { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -791,6 +925,101 @@
     <div style="padding:0 16px 4px;font-size:10px;font-weight:700;color:var(--slate-400);text-transform:uppercase;letter-spacing:.05em;">Action Log</div>
     <div id="action-log">
       <div class="log-line"><span class="log-ts">--:--:--</span><span>รอการเชื่อมต่อ...</span></div>
+    </div>
+  </div>
+
+  <div class="card admin-card-full diagnostics-card" id="diagnostics-card">
+    <button class="diagnostics-toggle" type="button" onclick="toggleDiagnosticsSection()" aria-expanded="false" aria-controls="diagnostics-body">
+      <div class="admin-card-head">
+        <div>
+          <div class="admin-card-title">🔬 Field Test &amp; Diagnostics</div>
+          <div class="admin-card-sub">Battery drain, LoRa RSSI/SNR, and PDR session tools</div>
+        </div>
+        <span class="diagnostics-chevron">›</span>
+      </div>
+    </button>
+    <div class="admin-card-body diagnostics-body" id="diagnostics-body" hidden>
+      <div class="diagnostics-tabs" role="tablist" aria-label="Diagnostics tools">
+        <button class="diagnostics-tab-btn active" type="button" data-diagnostics-tab="battery" onclick="switchDiagnosticsTab('battery')">Battery</button>
+        <button class="diagnostics-tab-btn" type="button" data-diagnostics-tab="lora" onclick="switchDiagnosticsTab('lora')">LoRa</button>
+        <button class="diagnostics-tab-btn" type="button" data-diagnostics-tab="pdr" onclick="switchDiagnosticsTab('pdr')">PDR Test</button>
+      </div>
+
+      <section class="diagnostics-tab-panel active" id="diag-tab-battery">
+        <div class="diagnostics-controls">
+          <div class="admin-form-row">
+            <label class="admin-label">Vehicle</label>
+            <select class="admin-input" id="diag-battery-vehicle"></select>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Date</label>
+            <input class="admin-input" type="date" id="diag-battery-date"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Interval</label>
+            <select class="admin-input" id="diag-battery-interval">
+              <option value="1">1 min</option>
+              <option value="5" selected>5 min</option>
+              <option value="10">10 min</option>
+              <option value="15">15 min</option>
+              <option value="30">30 min</option>
+            </select>
+          </div>
+          <div class="diagnostics-actions">
+            <button class="admin-btn admin-btn-primary" type="button" onclick="loadBatteryDiagnostics()">Load</button>
+            <button class="admin-btn admin-btn-outline" type="button" onclick="exportBatteryCsv()">CSV</button>
+          </div>
+        </div>
+        <div class="diagnostics-summary" id="diag-battery-summary"></div>
+        <div class="diagnostics-chart"><canvas id="diag-battery-chart"></canvas></div>
+      </section>
+
+      <section class="diagnostics-tab-panel" id="diag-tab-lora">
+        <div class="diagnostics-controls">
+          <div class="admin-form-row">
+            <label class="admin-label">Vehicle</label>
+            <select class="admin-input" id="diag-lora-vehicle"></select>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Date</label>
+            <input class="admin-input" type="date" id="diag-lora-date"/>
+          </div>
+          <div class="diagnostics-actions">
+            <button class="admin-btn admin-btn-primary" type="button" onclick="loadLoraDiagnostics()">Analyze</button>
+          </div>
+        </div>
+        <div class="diagnostics-summary" id="diag-lora-summary"></div>
+        <div id="diag-lora-assessment" class="diagnostics-muted" style="margin-bottom:10px;"></div>
+        <div class="diagnostics-chart"><canvas id="diag-lora-chart"></canvas></div>
+      </section>
+
+      <section class="diagnostics-tab-panel" id="diag-tab-pdr">
+        <div class="diagnostics-controls">
+          <div class="admin-form-row">
+            <label class="admin-label">Vehicle</label>
+            <select class="admin-input" id="diag-pdr-vehicle"></select>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Target packets</label>
+            <input class="admin-input" type="number" min="1" max="5000" step="1" id="diag-pdr-target" value="100"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Session label</label>
+            <input class="admin-input" id="diag-pdr-label" placeholder="Field test session"/>
+          </div>
+          <div class="diagnostics-actions">
+            <button class="admin-btn admin-btn-green" type="button" onclick="startPdrDiagnostics()">Start</button>
+            <button class="admin-btn admin-btn-danger" type="button" onclick="stopPdrDiagnostics()">Stop</button>
+          </div>
+        </div>
+        <div id="diag-pdr-active" class="diagnostics-muted">No active PDR session.</div>
+        <div id="diag-pdr-results" style="margin-top:14px;"></div>
+        <div class="diagnostics-actions" style="margin-top:12px;">
+          <button class="admin-btn admin-btn-outline" type="button" onclick="savePdrResult()">Save Result</button>
+          <button class="admin-btn admin-btn-outline" type="button" onclick="resetPdrTest()">Reset</button>
+        </div>
+        <div id="diag-pdr-history" style="margin-top:14px;"></div>
+      </section>
     </div>
   </div>
 
@@ -1012,6 +1241,7 @@
   window.dispatchEvent(new Event('esptool-js-ready'));
 </script>
 <script src="/js/flashManager.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script src="/js/admin.js"></script>
 </body>
 </html>

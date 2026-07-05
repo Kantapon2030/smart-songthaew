@@ -279,6 +279,417 @@ function showToast(msg = '✓ บันทึกแล้ว') {
   setTimeout(() => t.classList.remove('show'), 2000);
 }
 
+// Diagnostics
+let diagnosticsInitialized = false;
+let diagnosticsBatteryChart = null;
+let diagnosticsLoraChart = null;
+let diagnosticsBatteryData = null;
+let diagnosticsPdrSessionId = null;
+let diagnosticsPdrTimer = null;
+let diagnosticsLastPdrResult = null;
+
+function todayInputValue() {
+  return new Date().toLocaleDateString('en-CA');
+}
+
+function diagnosticsMetric(label, value, suffix = '') {
+  const display = value === null || value === undefined || value === '' ? '-' : `${value}${suffix}`;
+  return `
+    <div class="diagnostics-metric">
+      <div class="diagnostics-metric-label">${escapeHtml(label)}</div>
+      <div class="diagnostics-metric-value">${escapeHtml(display)}</div>
+    </div>
+  `;
+}
+
+function diagnosticsSetSummary(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
+}
+
+function diagnosticsSetMessage(id, message) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = `<div class="diagnostics-muted">${escapeHtml(message)}</div>`;
+}
+
+function toggleDiagnosticsSection() {
+  const card = document.getElementById('diagnostics-card');
+  const body = document.getElementById('diagnostics-body');
+  const toggle = document.querySelector('.diagnostics-toggle');
+  if (!card || !body) return;
+  const willOpen = body.hidden;
+  body.hidden = !willOpen;
+  card.classList.toggle('open', willOpen);
+  if (toggle) toggle.setAttribute('aria-expanded', String(willOpen));
+  if (willOpen) initDiagnostics();
+}
+
+function switchDiagnosticsTab(tab) {
+  document.querySelectorAll('.diagnostics-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.diagnosticsTab === tab);
+  });
+  document.querySelectorAll('.diagnostics-tab-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.id === `diag-tab-${tab}`);
+  });
+}
+
+function setDiagnosticsDates() {
+  ['diag-battery-date', 'diag-lora-date'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.value) el.value = todayInputValue();
+  });
+}
+
+function fillDiagnosticsSelect(id, vehicleIds) {
+  const select = document.getElementById(id);
+  if (!select) return;
+  if (!vehicleIds.length) {
+    select.innerHTML = '<option value="">No vehicles</option>';
+    return;
+  }
+  select.innerHTML = vehicleIds
+    .map(vehicleId => `<option value="${escapeAttr(vehicleId)}">${escapeHtml(vehicleId)}</option>`)
+    .join('');
+}
+
+async function loadDiagnosticsVehicles() {
+  const res = await authFetch('/api/fleet');
+  if (!res) return [];
+  const fleet = await res.json().catch(() => ({}));
+  const vehicleIds = Object.keys(fleet || {}).sort((a, b) => a.localeCompare(b));
+  ['diag-battery-vehicle', 'diag-lora-vehicle', 'diag-pdr-vehicle'].forEach(id => fillDiagnosticsSelect(id, vehicleIds));
+  return vehicleIds;
+}
+
+async function initDiagnostics() {
+  if (diagnosticsInitialized) return;
+  diagnosticsInitialized = true;
+  setDiagnosticsDates();
+  try {
+    await loadDiagnosticsVehicles();
+  } catch (e) {
+    addLog('err', 'Diagnostics vehicle list failed: ' + e.message);
+  }
+  renderPdrHistory();
+}
+
+function ensureChartReady() {
+  if (typeof Chart === 'undefined') {
+    alert('Chart.js is not loaded yet. Please refresh this page.');
+    return false;
+  }
+  return true;
+}
+
+async function loadBatteryDiagnostics() {
+  const vehicleId = document.getElementById('diag-battery-vehicle')?.value;
+  const date = document.getElementById('diag-battery-date')?.value || todayInputValue();
+  if (!vehicleId) return alert('Select a vehicle first.');
+  return loadBatteryChart(vehicleId, date);
+}
+
+async function loadBatteryChart(vehicleId, date) {
+  if (!ensureChartReady()) return;
+  const interval = document.getElementById('diag-battery-interval')?.value || '5';
+  diagnosticsSetMessage('diag-battery-summary', 'Loading battery diagnostics...');
+  try {
+    const res = await authFetch(`/api/diagnostics/battery-log?vehicleId=${encodeURIComponent(vehicleId)}&date=${encodeURIComponent(date)}&interval=${encodeURIComponent(interval)}`);
+    if (!res) return;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Battery diagnostics failed');
+    diagnosticsBatteryData = data;
+    const summary = data.summary || {};
+    diagnosticsSetSummary('diag-battery-summary', [
+      diagnosticsMetric('Start', summary.startPct, '%'),
+      diagnosticsMetric('End', summary.endPct, '%'),
+      diagnosticsMetric('Drop / hr', summary.dropPerHour, '%'),
+      diagnosticsMetric('Samples', summary.sampleCount),
+    ].join(''));
+
+    const labels = (data.samples || []).map(sample => sample.time);
+    const ctx = document.getElementById('diag-battery-chart');
+    if (diagnosticsBatteryChart) diagnosticsBatteryChart.destroy();
+    diagnosticsBatteryChart = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Battery %',
+            data: (data.samples || []).map(sample => sample.battery),
+            borderColor: '#2563EB',
+            backgroundColor: 'rgba(37, 99, 235, .12)',
+            tension: .25,
+            yAxisID: 'pct',
+          },
+          {
+            label: 'Voltage',
+            data: (data.samples || []).map(sample => sample.battVoltage),
+            borderColor: '#059669',
+            backgroundColor: 'rgba(5, 150, 105, .10)',
+            tension: .25,
+            yAxisID: 'volt',
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: 'index', intersect: false },
+        scales: {
+          pct: { type: 'linear', position: 'left', min: 0, max: 100, title: { display: true, text: '%' } },
+          volt: { type: 'linear', position: 'right', grid: { drawOnChartArea: false }, title: { display: true, text: 'V' } },
+        },
+      },
+    });
+    addLog('ok', `Loaded battery diagnostics for ${vehicleId}`);
+  } catch (e) {
+    diagnosticsSetMessage('diag-battery-summary', e.message);
+    addLog('err', e.message);
+  }
+}
+
+function exportBatteryCsv() {
+  if (!diagnosticsBatteryData?.samples?.length) return alert('Load battery data first.');
+  const rows = [
+    ['vehicleId', 'date', 'time', 'battery', 'battVoltage'],
+    ...diagnosticsBatteryData.samples.map(sample => [
+      diagnosticsBatteryData.vehicleId,
+      diagnosticsBatteryData.date,
+      sample.time,
+      sample.battery ?? '',
+      sample.battVoltage ?? '',
+    ]),
+  ];
+  const csv = rows.map(row => row.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `battery_${diagnosticsBatteryData.vehicleId}_${diagnosticsBatteryData.date}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function loadLoraDiagnostics() {
+  if (!ensureChartReady()) return;
+  const vehicleId = document.getElementById('diag-lora-vehicle')?.value;
+  const date = document.getElementById('diag-lora-date')?.value || todayInputValue();
+  if (!vehicleId) return alert('Select a vehicle first.');
+  diagnosticsSetMessage('diag-lora-summary', 'Loading LoRa diagnostics...');
+  try {
+    const res = await authFetch(`/api/diagnostics/lora-signal?vehicleId=${encodeURIComponent(vehicleId)}&date=${encodeURIComponent(date)}`);
+    if (!res) return;
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'LoRa diagnostics failed');
+    const summary = data.summary || {};
+    diagnosticsSetSummary('diag-lora-summary', [
+      diagnosticsMetric('Packets', summary.totalPackets),
+      diagnosticsMetric('PDR', summary.pdr, '%'),
+      diagnosticsMetric('Avg RSSI', summary.avgRSSI, ' dBm'),
+      diagnosticsMetric('Avg SNR', summary.avgSNR, ' dB'),
+    ].join(''));
+    const quality = summary.avgRSSI === null ? 'No RSSI samples yet.'
+      : summary.avgRSSI >= -90 ? 'Signal quality: strong.'
+      : summary.avgRSSI >= -105 ? 'Signal quality: usable, monitor relay distance.'
+      : 'Signal quality: weak, inspect antenna placement and relay path.';
+    diagnosticsSetMessage('diag-lora-assessment', quality);
+
+    const samples = data.samples || [];
+    const hasDistance = samples.some(sample => Number.isFinite(Number(sample.distanceFromGround_m)));
+    const points = samples.map((sample, index) => ({
+      x: hasDistance && Number.isFinite(Number(sample.distanceFromGround_m)) ? sample.distanceFromGround_m : index + 1,
+      y: sample.rssi,
+      snr: sample.snr,
+      time: sample.time,
+    }));
+    const ctx = document.getElementById('diag-lora-chart');
+    if (diagnosticsLoraChart) diagnosticsLoraChart.destroy();
+    diagnosticsLoraChart = new Chart(ctx, {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: 'RSSI',
+          data: points,
+          borderColor: '#2563EB',
+          backgroundColor: points.map(point => point.y >= -90 ? '#059669' : point.y >= -105 ? '#F59E0B' : '#DC2626'),
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          tooltip: {
+            callbacks: {
+              label: ctx => `RSSI ${ctx.raw.y} dBm, SNR ${ctx.raw.snr ?? '-'} dB, ${ctx.raw.time}`,
+            },
+          },
+        },
+        scales: {
+          x: { title: { display: true, text: hasDistance ? 'Distance from ground station (m)' : 'Packet index' } },
+          y: { title: { display: true, text: 'RSSI (dBm)' } },
+        },
+      },
+    });
+    addLog('ok', `Loaded LoRa diagnostics for ${vehicleId}`);
+  } catch (e) {
+    diagnosticsSetMessage('diag-lora-summary', e.message);
+    addLog('err', e.message);
+  }
+}
+
+function renderPdrActive(session) {
+  const el = document.getElementById('diag-pdr-active');
+  if (!el) return;
+  if (!session) {
+    el.innerHTML = 'No active PDR session.';
+    return;
+  }
+  const pdr = Number(session.pdr || 0);
+  el.innerHTML = `
+    <div class="diagnostics-metric">
+      <div class="diagnostics-metric-label">${escapeHtml(session.status || 'running')} · ${escapeHtml(session.sessionId || '')}</div>
+      <div class="diagnostics-metric-value">${escapeHtml(session.received || 0)} / ${escapeHtml(session.targetPackets || 0)} packets · ${escapeHtml(pdr.toFixed(1))}%</div>
+      <div class="diagnostics-progress"><div style="width:${Math.max(0, Math.min(100, pdr))}%"></div></div>
+      <div class="diagnostics-muted">Elapsed ${escapeHtml(session.elapsed_s || 0)}s · RSSI ${escapeHtml(session.avgRSSI ?? '-')} dBm · SNR ${escapeHtml(session.avgSNR ?? '-')} dB</div>
+    </div>
+  `;
+}
+
+function renderPdrResults(session) {
+  const el = document.getElementById('diag-pdr-results');
+  if (!el || !session) return;
+  el.innerHTML = `
+    <div class="diagnostics-summary">
+      ${diagnosticsMetric('Received', session.received)}
+      ${diagnosticsMetric('PDR', session.pdr, '%')}
+      ${diagnosticsMetric('Avg RSSI', session.avgRSSI, ' dBm')}
+      ${diagnosticsMetric('Elapsed', session.elapsed_s, 's')}
+    </div>
+  `;
+}
+
+async function startPdrDiagnostics() {
+  const vehicleId = document.getElementById('diag-pdr-vehicle')?.value;
+  const targetPackets = Number.parseInt(document.getElementById('diag-pdr-target')?.value || '100', 10) || 100;
+  const label = document.getElementById('diag-pdr-label')?.value || '';
+  if (!vehicleId) return alert('Select a vehicle first.');
+  try {
+    const res = await authFetch('/api/diagnostics/pdr-test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ vehicleId, targetPackets, label }),
+    });
+    if (!res) return;
+    const session = await res.json();
+    if (!res.ok) throw new Error(session.error || 'PDR start failed');
+    diagnosticsPdrSessionId = session.sessionId;
+    diagnosticsLastPdrResult = session;
+    renderPdrActive(session);
+    renderPdrResults(session);
+    startPdrPolling();
+    addLog('ok', `Started PDR test ${session.sessionId}`);
+  } catch (e) {
+    addLog('err', e.message);
+    alert(e.message);
+  }
+}
+
+function startPdrPolling() {
+  if (diagnosticsPdrTimer) clearInterval(diagnosticsPdrTimer);
+  pollPdrDiagnostics();
+  diagnosticsPdrTimer = setInterval(pollPdrDiagnostics, 2000);
+}
+
+async function pollPdrDiagnostics() {
+  if (!diagnosticsPdrSessionId) return;
+  try {
+    const res = await authFetch(`/api/diagnostics/pdr-test/${encodeURIComponent(diagnosticsPdrSessionId)}`);
+    if (!res) return;
+    const session = await res.json();
+    if (!res.ok) throw new Error(session.error || 'PDR poll failed');
+    diagnosticsLastPdrResult = session;
+    renderPdrActive(session);
+    renderPdrResults(session);
+    if (session.status !== 'running' && diagnosticsPdrTimer) {
+      clearInterval(diagnosticsPdrTimer);
+      diagnosticsPdrTimer = null;
+    }
+  } catch (e) {
+    addLog('err', e.message);
+  }
+}
+
+async function stopPdrDiagnostics() {
+  if (!diagnosticsPdrSessionId) return alert('No active PDR session.');
+  try {
+    const res = await authFetch(`/api/diagnostics/pdr-test/${encodeURIComponent(diagnosticsPdrSessionId)}/stop`, { method: 'POST' });
+    if (!res) return;
+    const session = await res.json();
+    if (!res.ok) throw new Error(session.error || 'PDR stop failed');
+    diagnosticsLastPdrResult = session;
+    if (diagnosticsPdrTimer) clearInterval(diagnosticsPdrTimer);
+    diagnosticsPdrTimer = null;
+    diagnosticsPdrSessionId = null;
+    renderPdrActive(session);
+    renderPdrResults(session);
+    addLog('ok', `Stopped PDR test ${session.sessionId}`);
+  } catch (e) {
+    addLog('err', e.message);
+    alert(e.message);
+  }
+}
+
+function savePdrResult() {
+  if (!diagnosticsLastPdrResult) return alert('No PDR result to save.');
+  const key = 'diagnosticsPdrHistory';
+  const history = JSON.parse(localStorage.getItem(key) || '[]');
+  const entry = {
+    ...diagnosticsLastPdrResult,
+    savedAt: Date.now(),
+  };
+  const next = [entry, ...history.filter(item => item.sessionId !== entry.sessionId)].slice(0, 8);
+  localStorage.setItem(key, JSON.stringify(next));
+  renderPdrHistory();
+  showToast('PDR result saved');
+}
+
+function resetPdrTest() {
+  if (diagnosticsPdrTimer) clearInterval(diagnosticsPdrTimer);
+  diagnosticsPdrTimer = null;
+  diagnosticsPdrSessionId = null;
+  diagnosticsLastPdrResult = null;
+  renderPdrActive(null);
+  const results = document.getElementById('diag-pdr-results');
+  if (results) results.innerHTML = '';
+}
+
+function renderPdrHistory() {
+  const el = document.getElementById('diag-pdr-history');
+  if (!el) return;
+  const history = JSON.parse(localStorage.getItem('diagnosticsPdrHistory') || '[]');
+  if (!history.length) {
+    el.innerHTML = '<div class="diagnostics-muted">No saved PDR results.</div>';
+    return;
+  }
+  el.innerHTML = `
+    <table class="diagnostics-table">
+      <thead><tr><th>Time</th><th>Vehicle</th><th>PDR</th><th>RSSI</th><th>Packets</th></tr></thead>
+      <tbody>
+        ${history.map(item => `
+          <tr>
+            <td>${escapeHtml(new Date(item.savedAt || item.updatedAt || Date.now()).toLocaleString('th-TH'))}</td>
+            <td>${escapeHtml(item.vehicleId || '-')}</td>
+            <td>${escapeHtml(item.pdr ?? '-')}%</td>
+            <td>${escapeHtml(item.avgRSSI ?? '-')}</td>
+            <td>${escapeHtml(item.received ?? 0)} / ${escapeHtml(item.targetPackets ?? 0)}</td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
 // ── Auth ─────────────────────────────────────────────────────
 async function checkAuth() {
   const isAuthed = await requireAuth();
@@ -294,6 +705,7 @@ async function checkAuth() {
 
   loadRoutes();
   loadFleet();
+  initDiagnostics();
   refreshStatus();
   refreshDemoStatus().catch(e => addLog('err', e.message));
 }
