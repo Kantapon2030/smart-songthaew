@@ -9,6 +9,8 @@
   <style>
     html, body { height: 100%; overflow: hidden; }
     body[data-page="history"] { background: var(--color-background); }
+    body.history-embedded { --nav-height: 0px; }
+    body.history-embedded #navbar-root { display: none; }
     .history-shell {
       height: calc(100dvh - var(--nav-height));
       display: grid;
@@ -234,6 +236,11 @@
     </section>
   </main>
 
+  <script>
+    if (new URLSearchParams(location.search).get('embedded') === '1') {
+      document.body.classList.add('history-embedded');
+    }
+  </script>
   <script src="/js/shared.js"></script>
   <script src="/js/history.js"></script>
   <script>

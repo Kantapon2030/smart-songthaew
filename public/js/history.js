@@ -15,7 +15,8 @@ document.addEventListener('DOMContentLoaded', initHistoryPage);
 
 async function initHistoryPage() {
   if (!await requireAuth()) return;
-  renderSharedNavbar({ active: 'history' });
+  const embedded = new URLSearchParams(location.search).get('embedded') === '1';
+  if (!embedded) renderSharedNavbar({ active: 'history' });
   bindHistoryControls();
   const params = new URLSearchParams(location.search);
   document.getElementById('history-date').value = params.get('date') || todayInputValue();

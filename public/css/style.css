@@ -1107,8 +1107,8 @@ canvas.sparkline { display: block; }
     height: 22px;
   }
 
-  /* ── Hide top nav-links on mobile — use bottom nav ── */
-  .nav-links { display: none !important; }
+  /* Keep top tabs visible on mobile; users can horizontally scroll every page link. */
+  .nav-links { display: flex !important; }
 
   /* ── Bottom padding so content isn't hidden behind the bar ── */
   main, .page-shell, .ops-content, .history-shell { padding-bottom: 72px !important; }

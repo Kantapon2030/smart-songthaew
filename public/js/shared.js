@@ -521,9 +521,7 @@ function renderSharedNavbar(options = {}) {
         ${navLinkEl('/', 'หน้าหลัก', 'home', active)}
         ${navLinkEl('/routes.html', 'เส้นทาง', 'routes', active)}
         ${navLinkEl('/dashboard.html', 'Dashboard', 'dashboard', active)}
-        ${navLinkEl('/history.html', '\u0E1B\u0E23\u0E30\u0E27\u0E31\u0E15\u0E34', 'history', active)}
         <button class="nav-link" id="nav-btn-announcements" type="button" aria-haspopup="dialog">ประกาศ</button>
-        ${navLinkEl('/tracking.html', 'ประวัติการเดินทาง', 'tracking', active)}
         ${navLinkEl('/about.html', 'เกี่ยวกับ VIBE', 'about', active)}
         <button class="nav-link" id="nav-btn-help" type="button" aria-haspopup="dialog">ช่วยเหลือ</button>
       </div>
@@ -844,11 +842,6 @@ function renderMobileBottomNav() {
       label: 'Dashboard',
       svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="5" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="19" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M7 12h5M14 7l3-1M14 17l3 1M12 12l2-5M12 12l2 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
     },
-    {
-      href: '/history.html',
-      label: 'ประวัติ',
-      svg: '<svg viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.8"/><path d="M12 7v5l3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
-    },
   ];
 
   items.forEach(function(item) {
@@ -895,6 +888,10 @@ function ensureMobileMenuOverlay() {
       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="5" r="2" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="19" r="2" stroke="currentColor" stroke-width="1.8"/><path d="M7 12h5M14 7l3-1M14 17l3 1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>' +
       'เกี่ยวกับ VIBE' +
     '</a>' +
+    '<button class="mobile-menu-item" type="button" onclick="openAnnouncementModal();closeMobileMenu();" style="background:none;border:none;border-bottom:1px solid var(--color-border);width:100%;text-align:left;cursor:pointer;">' +
+      '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M18 9.5a6 6 0 1 0-12 0c0 7-2 7-2 8.5h16c0-1.5-2-1.5-2-8.5ZM9.75 20a2.4 2.4 0 0 0 4.5 0" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>' +
+      'ประกาศ' +
+    '</button>' +
     '<button class="mobile-menu-item" type="button" onclick="openHelpModal();closeMobileMenu();" style="background:none;border:none;border-bottom:1px solid var(--color-border);width:100%;text-align:left;cursor:pointer;">' +
       '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10Z" stroke="currentColor" stroke-width="1.8"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>' +
       'ช่วยเหลือ' +

@@ -752,6 +752,14 @@
       color: var(--slate-400);
       font-size: 12px;
     }
+    .admin-history-frame {
+      width: 100%;
+      height: calc(100dvh - var(--nav-height, 56px) - 130px);
+      min-height: 680px;
+      border: 0;
+      border-radius: 12px;
+      background: #fff;
+    }
 
     @media (max-width: 760px) {
       .route-list-card { grid-template-columns: 1fr; align-items: stretch; }
@@ -761,6 +769,11 @@
       .flash-toolbar > div { display: flex; gap: 8px; flex-wrap: wrap; }
       .diagnostics-controls,
       .diagnostics-summary { grid-template-columns: 1fr; }
+      .admin-history-frame {
+        height: calc(100dvh - var(--nav-height, 56px) - 112px);
+        min-height: 620px;
+        border-radius: 0;
+      }
     }
   </style>
 </head>
@@ -801,6 +814,7 @@
   <div class="admin-tabs" role="tablist" aria-label="Admin sections">
     <button class="admin-tab-btn active" type="button" data-tab="overview" onclick="switchTab('overview')">Dashboard</button>
     <button class="admin-tab-btn" type="button" data-tab="firmware" onclick="switchTab('firmware')">Firmware</button>
+    <button class="admin-tab-btn" type="button" data-tab="history" onclick="switchTab('history')">ประวัติรถ</button>
     <a class="admin-tab-btn" href="/fieldtest.html" style="text-decoration:none;">Field Test</a>
   </div>
 
@@ -1113,6 +1127,10 @@
     </div>
   </div><!-- /admin-tab-firmware -->
 
+  <div class="admin-tab-panel" id="admin-tab-history">
+    <iframe class="admin-history-frame" src="/history.html?embedded=1" title="ประวัติรถ"></iframe>
+  </div><!-- /admin-tab-history -->
+
 </div><!-- /admin-page -->
 
 <!-- ════════════════════════════
@@ -1201,6 +1219,16 @@
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="/js/shared.js"></script>
 <script>
+  function historyFrameSrc() {
+    const params = new URLSearchParams(location.search);
+    const historyParams = new URLSearchParams({ embedded: '1' });
+    ['vehicleId', 'date', 'from', 'to'].forEach(key => {
+      const value = params.get(key);
+      if (value) historyParams.set(key, value);
+    });
+    return `/history.html?${historyParams.toString()}`;
+  }
+
   function switchTab(tab) {
     document.querySelectorAll('.admin-tab-btn').forEach(btn => {
       btn.classList.toggle('active', btn.dataset.tab === tab);
@@ -1208,7 +1236,17 @@
     document.querySelectorAll('.admin-tab-panel').forEach(panel => {
       panel.classList.toggle('active', panel.id === `admin-tab-${tab}`);
     });
+    if (tab === 'history') {
+      const frame = document.querySelector('.admin-history-frame');
+      if (frame && frame.getAttribute('src') !== historyFrameSrc()) frame.setAttribute('src', historyFrameSrc());
+    }
   }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const params = new URLSearchParams(location.search);
+    const tab = params.get('tab');
+    if (tab && document.getElementById(`admin-tab-${tab}`)) switchTab(tab);
+  });
 
   // Patch modal display for Leaflet modals (they use display:flex not class)
   const _openRouteEditorOrig   = window.openRouteEditor;

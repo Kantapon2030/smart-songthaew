@@ -520,7 +520,7 @@ function renderReportsSummary() {
   const date = opsHistoryAnalytics.date || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
   body.innerHTML = rows.map(row => {
     const battery = row.batteryEnd ?? row.batteryStart;
-    const href = `/history.html?vehicleId=${encodeURIComponent(row.vehicleId)}&date=${encodeURIComponent(date)}`;
+    const href = `/admin.html?tab=history&vehicleId=${encodeURIComponent(row.vehicleId)}&date=${encodeURIComponent(date)}`;
     return `
       <tr>
         <td><strong>${row.vehicleId}</strong></td>
