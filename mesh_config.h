@@ -49,6 +49,9 @@
 #define GPS_BAUD        9600
 #define GPS_MIN_SATS    4
 #define GPS_TIMEOUT_MS  60000UL
+#define GPS_LOCATION_FRESH_MS 3000UL
+#define GPS_TIME_FRESH_MS     3000UL
+#define GPS_FIX_HOLD_MS       86400000UL
 
 // Battery sense voltage divider
 #define BAT_PIN         A0
@@ -135,10 +138,13 @@
 #define BAT_LOW_PCT             30    // below this -> reduce TX frequency
 
 // Adaptive TX intervals (ms)
+#define WEB_OFFLINE_TIMEOUT_MS  90000UL
+#define STATIONARY_TX_MARGIN_MS 10000UL
 #define TX_INTERVAL_NORMAL      5000UL
 #define TX_INTERVAL_LOW_BAT     15000UL
-#define TX_INTERVAL_STATIONARY  30000UL
+#define TX_INTERVAL_STATIONARY  (WEB_OFFLINE_TIMEOUT_MS - STATIONARY_TX_MARGIN_MS)
 #define SLEEP_CHECK_MS          60000UL // check sleep condition every 60s
+#define STATIONARY_POWER_OFF_ENABLED 0
 
 // Stationary detection
 #define STATIONARY_DIST_M       5.0f  // meters - if moved less than this

@@ -46,8 +46,8 @@ function applyConfigToUI(cfg) {
 
   document.getElementById('vcc-num').textContent          = _demoVehicleCount;
   document.getElementById('cfg-route').value              = cfg.routeName      ?? '';
-  document.getElementById('cfg-timeout').value            = cfg.offlineTimeout ?? 15;
-  document.getElementById('cfg-timeout-val').textContent  = cfg.offlineTimeout ?? 15;
+  document.getElementById('cfg-timeout').value            = cfg.offlineTimeout ?? 90;
+  document.getElementById('cfg-timeout-val').textContent  = cfg.offlineTimeout ?? 90;
   document.getElementById('cfg-announcement').value       = cfg.announcement   ?? '';
   const ground = cfg.groundStation || {};
   if (document.getElementById('cfg-ground-id')) document.getElementById('cfg-ground-id').value = ground.id || 'GROUND_01';
@@ -158,7 +158,7 @@ async function changeDemoSpeed(speed) {
 async function saveConfig() {
   const cfg = {
     routeName:      document.getElementById('cfg-route').value.trim(),
-    offlineTimeout: parseInt(document.getElementById('cfg-timeout').value),
+    offlineTimeout: Math.max(90, parseInt(document.getElementById('cfg-timeout').value)),
     announcement:   document.getElementById('cfg-announcement').value.trim(),
   };
   try {

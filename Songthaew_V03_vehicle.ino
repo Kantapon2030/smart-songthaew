@@ -119,6 +119,9 @@ bool gpsTimestampValid = false;
 uint32_t gpsTimestamp = 0;
 uint8_t lastGpsSlotSecond = 255;
 uint8_t lastPpsSlotSecond = 255;
+uint32_t lastPpsSlotEpoch = 0;
+unsigned long lastGpsFixMs = 0;
+bool gpsFixHeld = false;
 
 unsigned long nextTxMs = 0;
 unsigned long lastExpireMs = 0;
@@ -148,6 +151,10 @@ bool hasLastKnownGPS = false;
 unsigned long lastGpsSaveMs = 0;
 unsigned long lastGpsSearchLogMs = 0;
 bool tdmaGpsSynced = false;
+bool pendingGpsEepromSave = false;
+bool gpsValidTxCompleted = false;
+float pendingGpsSaveLat = 0.0f;
+float pendingGpsSaveLng = 0.0f;
 
 // Power Management State
 bool peripheralPower = false;
@@ -208,7 +215,7 @@ bool isLeapYear(uint16_t year) {
 
 uint32_t gpsUnixTimestamp() {
   if (!gps.date.isValid() || !gps.time.isValid()) return 0;
-  if (gps.date.age() > 2000 || gps.time.age() > 2000) return 0;
+  if (gps.date.age() > GPS_TIME_FRESH_MS || gps.time.age() > GPS_TIME_FRESH_MS) return 0;
 
   static const uint8_t daysBeforeMonth[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
   uint16_t year = gps.date.year();
@@ -280,13 +287,25 @@ uint16_t gpsMsIntoMinute() {
   return ((uint16_t)gps.time.second() * 1000U) + ((uint16_t)gps.time.centisecond() * 10U);
 }
 
+uint32_t gpsMsIntoPeriod(uint32_t periodMs) {
+  if (periodMs == 0) return 0;
+
+  uint32_t centisecondMs = gps.time.isValid() ? ((uint32_t)gps.time.centisecond() * 10UL) : 0UL;
+  uint32_t periodSec = periodMs / 1000UL;
+  if (gpsTimestampValid && periodSec > 0) {
+    return (((gpsTimestamp % periodSec) * 1000UL) + centisecondMs) % periodMs;
+  }
+
+  return gpsMsIntoMinute() % periodMs;
+}
+
 bool gpsTxSlotDue() {
   if (!gpsTimeValid || ppsRecentlySeen()) return false;
 
-  const uint16_t periodMs = (uint16_t)currentTxInterval;
-  const uint16_t slotStart = (uint16_t)(vehicleTxOffsetMs() % periodMs);
-  const uint16_t elapsed = gpsMsIntoMinute() % periodMs;
-  const uint16_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
+  const uint32_t periodMs = currentTxInterval;
+  const uint32_t slotStart = vehicleTxOffsetMs() % periodMs;
+  const uint32_t elapsed = gpsMsIntoPeriod(periodMs);
+  const uint32_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
   const uint8_t second = gps.time.second();
 
   if (delta > GPS_TX_WINDOW_MS || second == lastGpsSlotSecond) return false;
@@ -330,9 +349,17 @@ void processPpsSync() {
   ppsLastSeenMs = millis();
   if (!gpsTimeValid) return;
 
-  const uint8_t periodSec = (uint8_t)(currentTxInterval / 1000UL);
+  const uint32_t periodSec = currentTxInterval / 1000UL;
+  const uint32_t gpsSecond = gpsTimestampValid ? gpsTimestamp : gps.time.second();
   const uint8_t second = gps.time.second();
-  if (periodSec == 0 || (second % periodSec) != 0 || second == lastPpsSlotSecond) return;
+  const uint32_t slotEpoch = periodSec > 0 ? gpsSecond / periodSec : 0;
+  if (periodSec == 0 || (gpsSecond % periodSec) != 0) return;
+  if (gpsTimestampValid) {
+    if (slotEpoch == lastPpsSlotEpoch) return;
+    lastPpsSlotEpoch = slotEpoch;
+  } else if (second == lastPpsSlotSecond) {
+    return;
+  }
 
   lastPpsSlotSecond = second;
   nextTxMs = tickMs + TX_SYNC_GUARD_MS + vehicleTxOffsetMs() + txJitterMs();
@@ -1328,6 +1355,21 @@ bool loadGPSFromEEPROM(float &lat, float &lng) {
   return true;
 }
 
+void queueGPSEepromSave(float lat, float lng) {
+  pendingGpsSaveLat = lat;
+  pendingGpsSaveLng = lng;
+  pendingGpsEepromSave = true;
+}
+
+void serviceGPSEepromSave() {
+  if (!pendingGpsEepromSave || !gpsValidTxCompleted) return;
+  if (millis() - lastLoRaTxSuccess < 750UL) return;
+
+  pendingGpsEepromSave = false;
+  saveGPSToEEPROM(pendingGpsSaveLat, pendingGpsSaveLng);
+  lastGpsSaveMs = millis();
+}
+
 uint32_t batteryCalChecksum(const BatteryCalibration& cal) {
   const uint8_t* data = (const uint8_t*)&cal;
   uint32_t hash = 2166136261UL;
@@ -1443,29 +1485,47 @@ void readGPS() {
     ESP.wdtFeed();
   }
 
+  unsigned long now = millis();
   bool wasGpsValid = gpsValid;
-  gpsValid = gps.location.isValid() && gps.location.age() < 2000;
-  gpsTimeValid = gps.time.isValid() && gps.time.age() < 2000;
+  static bool firstFixDone = false;
+  bool freshGpsFix = gps.location.isValid() && gps.location.age() <= GPS_LOCATION_FRESH_MS;
+  gpsTimeValid = gps.time.isValid() && gps.time.age() <= GPS_TIME_FRESH_MS;
+  if (freshGpsFix) lastGpsFixMs = now;
+  gpsFixHeld = !freshGpsFix && lastGpsFixMs > 0 && now - lastGpsFixMs <= GPS_FIX_HOLD_MS;
+  gpsValid = freshGpsFix || gpsFixHeld;
   gpsTimestamp = gpsUnixTimestamp();
   gpsTimestampValid = gpsTimestamp > 0;
-  gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
-  gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
   gpsSats = gps.satellites.isValid() ? gps.satellites.value() : 0;
   gpsHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
 
-  if (gpsValid) {
+  if (freshGpsFix) {
     gpsLat = gps.location.lat();
     gpsLng = gps.location.lng();
-    if (!wasGpsValid) {
+    gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
+    gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
+    if (!firstFixDone) {
+      firstFixDone = true;
       Serial.printf("[GPS] Fix acquired! lat:%.6f lng:%.6f sats:%lu hdop:%.1f\n",
+                    gpsLat, gpsLng, (unsigned long)gpsSats, gpsHdop);
+      if (gpsTimeValid && !tdmaGpsSynced) syncTdmaToGpsTime();
+      queueGPSEepromSave(gpsLat, gpsLng);
+      Serial.println(tdmaGpsSynced
+        ? F("[GPS] First fix - EEPROM save queued, TDMA synced")
+        : F("[GPS] First fix - EEPROM save queued, waiting GPS time for TDMA"));
+    } else if (!wasGpsValid) {
+      Serial.printf("[GPS] Fix reacquired! lat:%.6f lng:%.6f sats:%lu hdop:%.1f\n",
                     gpsLat, gpsLng, (unsigned long)gpsSats, gpsHdop);
     }
     if (gpsTimeValid && !tdmaGpsSynced) syncTdmaToGpsTime();
     if (lastGpsSaveMs == 0 || millis() - lastGpsSaveMs >= GPS_SAVE_INTERVAL_MS) {
-      saveGPSToEEPROM(gpsLat, gpsLng);
-      lastGpsSaveMs = millis();
+      queueGPSEepromSave(gpsLat, gpsLng);
     }
-  } else if (millis() - lastGpsSearchLogMs >= 5000UL) {
+  } else if (!gpsValid) {
+    gpsSpeed = 0.0f;
+    gpsHeading = 0.0f;
+  }
+
+  if (!gpsValid && millis() - lastGpsSearchLogMs >= 5000UL) {
     lastGpsSearchLogMs = millis();
     Serial.printf("[GPS] Searching... sats:%lu\n", (unsigned long)gpsSats);
   }
@@ -1486,12 +1546,13 @@ void transmitPacket(const char* txMode = "auto") {
   float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
   int battery = (int)round(readBattery());
   int batteryVoltageMv = (int)round(readBatteryVoltage() * 1000.0f);
+  bool usingHeldGPS = gpsValid && gpsFixHeld;
   bool usingLastKnown = !gpsValid && hasLastKnownGPS;
-  const char* gpsStatus = gpsValid ? "gps_fix" : (usingLastKnown ? "last_known" : "searching_gps");
+  const char* gpsStatus = gpsValid ? (usingHeldGPS ? "gps_hold" : "gps_fix") : (usingLastKnown ? "last_known" : "searching_gps");
   float txLat = gpsValid ? gpsLat : (usingLastKnown ? lastKnownLat : 0.0f);
   float txLng = gpsValid ? gpsLng : (usingLastKnown ? lastKnownLng : 0.0f);
-  float txSpeed = gpsValid ? gpsSpeed : 0.0f;
-  uint32_t txGpsTimestamp = gpsValid ? gpsTimestamp : (usingLastKnown ? lastKnownGpsTimestamp : 0UL);
+  float txSpeed = (gpsValid && !usingHeldGPS) ? gpsSpeed : 0.0f;
+  uint32_t txGpsTimestamp = gpsValid ? (gpsTimestampValid ? gpsTimestamp : lastKnownGpsTimestamp) : (usingLastKnown ? lastKnownGpsTimestamp : 0UL);
   bool reportLoraError = loraErrorPending;
 
   seq++;
@@ -1509,6 +1570,7 @@ void transmitPacket(const char* txMode = "auto") {
 
   bool sent = built && sendRawPayload(payload);
   if (sent && reportLoraError) loraErrorPending = false;
+  if (sent && gpsValid) gpsValidTxCompleted = true;
   if (built && (!hasRoute || !sent)) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
   if (hasRoute) flushCarryBuffer();
   Serial.printf("[TX]   %s | hop:%d | gpsValid:%s | bat:%d%% | mode:%s | bytes:%u | %s\n",
@@ -1998,6 +2060,14 @@ void setup() {
   float storedLng = 0.0f;
   if (loadGPSFromEEPROM(storedLat, storedLng)) {
     Serial.printf("lat:%.3f lng:%.3f\n", storedLat, storedLng);
+    gpsLat = storedLat;
+    gpsLng = storedLng;
+    gpsValid = true;
+    gpsFixHeld = true;
+    lastGpsFixMs = millis();
+    gpsTimestamp = lastKnownGpsTimestamp;
+    gpsTimestampValid = lastKnownGpsTimestamp > 0;
+    Serial.println(F("[BOOT] GPS continuity hold enabled from last known position"));
   } else {
     Serial.println(F("none"));
   }
@@ -2033,6 +2103,7 @@ void loop() {
   readGPS();
   processPpsSync();
   serviceControlBroadcast();
+  serviceGPSEepromSave();
   servicePowerOnLoRaInit();
   checkLoRaHealth();
 
@@ -2066,14 +2137,24 @@ void loop() {
     if (isStationary != lastStationary) {
       lastStationary = isStationary;
       if (isStationary) {
+#if STATIONARY_POWER_OFF_ENABLED
         setPower(false);
         loraReady = false;
         pendingPowerOnLoRaInit = false;
         loraSleepingDuringStationary = false;
+#else
+        if (!peripheralPower) setPower(true);
+        pendingPowerOnLoRaInit = false;
+        Serial.println(F("[PWR] Stationary - GPS power kept ON"));
+#endif
       } else {
-        setPower(true);
-        powerOnStartedMs = millis();
-        pendingPowerOnLoRaInit = true;
+        if (!peripheralPower) {
+          setPower(true);
+          powerOnStartedMs = millis();
+          pendingPowerOnLoRaInit = true;
+        } else {
+          pendingPowerOnLoRaInit = false;
+        }
         loraSleepingDuringStationary = false;
       }
     }

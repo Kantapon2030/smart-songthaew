@@ -1050,25 +1050,29 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
   const isDemo = isDemoVehicle(vehicleId, vehicleMeta) || String(routeId).toLowerCase().includes('demo');
   const recentlySeen = lastSeen > 0 && Date.now() - lastSeen < offlineThresholdMs;
   const isOnline = (isDemo && demoMode) || recentlySeen;
+  const displayGpsFix = isOnline && gpsFix;
+  const hop = isOnline && typeof data.hop === 'number' ? data.hop : null;
+  const relayFrom = isOnline ? (data.relay_from || null) : null;
+  const relayChain = isOnline && Array.isArray(data.relay_chain) ? data.relay_chain : [];
   const node = {
     id: vehicleId,
     type: 'vehicle',
     vehicle_id: vehicleId,
     plate: sanitizePlate(vehicleMeta?.plate || data.plate || data.license_plate || data.licensePlate) || null,
-    lat: gpsFix ? lat : null,
-    lng: gpsFix ? lng : null,
+    lat: displayGpsFix ? lat : null,
+    lng: displayGpsFix ? lng : null,
     status: isOnline ? 'online' : 'offline',
-    gps_fix: gpsFix,
-    gps_status: gpsFix ? 'fixed' : 'no_fix',
+    gps_fix: displayGpsFix,
+    gps_status: displayGpsFix ? 'fixed' : 'no_fix',
     demo: isDemo,
     route_id: routeId,
     direction: data.direction || 'unknown',
-    hop: typeof data.hop === 'number' ? data.hop : null,
+    hop,
     last_seen: lastSeen,
     battery: typeof data.battery === 'number' ? data.battery : null,
     speed: typeof data.speed === 'number' ? data.speed : null,
-    relay_from: data.relay_from || null,
-    relay_chain: Array.isArray(data.relay_chain) ? data.relay_chain : [],
+    relay_from: relayFrom,
+    relay_chain: relayChain,
     neighbors: Array.isArray(data.neighbors) ? data.neighbors : [],
     link_quality: typeof data.link_quality === 'number' ? data.link_quality : null,
     rssi: typeof data.rssi === 'number' ? data.rssi : null,
@@ -1092,7 +1096,7 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     bearing: typeof data.bearing === 'number' ? data.bearing : typeof data.heading === 'number' ? data.heading : null,
     timestamp: data.timestamp || null
   };
-  if (!demoMode && !gpsFix) {
+  if (!demoMode && !displayGpsFix) {
     delete node.lat;
     delete node.lng;
   }
@@ -1207,13 +1211,14 @@ function buildRealTelemetryLinks(nodes, groundStation) {
         rssi: node.rssi, snr: node.snr, latency_ms: null,
         last_seen: node.last_seen
       });
-    } else if (Number.isFinite(node.lat) && Number.isFinite(node.lng)) {
-      const distToGround = haversineDistanceMeters(node, groundStation);
+    } else if (Number(node.hop) === 0 || (Number.isFinite(node.lat) && Number.isFinite(node.lng))) {
+      const hasPosition = Number.isFinite(node.lat) && Number.isFinite(node.lng);
+      const distToGround = hasPosition ? haversineDistanceMeters(node, groundStation) : null;
       addLink({
         from: node.id,
         to: groundStation.id,
         type: 'direct',
-        distance_m: Math.round(distToGround),
+        distance_m: distToGround === null ? null : Math.round(distToGround),
         hop: 0,
         status: 'good',
         source: 'telemetry',
@@ -2083,6 +2088,9 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     const patch   = {};
     for (const k of allowed) {
       if (k in req.body) patch[k] = req.body[k];
+    }
+    if ('offlineTimeout' in patch) {
+      patch.offlineTimeout = Math.max(90, Number.parseInt(patch.offlineTimeout, 10) || 90);
     }
     if ('groundStation' in req.body) {
       patch.groundStation = normalizeGroundStationConfig(req.body.groundStation);
