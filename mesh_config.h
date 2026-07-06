@@ -31,13 +31,13 @@
 // LoRa RF settings
 #define LORA_FREQ       923E6
 #define LORA_BW         125E3
-#define LORA_SF         7
+#define LORA_SF         9
 #define LORA_CR         5
 #define LORA_SYNC       0x34
-#define LORA_TX_DBM     17
+#define LORA_TX_DBM     20
 
 // Packet priority limits
-#define MAX_LORA_PACKET_BYTES 200
+#define MAX_LORA_PACKET_BYTES 170
 #define LORA_TIER1_LIMIT      140
 #define LORA_TIER2_LIMIT      170
 #define LORA_TIER3_LIMIT      180
@@ -66,19 +66,42 @@
 
 // TDMA and timing
 #define TX_INTERVAL_MS        5000UL
-#define TX_SLOT_COUNT         VEHICLE_COUNT
-#define TX_SLOT_SPACING_MS    500UL
+#define TX_SLOT_COUNT         3
+#define TX_SLOT_SPACING_MS    1600UL
 #define TX_JITTER_MS          30UL
-#define TX_SYNC_GUARD_MS      100UL
+#define TX_SYNC_GUARD_MS      200UL
 #define GPS_TX_WINDOW_MS      250UL
 #define BEACON_INTERVAL_MS    10000UL
 #define NEIGHBOR_EXPIRE_MS    30000UL
 #define WIFI_RETRY_MS         30000UL
+#define WIFI_RECONNECT_MS     10000UL
 #define WIFI_SETUP_TIMEOUT_MS 20000UL
 #define FLUSH_INTERVAL_MS     5000UL
 #define EXPIRE_INTERVAL_MS    5000UL
 #define CARRY_RETRY_MS        7000UL
 #define CARRY_PACKET_TTL_MS   180000UL
+#define WDT_TIMEOUT_MS        8000
+#define LORA_HEALTH_CHECK_MS  30000UL
+#define LORA_REINIT_RETRIES   3
+#define LORA_BEGIN_TIMEOUT_MS 5000UL
+#define LORA_BEGIN_MAX_FAILURES LORA_REINIT_RETRIES
+#define GPS_POWER_WAIT_MS     2000UL
+#define GPS_EEPROM_MAGIC      0xBEEF1234UL
+#define GPS_SAVE_INTERVAL_MS  60000UL
+#define BOOT_TX_DELAY_MS      500UL
+#define COMMAND_POLL_MS       10000UL
+#define ADAPTIVE_STATUS_MS    30000UL
+
+// Adaptive LoRa - disabled by default for stability.
+// Enable only when vehicle count exceeds threshold.
+#define ADAPTIVE_LORA_ENABLED   false
+#define ADAPTIVE_DEFAULT_SF     9
+#define ADAPTIVE_DEFAULT_TP     20
+#define ADAPTIVE_DEFAULT_TI     5000UL
+#define ADAPTIVE_THRESHOLD_VC   3
+#define ADAPTIVE_HIGH_SF        8
+#define ADAPTIVE_HIGH_TP        17
+#define ADAPTIVE_HIGH_TI        5000UL
 
 // Mesh sizing
 #define MAX_NEIGHBORS         10

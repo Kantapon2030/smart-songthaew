@@ -292,6 +292,12 @@ function todayInputValue() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+function dateInputDaysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  return date.toLocaleDateString('en-CA');
+}
+
 function diagnosticsMetric(label, value, suffix = '') {
   const display = value === null || value === undefined || value === '' ? '-' : `${value}${suffix}`;
   return `
@@ -334,7 +340,11 @@ function switchDiagnosticsTab(tab) {
 }
 
 function setDiagnosticsDates() {
-  ['diag-battery-date', 'diag-lora-date'].forEach(id => {
+  const batteryStart = document.getElementById('diag-battery-start-date');
+  const batteryEnd = document.getElementById('diag-battery-end-date');
+  if (batteryStart && !batteryStart.value) batteryStart.value = dateInputDaysAgo(7);
+  if (batteryEnd && !batteryEnd.value) batteryEnd.value = todayInputValue();
+  ['diag-lora-date'].forEach(id => {
     const el = document.getElementById(id);
     if (el && !el.value) el.value = todayInputValue();
   });
@@ -383,17 +393,24 @@ function ensureChartReady() {
 
 async function loadBatteryDiagnostics() {
   const vehicleId = document.getElementById('diag-battery-vehicle')?.value;
-  const date = document.getElementById('diag-battery-date')?.value || todayInputValue();
+  const startDate = document.getElementById('diag-battery-start-date')?.value || todayInputValue();
+  const endDate = document.getElementById('diag-battery-end-date')?.value || startDate;
   if (!vehicleId) return alert('Select a vehicle first.');
-  return loadBatteryChart(vehicleId, date);
+  return loadBatteryChart(vehicleId, startDate, endDate);
 }
 
-async function loadBatteryChart(vehicleId, date) {
+async function loadBatteryChart(vehicleId, startDate, endDate = startDate) {
   if (!ensureChartReady()) return;
   const interval = document.getElementById('diag-battery-interval')?.value || '5';
   diagnosticsSetMessage('diag-battery-summary', 'Loading battery diagnostics...');
   try {
-    const res = await authFetch(`/api/diagnostics/battery-log?vehicleId=${encodeURIComponent(vehicleId)}&date=${encodeURIComponent(date)}&interval=${encodeURIComponent(interval)}`);
+    const params = new URLSearchParams({
+      vehicleId,
+      startDate,
+      endDate,
+      interval,
+    });
+    const res = await authFetch(`/api/diagnostics/battery-log?${params.toString()}`);
     if (!res) return;
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Battery diagnostics failed');
@@ -402,7 +419,10 @@ async function loadBatteryChart(vehicleId, date) {
     diagnosticsSetSummary('diag-battery-summary', [
       diagnosticsMetric('Start', summary.startPct, '%'),
       diagnosticsMetric('End', summary.endPct, '%'),
+      diagnosticsMetric('Duration', summary.durationDays, 'd'),
       diagnosticsMetric('Drop / hr', summary.dropPerHour, '%'),
+      diagnosticsMetric('Drop / day', summary.dropPerDay, '%'),
+      diagnosticsMetric('Est. days', summary.estimatedFullDays, 'd'),
       diagnosticsMetric('Samples', summary.sampleCount),
     ].join(''));
 
@@ -452,10 +472,12 @@ async function loadBatteryChart(vehicleId, date) {
 function exportBatteryCsv() {
   if (!diagnosticsBatteryData?.samples?.length) return alert('Load battery data first.');
   const rows = [
-    ['vehicleId', 'date', 'time', 'battery', 'battVoltage'],
+    ['vehicleId', 'rangeStart', 'rangeEnd', 'sampleDate', 'time', 'battery', 'battVoltage'],
     ...diagnosticsBatteryData.samples.map(sample => [
       diagnosticsBatteryData.vehicleId,
-      diagnosticsBatteryData.date,
+      diagnosticsBatteryData.startDate || diagnosticsBatteryData.date,
+      diagnosticsBatteryData.endDate || diagnosticsBatteryData.date,
+      sample.date || diagnosticsBatteryData.date,
       sample.time,
       sample.battery ?? '',
       sample.battVoltage ?? '',
@@ -466,7 +488,7 @@ function exportBatteryCsv() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `battery_${diagnosticsBatteryData.vehicleId}_${diagnosticsBatteryData.date}.csv`;
+  a.download = `battery_${diagnosticsBatteryData.vehicleId}_${diagnosticsBatteryData.startDate || diagnosticsBatteryData.date}_${diagnosticsBatteryData.endDate || diagnosticsBatteryData.date}.csv`;
   a.click();
   URL.revokeObjectURL(url);
 }

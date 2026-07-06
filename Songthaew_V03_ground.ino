@@ -64,14 +64,27 @@ int dedupHead = 0;
 
 bool wifiConnected = false;
 bool loraReady = false;
+bool flushBufferRequested = false;
 unsigned long lastWifiCheckMs = 0;
 unsigned long lastBeaconMs = 0;
 unsigned long lastFlushMs = 0;
 unsigned long lastLoRaRetryMs = 0;
+unsigned long lastCommandPollMs = 0;
+unsigned long lastAdaptiveStatusMs = 0;
 unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
 String lastHttpResponse = "";
 bool ledPulseActive = false;
+WiFiEventHandler wifiGotIpHandler;
+WiFiEventHandler wifiDisconnectedHandler;
+int activeLoRaSf = ADAPTIVE_DEFAULT_SF;
+int activeLoRaTxPower = ADAPTIVE_DEFAULT_TP;
+unsigned long activeLoRaInterval = ADAPTIVE_DEFAULT_TI;
+bool commandPending = false;
+char commandTarget[16] = "";
+char commandName[20] = "";
+long commandValue = 0;
+uint32_t commandTs = 0;
 
 bool isVehiclePacket(JsonDocument& doc) {
   const char* type = doc["type"] | "";
@@ -261,10 +274,14 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   float lng = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
   bool coordValid = isValidThailandCoord(lat, lng);
   bool gpsFix = compact.containsKey("fx") ? ((compact["fx"] | 0) == 1) : coordValid;
-  if (gpsFix && coordValid) {
+  const char* status = compact["st"] | "";
+  bool lastKnownPosition = strcmp(status, "last_known") == 0;
+  if ((gpsFix || lastKnownPosition) && coordValid) {
     out["lat"] = lat;
     out["lng"] = lng;
   }
+  if (status[0] != '\0') out["status"] = status;
+  if (compact.containsKey("le")) out["lora_error"] = (compact["le"] | 0) == 1;
   out["speed"] = compact["sp"] | 0;
   out["battery"] = compact["bt"] | -1;
   out["battVoltage"] = compact["bv"] | -1;
@@ -468,6 +485,125 @@ int postToServer(String body) {
   return code;
 }
 
+void buildApiUrl(const char* apiPath, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  const char* apiStart = strstr(SERVER_URL, "/api/");
+  if (apiStart == nullptr) {
+    snprintf(out, outSize, "%s", apiPath);
+    return;
+  }
+  size_t baseLen = (size_t)(apiStart - SERVER_URL);
+  if (baseLen >= outSize) baseLen = outSize - 1;
+  memcpy(out, SERVER_URL, baseLen);
+  out[baseLen] = '\0';
+  strncat(out, apiPath, outSize - strlen(out) - 1);
+}
+
+int activeVehicleCount() {
+  int count = 0;
+  unsigned long now = millis();
+  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (!seenVehicles[i].used) continue;
+    if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) continue;
+    count++;
+  }
+  return count;
+}
+
+void updateAdaptiveProfile() {
+  int vehicleCount = activeVehicleCount();
+  int nextSf = ADAPTIVE_DEFAULT_SF;
+  int nextTxPower = ADAPTIVE_DEFAULT_TP;
+  unsigned long nextInterval = ADAPTIVE_DEFAULT_TI;
+
+  if (ADAPTIVE_LORA_ENABLED && vehicleCount > ADAPTIVE_THRESHOLD_VC) {
+    nextSf = ADAPTIVE_HIGH_SF;
+    nextTxPower = ADAPTIVE_HIGH_TP;
+    nextInterval = ADAPTIVE_HIGH_TI;
+  }
+
+  if (nextSf == activeLoRaSf && nextTxPower == activeLoRaTxPower && nextInterval == activeLoRaInterval) return;
+  activeLoRaSf = nextSf;
+  activeLoRaTxPower = nextTxPower;
+  activeLoRaInterval = nextInterval;
+  LoRa.setSpreadingFactor(activeLoRaSf);
+  LoRa.setTxPower(activeLoRaTxPower);
+  Serial.printf("[CFG] Ground profile SF%d tp:%d ti:%lums vc:%d adaptive:%d\n",
+                activeLoRaSf, activeLoRaTxPower, activeLoRaInterval, vehicleCount, ADAPTIVE_LORA_ENABLED);
+}
+
+void printAdaptiveStatus() {
+  unsigned long now = millis();
+  if (now - lastAdaptiveStatusMs < ADAPTIVE_STATUS_MS && lastAdaptiveStatusMs != 0) return;
+  lastAdaptiveStatusMs = now;
+
+  int vehicleCount = activeVehicleCount();
+  Serial.println(F("== VIBE ADAPTIVE CONFIG =="));
+  Serial.println(ADAPTIVE_LORA_ENABLED ? F("Mode: ADAPTIVE") : F("Mode: LOCKED (3-vehicle default)"));
+  Serial.printf("Active vehicles: %d\n", vehicleCount);
+  Serial.printf("Config: SF%d TxPwr%d interval:%lums\n", activeLoRaSf, activeLoRaTxPower, activeLoRaInterval);
+  Serial.printf("Airtime: ~200ms x 3 = 600ms / %lums (12%%)\n", activeLoRaInterval);
+  Serial.println(F("To enable adaptive: set ADAPTIVE_LORA_ENABLED=true"));
+  Serial.println(F("============================"));
+}
+
+void pollPendingCommand() {
+  if (commandPending) return;
+  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+  unsigned long now = millis();
+  if (now - lastCommandPollMs < COMMAND_POLL_MS && lastCommandPollMs != 0) return;
+  lastCommandPollMs = now;
+
+  char url[160];
+  buildApiUrl("/api/ground/command", url, sizeof(url));
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  if (!http.begin(client, url)) return;
+  http.setTimeout(5000);
+  int code = http.GET();
+  if (code == 200) {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, http.getStream());
+    if (!err && doc["command"].is<JsonObject>()) {
+      strlcpy(commandTarget, doc["command"]["vehicleId"] | "all", sizeof(commandTarget));
+      strlcpy(commandName, doc["command"]["cmd"] | "", sizeof(commandName));
+      commandValue = doc["command"]["val"] | 0L;
+      commandTs = (uint32_t)millis();
+      commandPending = commandName[0] != '\0';
+      if (commandPending) {
+        Serial.printf("[CMD] queued target:%s cmd:%s val:%ld\n", commandTarget, commandName, commandValue);
+      }
+    }
+  }
+  http.end();
+}
+
+void sendPendingCommand() {
+  if (!commandPending || !loraReady) return;
+
+  StaticJsonDocument<192> doc;
+  doc["type"] = "cmd";
+  doc["target"] = commandTarget;
+  doc["cmd"] = commandName;
+  doc["val"] = commandValue;
+  doc["ttl"] = 3;
+  doc["ts"] = commandTs;
+
+  char payload[192];
+  size_t len = serializeJson(doc, payload, sizeof(payload));
+  if (len == 0 || len > MAX_LORA_PACKET_BYTES) return;
+
+  LoRa.idle();
+  LoRa.beginPacket();
+  LoRa.print(payload);
+  LoRa.endPacket();
+  LoRa.receive();
+  commandPending = false;
+  Serial.printf("[CMD] broadcast target:%s cmd:%s val:%ld\n", commandTarget, commandName, commandValue);
+}
+
 void flushBuffer() {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
 
@@ -490,13 +626,30 @@ void flushBuffer() {
   wifiConnected = false;
 }
 
+void onWiFiGotIP(const WiFiEventStationModeGotIP& event) {
+  IPAddress ip = event.ip;
+  Serial.printf("[WiFi] Connected: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+  wifiConnected = true;
+  flushBufferRequested = true;
+}
+
+void onWiFiDisconnected(const WiFiEventStationModeDisconnected& event) {
+  (void)event;
+  Serial.println(F("[WiFi] Disconnected - buffering"));
+  wifiConnected = false;
+}
+
 void serviceWiFi() {
   unsigned long now = millis();
-  if (now - lastWifiCheckMs < WIFI_RETRY_MS && lastWifiCheckMs != 0) return;
+  if (now - lastWifiCheckMs < WIFI_RECONNECT_MS && lastWifiCheckMs != 0) return;
   lastWifiCheckMs = now;
 
+  bool wasConnected = wifiConnected;
   wifiConnected = WiFi.status() == WL_CONNECTED;
-  if (wifiConnected) return;
+  if (wifiConnected) {
+    if (!wasConnected) flushBufferRequested = true;
+    return;
+  }
 
   Serial.println("[WiFi] reconnecting");
   WiFi.disconnect();
@@ -524,10 +677,10 @@ bool initLoRa() {
     return false;
   }
   LoRa.setSignalBandwidth(LORA_BW);
-  LoRa.setSpreadingFactor(LORA_SF);
+  LoRa.setSpreadingFactor(activeLoRaSf);
   LoRa.setCodingRate4(LORA_CR);
   LoRa.setSyncWord(LORA_SYNC);
-  LoRa.setTxPower(LORA_TX_DBM);
+  LoRa.setTxPower(activeLoRaTxPower);
   LoRa.enableCrc();
   LoRa.receive();
   Serial.println("[LoRa] ready");
@@ -536,15 +689,22 @@ bool initLoRa() {
 
 void sendBeacon() {
   if (!loraReady) return;
+  updateAdaptiveProfile();
 
-  StaticJsonDocument<160> doc;
+  StaticJsonDocument<256> doc;
   doc["type"] = "beacon";
   doc["sid"] = GROUND_ID;
   doc["lat"] = GROUND_LAT;
   doc["lng"] = GROUND_LNG;
   doc["ts"] = millis();
+  JsonObject cfg = doc.createNestedObject("cfg");
+  cfg["sf"] = activeLoRaSf;
+  cfg["tp"] = activeLoRaTxPower;
+  cfg["ti"] = activeLoRaInterval;
+  cfg["vc"] = activeVehicleCount();
+  cfg["adaptive"] = ADAPTIVE_LORA_ENABLED;
 
-  char payload[160];
+  char payload[256];
   serializeJson(doc, payload, sizeof(payload));
 
   LoRa.idle();
@@ -553,6 +713,7 @@ void sendBeacon() {
   LoRa.endPacket();
   LoRa.receive();
   Serial.println("[BEACON] sent");
+  sendPendingCommand();
 }
 
 void addRelayChain(JsonDocument& source, JsonDocument& target) {
@@ -608,11 +769,13 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   StaticJsonDocument<1024> out;
   float lat = rx["lat"] | 0.0f;
   float lng = rx["lng"] | 0.0f;
+  const char* status = rx["status"] | "";
   bool gpsFix = (rx["fix"] | true) && isValidThailandCoord(lat, lng);
+  bool lastKnownPosition = strcmp(status, "last_known") == 0 && isValidThailandCoord(lat, lng);
 
   out["vehicleId"] = rx["vid"] | "";
   out["vehicle_id"] = rx["vid"] | "";
-  if (gpsFix) {
+  if (gpsFix || lastKnownPosition) {
     out["lat"] = lat;
     out["lng"] = lng;
   }
@@ -637,6 +800,8 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   out["received_snr"] = receivedSnr;
   out["received_at"] = millis();
 
+  if (status[0] != '\0') out["status"] = status;
+  if (rx["lora_error"].is<bool>()) out["lora_error"] = rx["lora_error"].as<bool>();
   if (rx["hdg"].is<int>()) out["heading"] = rx["hdg"];
   if (rx["rf"].is<const char*>()) out["relay_from"] = rx["rf"];
   if (rx["sats"].is<int>()) out["sats"] = rx["sats"];
@@ -759,8 +924,20 @@ void setup() {
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
 
   WiFi.mode(WIFI_STA);
+  WiFi.persistent(true);
+  WiFi.setAutoReconnect(true);
+  WiFi.setAutoConnect(true);
+  wifiGotIpHandler = WiFi.onStationModeGotIP(onWiFiGotIP);
+  wifiDisconnectedHandler = WiFi.onStationModeDisconnected(onWiFiDisconnected);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
-  waitInitialWiFi();
+  wifiConnected = WiFi.status() == WL_CONNECTED;
+  if (wifiConnected) {
+    IPAddress ip = WiFi.localIP();
+    Serial.printf("[WiFi] Connected: %u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
+    flushBufferRequested = true;
+  } else {
+    Serial.println(F("[WiFi] connecting in background - LoRa receive starts now"));
+  }
 
   loraReady = initLoRa();
 }
@@ -768,6 +945,8 @@ void setup() {
 void loop() {
   serviceStatusLed();
   serviceWiFi();
+  pollPendingCommand();
+  printAdaptiveStatus();
 
   if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
     lastLoRaRetryMs = millis();
@@ -785,7 +964,8 @@ void loop() {
     sendBeacon();
   }
 
-  if (now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+  if (flushBufferRequested || now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+    flushBufferRequested = false;
     lastFlushMs = now;
     flushBuffer();
   }

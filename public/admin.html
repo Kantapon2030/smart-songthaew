@@ -952,17 +952,24 @@
             <select class="admin-input" id="diag-battery-vehicle"></select>
           </div>
           <div class="admin-form-row">
-            <label class="admin-label">Date</label>
-            <input class="admin-input" type="date" id="diag-battery-date"/>
+            <label class="admin-label">From</label>
+            <input class="admin-input" type="date" id="diag-battery-start-date"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">To</label>
+            <input class="admin-input" type="date" id="diag-battery-end-date"/>
           </div>
           <div class="admin-form-row">
             <label class="admin-label">Interval</label>
             <select class="admin-input" id="diag-battery-interval">
               <option value="1">1 min</option>
-              <option value="5" selected>5 min</option>
+              <option value="5">5 min</option>
               <option value="10">10 min</option>
-              <option value="15">15 min</option>
               <option value="30">30 min</option>
+              <option value="60" selected>1 hour</option>
+              <option value="360">6 hours</option>
+              <option value="720">12 hours</option>
+              <option value="1440">1 day</option>
             </select>
           </div>
           <div class="diagnostics-actions">

@@ -34,6 +34,7 @@ const admin      = require('firebase-admin');
 const path       = require('path');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
+const packageJson = require('./package.json');
 
 // ── Firebase Init ─────────────────────────────────────────────────────────────
 // [DEPLOY] อ่าน credentials จาก Environment Variable (Railway/Vercel)
@@ -80,9 +81,19 @@ const TELEMETRY_RATE_WINDOW_MS = 1000;
 const TELEMETRY_RATE_MAX = 150;
 let locationsCache = { key: null, expiresAt: 0, payload: null };
 const LOCATIONS_CACHE_MS = 1000;
+let networkCache = { key: null, expiresAt: 0, payload: null };
+const NETWORK_CACHE_MS = 3000;
 
 function clearLocationsCache() {
   locationsCache = { key: null, expiresAt: 0, payload: null };
+}
+
+function timeoutPromise(promise, timeoutMs, label = 'operation') {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label}_timeout`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 function firebaseKeyPart(value) {
@@ -208,6 +219,24 @@ app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+app.get('/api/health', async (_req, res) => {
+  let firebase = 'ok';
+  try {
+    await timeoutPromise(db.ref('system/config').once('value'), 3000, 'firebase_health');
+  } catch (error) {
+    firebase = 'error';
+    console.error('[HEALTH] Firebase check failed:', error.message);
+  }
+
+  res.status(firebase === 'ok' ? 200 : 503).json({
+    status: firebase === 'ok' ? 'ok' : 'degraded',
+    firebase,
+    uptime_s: Math.floor(process.uptime()),
+    version: packageJson.version || 'unknown',
+    ts: Date.now(),
+  });
+});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 /** วันที่ปัจจุบัน (timezone Bangkok) → "2026-03-16" */
@@ -722,11 +751,48 @@ function diagnosticRowsFromVehicleHistory(vehicleId, vehicleHistory = {}) {
 
 async function loadDiagnosticRows(vehicleId, date) {
   const snap = await db.ref(`history/${date}/${vehicleId}`).once('value');
-  return diagnosticRowsFromVehicleHistory(vehicleId, snap.val() || {});
+  return diagnosticRowsFromVehicleHistory(vehicleId, snap.val() || {})
+    .map(row => ({ ...row, date }));
 }
 
 function localDateFromMs(ms) {
   return new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' });
+}
+
+function historyDateToUtcMs(date) {
+  const match = String(date || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+function historyDatesBetween(startDate, endDate) {
+  const startMs = historyDateToUtcMs(startDate);
+  const endMs = historyDateToUtcMs(endDate);
+  if (startMs === null || endMs === null) return [];
+  const dates = [];
+  const step = 24 * 60 * 60 * 1000;
+  for (let ms = startMs; ms <= endMs; ms += step) {
+    dates.push(new Date(ms).toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function normalizeDiagnosticsDateRange(query = {}, maxDays = 120) {
+  const fromRaw = query.from || query.startDate || query.start || query.date;
+  const toRaw = query.to || query.endDate || query.end || query.date || fromRaw;
+  let startDate = normalizeHistoryDate(fromRaw);
+  let endDate = normalizeHistoryDate(toRaw);
+  if (historyDateToUtcMs(startDate) > historyDateToUtcMs(endDate)) {
+    [startDate, endDate] = [endDate, startDate];
+  }
+  const dates = historyDatesBetween(startDate, endDate);
+  return {
+    startDate,
+    endDate,
+    dates,
+    tooLong: dates.length > maxDays,
+    maxDays,
+  };
 }
 
 function average(values, digits = 1) {
@@ -2920,9 +2986,67 @@ app.post('/api/admin/purge-ghosts', authMiddleware, async (req, res) => {
 // ── SPA fallback (ต้องอยู่ก่อน app.listen เสมอ) ─────────────────────────────
 // [FIX] เดิมอยู่หลัง app.listen() → ไม่ register → unknown path ได้ HTML
 // → frontend parse JSON ไม่ได้ → "Unexpected token '<'"
+app.post('/api/admin/command', authMiddleware, async (req, res) => {
+  try {
+    const vehicleId = String(req.body.vehicleId || req.body.vehicle_id || '').trim();
+    const cmd = String(req.body.cmd || '').trim();
+    const val = Number(req.body.val || 0);
+
+    if (!vehicleId || (vehicleId !== 'all' && !/^[A-Z0-9_]{3,16}$/.test(vehicleId))) {
+      return res.status(400).json({ error: 'vehicleId must be BUS_01 or all' });
+    }
+    if (!['set_interval', 'reboot'].includes(cmd)) {
+      return res.status(400).json({ error: 'unsupported command' });
+    }
+    if (cmd === 'set_interval' && (!Number.isFinite(val) || val < 1000 || val > 60000)) {
+      return res.status(400).json({ error: 'val must be 1000..60000 for set_interval' });
+    }
+
+    const command = {
+      vehicleId,
+      cmd,
+      val: cmd === 'reboot' ? 0 : Math.round(val),
+      ts: Date.now(),
+      status: 'pending',
+    };
+    await db.ref('system/pending_command').set(command);
+    return res.json({ ok: true, command });
+  } catch (error) {
+    console.error('[POST /api/admin/command]', error);
+    return res.status(500).json({ error: 'command_failed' });
+  }
+});
+
+app.get('/api/ground/command', async (_req, res) => {
+  try {
+    const ref = db.ref('system/pending_command');
+    const snap = await ref.once('value');
+    const command = snap.val();
+    if (!command || command.status !== 'pending') {
+      return res.json({ ok: true, command: null });
+    }
+
+    await ref.update({ status: 'sent', sentAt: Date.now() });
+    return res.json({ ok: true, command });
+  } catch (error) {
+    console.error('[GET /api/ground/command]', error);
+    return res.status(500).json({ error: 'command_poll_failed' });
+  }
+});
+
 app.get('/api/v1/network', async (req, res) => {
   try {
     const { route_id, direction, online_only } = req.query;
+    const cacheKey = JSON.stringify({
+      route_id: route_id || '',
+      direction: direction || '',
+      online_only: online_only || '',
+    });
+    const now = Date.now();
+    if (networkCache.key === cacheKey && networkCache.payload && now < networkCache.expiresAt) {
+      return res.json(networkCache.payload);
+    }
+
     await ensureDemoFleetRunning('network');
     const [fleetSnap, configSnap] = await Promise.all([
       db.ref('fleet').once('value'),
@@ -2965,8 +3089,8 @@ app.get('/api/v1/network', async (req, res) => {
     }
 
     const vehiclePairs = buildVehiclePairs(nodes);
-    res.json({
-      server_time: Date.now(),
+    const payload = {
+      server_time: now,
       mode: hasRealMesh ? 'telemetry' : demoMode ? 'estimated' : 'waiting',
       health: calculateMeshHealth([groundStation, ...nodes], links),
       nodes: [groundStation, ...nodes],
@@ -2979,7 +3103,9 @@ app.get('/api/v1/network', async (req, res) => {
         relay_links: links.filter(link => link.type === 'relay').length,
         ground_station: groundStation.id
       }
-    });
+    };
+    networkCache = { key: cacheKey, expiresAt: Date.now() + NETWORK_CACHE_MS, payload };
+    res.json(payload);
   } catch (error) {
     console.error('[/api/v1/network]', error);
     res.status(500).json({ error: 'network_error' });
@@ -3057,12 +3183,15 @@ app.get('/api/v1/fieldtest/sessions', authMiddleware, async (_req, res) => {
 // ============================================================
 app.get('/api/diagnostics/battery-log', authMiddleware, async (req, res) => {
   const vehicleId = sanitizeHistoryVehicleId(req.query.vehicleId || req.query.vehicle_id);
-  const date = normalizeHistoryDate(req.query.date);
-  const intervalMin = Math.max(1, Math.min(60, Number.parseInt(req.query.interval || '5', 10) || 5));
+  const range = normalizeDiagnosticsDateRange(req.query, 120);
+  const intervalMin = Math.max(1, Math.min(1440, Number.parseInt(req.query.interval || '60', 10) || 60));
   if (!vehicleId) return res.status(400).json({ error: 'vehicleId is required' });
+  if (range.tooLong) return res.status(400).json({ error: `Battery diagnostics range is limited to ${range.maxDays} days` });
 
   try {
-    const rows = await loadDiagnosticRows(vehicleId, date);
+    const rowsByDate = await Promise.all(range.dates.map(date => loadDiagnosticRows(vehicleId, date)));
+    const rows = rowsByDate.flat();
+    const multiDay = range.dates.length > 1;
     const bucketMs = intervalMin * 60 * 1000;
     const buckets = new Map();
     rows.forEach(row => {
@@ -3072,7 +3201,8 @@ app.get('/api/diagnostics/battery-log', authMiddleware, async (req, res) => {
       const bucket = Math.floor((row.ts * 1000) / bucketMs) * bucketMs;
       buckets.set(bucket, {
         ts: row.ts,
-        time: row.time,
+        date: row.date,
+        time: multiDay ? `${row.date} ${row.time.slice(0, 5)}` : row.time,
         battery,
         battVoltage,
       });
@@ -3091,15 +3221,21 @@ app.get('/api/diagnostics/battery-log', authMiddleware, async (req, res) => {
 
     return res.json({
       vehicleId,
-      date,
+      date: range.startDate === range.endDate ? range.startDate : `${range.startDate}..${range.endDate}`,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      days: range.dates.length,
       interval_min: intervalMin,
       samples,
       summary: {
         startPct,
         endPct,
         durationHours: Number(durationHours.toFixed(2)),
+        durationDays: Number((durationHours / 24).toFixed(2)),
         dropPerHour: dropPerHour === null ? null : Number(dropPerHour.toFixed(2)),
+        dropPerDay: dropPerHour === null ? null : Number((dropPerHour * 24).toFixed(2)),
         estimatedFullHours: dropPerHour && startPct !== null ? Number((startPct / dropPerHour).toFixed(1)) : null,
+        estimatedFullDays: dropPerHour && startPct !== null ? Number((startPct / dropPerHour / 24).toFixed(1)) : null,
         sampleCount: samples.length,
       },
     });
