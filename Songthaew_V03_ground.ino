@@ -30,8 +30,10 @@
 #endif
 #include "mesh_config.h"
 
+#define GND_HTTP_BODY_SIZE 1024
+
 struct BufferedPacket {
-  String body;
+  char body[GND_HTTP_BODY_SIZE];
   bool used;
   unsigned long timestamp;
 };
@@ -40,7 +42,7 @@ struct BufferedPacket {
 #define DEDUP_EXPIRE_MS  30000UL
 #define DEDUP_PACKET_ID_LEN 48
 #define SEEN_VEHICLE_SIZE 20
-#define HEARTBEAT_INTERVAL_MS 30000UL
+#define SEEN_HEARTBEAT_INTERVAL_MS 30000UL
 #define SEEN_VEHICLE_EXPIRE_MS 90000UL
 
 struct DedupEntry {
@@ -66,6 +68,7 @@ bool wifiConnected = false;
 bool loraReady = false;
 bool flushBufferRequested = false;
 unsigned long lastWifiCheckMs = 0;
+unsigned long lastGroundHeartbeatMs = 0;
 unsigned long lastBeaconMs = 0;
 unsigned long lastFlushMs = 0;
 unsigned long lastLoRaRetryMs = 0;
@@ -73,8 +76,12 @@ unsigned long lastCommandPollMs = 0;
 unsigned long lastAdaptiveStatusMs = 0;
 unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
-String lastHttpResponse = "";
 bool ledPulseActive = false;
+int wifiReconnectAttempts = 0;
+int totalReceived = 0;
+int totalForwarded = 0;
+bool httpInProgress = false;
+unsigned long httpStartMs = 0;
 WiFiEventHandler wifiGotIpHandler;
 WiFiEventHandler wifiDisconnectedHandler;
 int activeLoRaSf = ADAPTIVE_DEFAULT_SF;
@@ -93,7 +100,7 @@ bool isVehiclePacket(JsonDocument& doc) {
 }
 
 bool isValidThailandCoord(float lat, float lng);
-int postToServer(String body);
+int postToServer(const char* body);
 
 void beginLedPulse(unsigned long durationMs) {
   ledPulseActive = true;
@@ -112,170 +119,89 @@ bool isCompactVehiclePacket(JsonDocument& doc) {
   return doc["id"].is<const char*>() && doc["pk"].is<const char*>() && doc.containsKey("ts");
 }
 
-String expandDirection(const char* code) {
+void expandVehicleIdToBuffer(const char* shortId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (!shortId || shortId[0] == '\0') return;
+  if (strncmp(shortId, "BUS_", 4) == 0 ||
+      strncmp(shortId, "DEMO_", 5) == 0 ||
+      strncmp(shortId, "GROUND_", 7) == 0) {
+    strlcpy(out, shortId, outSize);
+    return;
+  }
+
+  int number = atoi(shortId + 1);
+  if (shortId[0] == 'B' && number > 0) {
+    snprintf(out, outSize, "BUS_%02d", number);
+  } else if (shortId[0] == 'D' && number > 0) {
+    snprintf(out, outSize, "DEMO_%d", number);
+  } else if (shortId[0] == 'G' && number > 0) {
+    snprintf(out, outSize, "GROUND_%02d", number);
+  } else {
+    strlcpy(out, shortId, outSize);
+  }
+}
+
+void expandRouteIdToBuffer(const char* shortId, char* out, size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (!shortId || shortId[0] == '\0') {
+    strlcpy(out, "unassigned", outSize);
+    return;
+  }
+  if (shortId[0] == 'R') {
+    int number = atoi(shortId + 1);
+    if (number > 0) {
+      snprintf(out, outSize, "route_%03d", number);
+      return;
+    }
+  }
+  strlcpy(out, shortId, outSize);
+}
+
+const char* expandDirectionCode(const char* code) {
   if (!code || code[0] == '\0') return "unknown";
   if (code[0] == 'I') return "inbound";
   if (code[0] == 'O') return "outbound";
   return "unknown";
 }
 
-String expandRouteId(const char* shortId) {
-  if (!shortId || shortId[0] == '\0') return "unassigned";
-  if (shortId[0] == 'R') {
-    int number = atoi(shortId + 1);
-    if (number > 0) {
-      char route[16];
-      snprintf(route, sizeof(route), "route_%03d", number);
-      return String(route);
-    }
-  }
-  return String(shortId);
-}
-
-String expandVehicleId(const char* shortId) {
-  if (!shortId || shortId[0] == '\0') return "";
-  if (strncmp(shortId, "BUS_", 4) == 0 ||
-      strncmp(shortId, "DEMO_", 5) == 0 ||
-      strncmp(shortId, "GROUND_", 7) == 0) {
-    return String(shortId);
-  }
-
-  int number = atoi(shortId + 1);
-  char out[16];
-  if (shortId[0] == 'B' && number > 0) {
-    snprintf(out, sizeof(out), "BUS_%02d", number);
-    return String(out);
-  }
-  if (shortId[0] == 'D' && number > 0) {
-    snprintf(out, sizeof(out), "DEMO_%d", number);
-    return String(out);
-  }
-  if (shortId[0] == 'G' && number > 0) {
-    snprintf(out, sizeof(out), "GROUND_%02d", number);
-    return String(out);
-  }
-  return String(shortId);
-}
-
-String decodeNeighborsCompact(const String& compact) {
-  if (compact.length() == 0) return "[]";
-
-  String result = "[";
-  bool first = true;
-  int start = 0;
-
-  while (start < (int)compact.length()) {
-    int comma = compact.indexOf(',', start);
-    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
-    start = (comma < 0) ? compact.length() : comma + 1;
-
-    int c1 = entry.indexOf(':');
-    int c2 = entry.indexOf(':', c1 + 1);
-    if (c1 < 0 || c2 < 0) continue;
-
-    String nbId = expandVehicleId(entry.substring(0, c1).c_str());
-    int nbRssi = entry.substring(c1 + 1, c2).toInt();
-    float nbSnr = entry.substring(c2 + 1).toInt() / 10.0f;
-
-    if (!first) result += ",";
-    result += "{\"vehicle_id\":\"" + nbId + "\",";
-    result += "\"rssi\":" + String(nbRssi) + ",";
-    result += "\"snr\":" + String(nbSnr, 1) + "}";
-    first = false;
-  }
-
-  result += "]";
-  return result;
-}
-
-String decodeRelayChainCompact(const String& compact) {
-  if (compact.length() == 0) return "[]";
-
-  String result = "[";
-  bool first = true;
-  int start = 0;
-
-  while (start < (int)compact.length()) {
-    int comma = compact.indexOf(',', start);
-    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
-    start = (comma < 0) ? compact.length() : comma + 1;
-    entry.trim();
-    if (entry.length() == 0) continue;
-
-    if (!first) result += ",";
-    result += "\"" + expandVehicleId(entry.c_str()) + "\"";
-    first = false;
-  }
-
-  result += "]";
-  return result;
-}
-
-String decodeVersionSummary(const String& compact) {
-  if (compact.length() == 0) return "[]";
-
-  String result = "[";
-  bool first = true;
-  int start = 0;
-
-  while (start < (int)compact.length()) {
-    int comma = compact.indexOf(',', start);
-    String entry = (comma < 0) ? compact.substring(start) : compact.substring(start, comma);
-    start = (comma < 0) ? compact.length() : comma + 1;
-
-    int c1 = entry.indexOf(':');
-    int c2 = entry.indexOf(':', c1 + 1);
-    if (c1 < 0) continue;
-
-    String vsId = expandVehicleId(entry.substring(0, c1).c_str());
-    int vsSeq = c2 < 0 ? entry.substring(c1 + 1).toInt() : entry.substring(c1 + 1, c2).toInt();
-    String vsBootPx = c2 < 0 ? "" : entry.substring(c2 + 1);
-
-    if (!first) result += ",";
-    result += "{\"vehicle_id\":\"" + vsId + "\",";
-    result += "\"seq\":" + String(vsSeq);
-    if (vsBootPx.length() > 0) result += ",\"boot_id_prefix\":\"" + vsBootPx + "\"";
-    result += "}";
-    first = false;
-  }
-
-  result += "]";
-  return result;
-}
-
-void copyArrayJsonField(JsonDocument& out, const char* key, const String& arrayJson) {
-  if (arrayJson.length() <= 2) return;
-
-  StaticJsonDocument<384> temp;
-  DeserializationError err = deserializeJson(temp, arrayJson);
-  if (err || !temp.is<JsonArray>()) return;
-  out[key] = temp.as<JsonArray>();
-}
-
-bool decodeCompactPacket(const String& raw, JsonDocument& out) {
-  StaticJsonDocument<512> compact;
-  DeserializationError err = deserializeJson(compact, raw);
-  if (err) return false;
+bool buildCompactServerPayload(JsonDocument& compact, char* body, size_t bodySize,
+                               char* packetIdOut, size_t packetIdSize,
+                               char* vehicleIdOut, size_t vehicleIdSize,
+                               float receivedRssi, float receivedSnr) {
+  if (body == nullptr || bodySize == 0 || packetIdOut == nullptr || packetIdSize == 0 ||
+      vehicleIdOut == nullptr || vehicleIdSize == 0) return false;
+  body[0] = '\0';
+  packetIdOut[0] = '\0';
+  vehicleIdOut[0] = '\0';
   if (!compact.containsKey("id") || !compact.containsKey("ts") || !compact.containsKey("pk")) return false;
 
-  String vehicleId = expandVehicleId(compact["id"] | "");
+  expandVehicleIdToBuffer(compact["id"] | "", vehicleIdOut, vehicleIdSize);
   uint32_t packetSeq = compact["sq"] | 0UL;
   const char* bootId = compact["bi"] | "";
   const char* packetHash = compact["pk"] | "";
-  String packetId = vehicleId + "_" + String(packetSeq) + "_" + String(bootId) + "_" + String(packetHash);
+  snprintf(packetIdOut, packetIdSize, "%s_%lu_%s_%s",
+           vehicleIdOut, (unsigned long)packetSeq, bootId, packetHash);
 
-  out.clear();
-  out["vehicleId"] = vehicleId;
-  out["vehicle_id"] = vehicleId;
-  out["seq"] = packetSeq;
-  out["boot_id"] = bootId;
-  out["gps_timestamp"] = compact["ts"] | 0UL;
   float lat = compact["la"].is<const char*>() ? atof(compact["la"] | "0") : (compact["la"] | 0.0f);
   float lng = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
   bool coordValid = isValidThailandCoord(lat, lng);
   bool gpsFix = compact.containsKey("fx") ? ((compact["fx"] | 0) == 1) : coordValid;
   const char* status = compact["st"] | "";
-  bool lastKnownPosition = strcmp(status, "last_known") == 0;
+  bool lastKnownPosition = strcmp(status, "last_known") == 0 || strcmp(status, "gps_hold") == 0;
+
+  char routeId[24];
+  char relayFrom[16];
+  expandRouteIdToBuffer(compact["ri"] | "", routeId, sizeof(routeId));
+  expandVehicleIdToBuffer(compact["rf"] | "", relayFrom, sizeof(relayFrom));
+
+  StaticJsonDocument<1024> out;
+  out["vehicleId"] = vehicleIdOut;
+  out["vehicle_id"] = vehicleIdOut;
+  out["seq"] = packetSeq;
+  out["boot_id"] = bootId;
+  out["gps_timestamp"] = compact["ts"] | 0UL;
   if ((gpsFix || lastKnownPosition) && coordValid) {
     out["lat"] = lat;
     out["lng"] = lng;
@@ -286,36 +212,25 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   out["battery"] = compact["bt"] | -1;
   out["battVoltage"] = compact["bv"] | -1;
   out["hop"] = compact["hp"] | 0;
-  out["packet_id"] = packetId;
+  out["packet_id"] = packetIdOut;
   out["packet_hash"] = packetHash;
   out["ttl"] = compact["tt"] | 0;
-
   if (compact.containsKey("hd")) out["heading"] = compact["hd"].as<int>();
-  if (compact.containsKey("ri")) out["routeId"] = expandRouteId(compact["ri"].as<const char*>());
-  if (compact.containsKey("ri")) out["route_id"] = expandRouteId(compact["ri"].as<const char*>());
-  if (compact.containsKey("dr")) out["direction"] = expandDirection(compact["dr"].as<const char*>());
-  if (compact.containsKey("rf")) out["relay_from"] = expandVehicleId(compact["rf"].as<const char*>());
+  out["routeId"] = routeId[0] ? routeId : ROUTE_ID;
+  out["route_id"] = routeId[0] ? routeId : ROUTE_ID;
+  out["direction"] = compact.containsKey("dr") ? expandDirectionCode(compact["dr"] | "") : ROUTE_DIR;
+  if (relayFrom[0] != '\0') out["relay_from"] = relayFrom;
   if (compact.containsKey("lq")) out["link_quality"] = compact["lq"].as<int>();
   if (compact.containsKey("sf")) out["store_forward"] = compact["sf"].as<int>() == 1;
-
-  if (!out.containsKey("routeId")) {
-    out["routeId"] = ROUTE_ID;
-    out["route_id"] = ROUTE_ID;
-  }
-  if (!out.containsKey("direction")) out["direction"] = ROUTE_DIR;
-
-  if (compact.containsKey("nb")) copyArrayJsonField(out, "neighbors", decodeNeighborsCompact(compact["nb"].as<String>()));
-  if (compact.containsKey("rc")) copyArrayJsonField(out, "relay_chain", decodeRelayChainCompact(compact["rc"].as<String>()));
-  if (compact.containsKey("vs")) copyArrayJsonField(out, "version_summary", decodeVersionSummary(compact["vs"].as<String>()));
-
   out["source"] = "ground_station";
   out["relay_via"] = "lora";
   out["gps_fix"] = gpsFix && coordValid;
-  out["received_rssi"] = LoRa.packetRssi();
-  out["received_snr"] = LoRa.packetSnr();
+  out["received_rssi"] = receivedRssi;
+  out["received_snr"] = receivedSnr;
   out["received_at"] = millis();
 
-  return true;
+  size_t len = serializeJson(out, body, bodySize);
+  return len > 0 && len < bodySize;
 }
 
 bool isValidThailandCoord(float lat, float lng) {
@@ -387,14 +302,16 @@ void serviceVehicleHeartbeats() {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
 
   unsigned long now = millis();
+  int sent = 0;
   for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (sent >= FLUSH_MAX_PER_CALL) return;
     if (!seenVehicles[i].used) continue;
     if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) {
       seenVehicles[i].used = false;
       seenVehicles[i].vehicleId[0] = '\0';
       continue;
     }
-    if (now - seenVehicles[i].lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) continue;
+    if (now - seenVehicles[i].lastHeartbeatMs < SEEN_HEARTBEAT_INTERVAL_MS) continue;
 
     StaticJsonDocument<256> hb;
     hb["vehicleId"] = seenVehicles[i].vehicleId;
@@ -407,10 +324,13 @@ void serviceVehicleHeartbeats() {
     hb["received_rssi"] = seenVehicles[i].rssi;
     hb["received_snr"] = seenVehicles[i].snr;
 
-    String body;
-    serializeJson(hb, body);
+    char body[GND_HTTP_BODY_SIZE];
+    size_t bodyLen = serializeJson(hb, body, sizeof(body));
+    if (bodyLen == 0 || bodyLen >= sizeof(body)) continue;
     seenVehicles[i].lastHeartbeatMs = now;
     int code = postToServer(body);
+    sent++;
+    ESP.wdtFeed();
     Serial.printf("[HEARTBEAT] %s code:%d rssi:%.0f snr:%.1f\n",
                   seenVehicles[i].vehicleId, code, seenVehicles[i].rssi, seenVehicles[i].snr);
     yield();
@@ -428,6 +348,27 @@ int oldestBufferIndex() {
   return oldest;
 }
 
+int activeBufferCount() {
+  int count = 0;
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    if (packetBuffer[i].used) count++;
+  }
+  return count;
+}
+
+void printGroundHeartbeat() {
+  unsigned long now = millis();
+  if (now - lastGroundHeartbeatMs < GND_HEARTBEAT_MS) return;
+  lastGroundHeartbeatMs = now;
+  Serial.printf("[GND HEARTBEAT] uptime:%lus wifi:%s buf:%d rxTotal:%d fwdOK:%d\n",
+                (unsigned long)(now / 1000UL),
+                wifiConnected ? "OK" : "FAIL",
+                activeBufferCount(),
+                totalReceived,
+                totalForwarded);
+  ESP.wdtFeed();
+}
+
 int firstFreeBufferIndex() {
   for (int i = 0; i < BUFFER_SIZE; i++) {
     if (!packetBuffer[i].used) return i;
@@ -435,7 +376,8 @@ int firstFreeBufferIndex() {
   return -1;
 }
 
-void bufferPacket(String body) {
+void bufferPacket(const char* body) {
+  if (body == nullptr || body[0] == '\0') return;
   int slot = firstFreeBufferIndex();
   if (slot < 0) {
     slot = oldestBufferIndex();
@@ -443,7 +385,7 @@ void bufferPacket(String body) {
   }
 
   if (slot < 0) return;
-  packetBuffer[slot].body = body;
+  strlcpy(packetBuffer[slot].body, body, sizeof(packetBuffer[slot].body));
   packetBuffer[slot].used = true;
   packetBuffer[slot].timestamp = millis();
   Serial.printf("[BUFFER] queued slot:%d\n", slot);
@@ -451,36 +393,40 @@ void bufferPacket(String body) {
 
 void freeBufferSlot(int index) {
   if (index < 0 || index >= BUFFER_SIZE) return;
-  packetBuffer[index].body = "";
+  packetBuffer[index].body[0] = '\0';
   packetBuffer[index].used = false;
   packetBuffer[index].timestamp = 0;
 }
 
-int postToServer(String body) {
+int postToServer(const char* body) {
   lastHttpLatencyMs = 0;
-  lastHttpResponse = "";
+  if (body == nullptr || body[0] == '\0') return -1;
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return -1;
 
   unsigned long started = millis();
+  httpInProgress = true;
+  httpStartMs = started;
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(HTTP_CONNECT_TIMEOUT);
 
   HTTPClient http;
   int code = -1;
   if (http.begin(client, SERVER_URL)) {
+    http.setTimeout(HTTP_TIMEOUT_MS);
     http.addHeader("Content-Type", "application/json");
-    http.setTimeout(8000);
-    code = http.POST(body);
-    lastHttpResponse = http.getString();
+    code = http.POST((uint8_t*)body, strlen(body));
     http.end();
   }
 
   lastHttpLatencyMs = millis() - started;
-  Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
-  if (lastHttpResponse.length() > 0) {
-    Serial.print("[HTTP_BODY] ");
-    Serial.println(lastHttpResponse.substring(0, 180));
+  httpInProgress = false;
+  if (lastHttpLatencyMs > (HTTP_TIMEOUT_MS + 1000UL)) {
+    Serial.printf("[HTTP] TIMEOUT after %lums - skipping\n", lastHttpLatencyMs);
+    return -1;
   }
+  Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
+  if (code >= 200 && code < 300) totalForwarded++;
   if (code < 200 || code >= 300) Serial.printf("[POST] fail code:%d\n", code);
   return code;
 }
@@ -559,9 +505,10 @@ void pollPendingCommand() {
 
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(HTTP_CONNECT_TIMEOUT);
   HTTPClient http;
   if (!http.begin(client, url)) return;
-  http.setTimeout(5000);
+  http.setTimeout(HTTP_TIMEOUT_MS);
   int code = http.GET();
   if (code == 200) {
     StaticJsonDocument<256> doc;
@@ -607,7 +554,8 @@ void sendPendingCommand() {
 void flushBuffer() {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
 
-  while (WiFi.status() == WL_CONNECTED) {
+  int flushed = 0;
+  while (WiFi.status() == WL_CONNECTED && flushed < FLUSH_MAX_PER_CALL) {
     int index = oldestBufferIndex();
     if (index < 0) return;
 
@@ -620,6 +568,8 @@ void flushBuffer() {
     } else {
       return;
     }
+    flushed++;
+    ESP.wdtFeed();
     yield();
   }
 
@@ -647,13 +597,22 @@ void serviceWiFi() {
   bool wasConnected = wifiConnected;
   wifiConnected = WiFi.status() == WL_CONNECTED;
   if (wifiConnected) {
+    wifiReconnectAttempts = 0;
     if (!wasConnected) flushBufferRequested = true;
     return;
   }
 
-  Serial.println("[WiFi] reconnecting");
+  wifiReconnectAttempts++;
+  Serial.printf("[WiFi] Reconnect attempt #%d\n", wifiReconnectAttempts);
   WiFi.disconnect();
+  delay(100);
+  ESP.wdtFeed();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
+  if (wifiReconnectAttempts > WIFI_MAX_RETRIES) {
+    Serial.println(F("[WiFi] Too many failures - restarting"));
+    Serial.flush();
+    ESP.restart();
+  }
 }
 
 void waitInitialWiFi() {
@@ -661,7 +620,8 @@ void waitInitialWiFi() {
   while (millis() - started < WIFI_SETUP_TIMEOUT_MS) {
     wifiConnected = WiFi.status() == WL_CONNECTED;
     if (wifiConnected) {
-      Serial.printf("[WiFi] connected IP:%s\n", WiFi.localIP().toString().c_str());
+      IPAddress ip = WiFi.localIP();
+      Serial.printf("[WiFi] connected IP:%u.%u.%u.%u\n", ip[0], ip[1], ip[2], ip[3]);
       return;
     }
     yield();
@@ -765,7 +725,8 @@ void addVersionSummary(JsonDocument& source, JsonDocument& target) {
   if (out.size() == 0) target.remove("version_summary");
 }
 
-String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr) {
+bool buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr, char* body, size_t bodySize) {
+  if (body == nullptr || bodySize == 0) return false;
   StaticJsonDocument<1024> out;
   float lat = rx["lat"] | 0.0f;
   float lng = rx["lng"] | 0.0f;
@@ -811,9 +772,8 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   addNeighbors(rx, out);
   addVersionSummary(rx, out);
 
-  String body;
-  serializeJson(out, body);
-  return body;
+  size_t len = serializeJson(out, body, bodySize);
+  return len > 0 && len < bodySize;
 }
 
 void printReceiveLog(JsonDocument& rx, float rssi, float snr, int code) {
@@ -874,35 +834,48 @@ void onLoRaReceive(int packetSize) {
   float receivedRssi = LoRa.packetRssi();
   float receivedSnr = LoRa.packetSnr();
 
-  String raw(payload);
   StaticJsonDocument<768> rx;
   DeserializationError error = deserializeJson(rx, payload);
   if (error) {
-    Serial.printf("[RX] invalid json: %s\n", error.c_str());
+    Serial.printf("[RX] JSON parse error: %s - dropping\n", error.c_str());
+    LoRa.receive();
     return;
   }
 
   StaticJsonDocument<1536> postDoc;
-  String body;
+  char body[GND_HTTP_BODY_SIZE];
+  char packetId[80] = "";
+  char seenVehicleId[16] = "";
   bool compactPacket = isCompactVehiclePacket(rx);
   if (compactPacket) {
-    if (!decodeCompactPacket(raw, postDoc)) {
+    if (!buildCompactServerPayload(rx, body, sizeof(body), packetId, sizeof(packetId),
+                                   seenVehicleId, sizeof(seenVehicleId), receivedRssi, receivedSnr)) {
       Serial.println("[RX] compact decode failed");
+      LoRa.receive();
       return;
     }
-    serializeJson(postDoc, body);
+    deserializeJson(postDoc, body);
   } else {
-    if (!isVehiclePacket(rx)) return;
-    body = buildServerPayload(rx, receivedRssi, receivedSnr);
+    if (!isVehiclePacket(rx)) {
+      LoRa.receive();
+      return;
+    }
+    strlcpy(packetId, rx["pid"] | "", sizeof(packetId));
+    strlcpy(seenVehicleId, rx["vid"] | "", sizeof(seenVehicleId));
+    if (!buildServerPayload(rx, receivedRssi, receivedSnr, body, sizeof(body))) {
+      Serial.println(F("[RX] payload build failed - dropping"));
+      LoRa.receive();
+      return;
+    }
   }
 
-  const char* packetId = compactPacket ? (postDoc["packet_id"] | "") : (rx["pid"] | "");
-  const char* seenVehicleId = compactPacket ? (postDoc["vehicleId"] | "") : (rx["vid"] | "");
   noteVehicleSeen(seenVehicleId, receivedRssi, receivedSnr);
   if (isDuplicate(packetId)) {
     Serial.printf("[DEDUP] skip duplicate: %s\n", packetId[0] ? packetId : "?");
+    LoRa.receive();
     return;
   }
+  totalReceived++;
 
   int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
   bool ok = code >= 200 && code < 300;
@@ -915,6 +888,7 @@ void onLoRaReceive(int packetSize) {
   } else {
     printReceiveLog(rx, receivedRssi, receivedSnr, code);
   }
+  LoRa.receive();
 }
 
 void setup() {
@@ -922,6 +896,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  ESP.wdtEnable(GND_WDT_TIMEOUT_MS);
+  ESP.wdtFeed();
+  Serial.printf("[BOOT] Watchdog enabled (%us)\n", (unsigned int)(GND_WDT_TIMEOUT_MS / 1000UL));
 
   WiFi.mode(WIFI_STA);
   WiFi.persistent(true);
@@ -943,6 +920,12 @@ void setup() {
 }
 
 void loop() {
+  ESP.wdtFeed();
+  if (httpInProgress && millis() - httpStartMs > (HTTP_TIMEOUT_MS + 2000UL)) {
+    Serial.println(F("[HTTP] watchdog timeout - restarting"));
+    Serial.flush();
+    ESP.restart();
+  }
   serviceStatusLed();
   serviceWiFi();
   pollPendingCommand();
@@ -959,6 +942,7 @@ void loop() {
   }
 
   unsigned long now = millis();
+  printGroundHeartbeat();
   if (now - lastBeaconMs >= BEACON_INTERVAL_MS) {
     lastBeaconMs = now;
     sendBeacon();

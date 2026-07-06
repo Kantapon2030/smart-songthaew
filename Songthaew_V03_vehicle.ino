@@ -129,10 +129,12 @@ unsigned long lastLoRaRetryMs = 0;
 unsigned long lastCarryFlushMs = 0;
 unsigned long lastLoRaTxSuccess = 0;
 unsigned long lastLoRaHealthCheckMs = 0;
+unsigned long lastHeartbeatMs = 0;
 unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
 uint8_t loraBeginFailures = 0;
+int loRaTxFailCount = 0;
 bool carryStoreReady = false;
 bool loraErrorPending = false;
 bool pendingControlTx = false;
@@ -1104,9 +1106,24 @@ bool sendRawPayload(const char* payload) {
   LoRa.receive();
   if (result == 1) {
     lastLoRaTxSuccess = millis();
+    loRaTxFailCount = 0;
+    Serial.printf("[TX] OK seq:%lu\n", (unsigned long)seq);
     return true;
   }
+
+  loRaTxFailCount++;
+  Serial.printf("[TX] FAIL count:%d\n", loRaTxFailCount);
   loraErrorPending = true;
+  if (loRaTxFailCount >= LORA_TX_FAIL_LIMIT) {
+    Serial.println(F("[LORA] 3 consecutive failures - reinit"));
+    loRaTxFailCount = 0;
+    loraReady = false;
+    loraSleepingDuringStationary = false;
+    if (peripheralPower) {
+      loraReady = initLoRa();
+      if (!loraReady) loraErrorPending = true;
+    }
+  }
   return false;
 }
 
@@ -1892,12 +1909,35 @@ void checkLoRaHealth() {
   if (now - lastLoRaHealthCheckMs < LORA_HEALTH_CHECK_MS) return;
   lastLoRaHealthCheckMs = now;
 
-  if (peripheralPower && loraReady && now - lastLoRaTxSuccess > LORA_HEALTH_CHECK_MS) {
-    Serial.println(F("[LORA] No TX success in 30s - reinitializing"));
-    loraReady = false;
-    loraSleepingDuringStationary = false;
-    if (!initLoRa()) loraErrorPending = true;
+  if (!peripheralPower || !loraReady) return;
+
+  unsigned long healthWindow = currentTxInterval + LORA_HEALTH_CHECK_MS;
+  if (now - lastLoRaTxSuccess <= healthWindow) return;
+
+  Serial.println(F("[LORA] Health check failed - reinit"));
+  loraReady = false;
+  loraSleepingDuringStationary = false;
+  loraReady = initLoRa();
+  if (loraReady) {
+    lastLoRaTxSuccess = millis();
+    loRaTxFailCount = 0;
+  } else {
+    loraErrorPending = true;
   }
+}
+
+void printHeartbeat() {
+  unsigned long now = millis();
+  if (now - lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) return;
+  lastHeartbeatMs = now;
+  Serial.printf("[HEARTBEAT] uptime:%lus pwr:%s lora:%s gps:%s bat:%.0f%% stationary:%d txFail:%d\n",
+                (unsigned long)(now / 1000UL),
+                peripheralPower ? "ON" : "OFF",
+                loraReady ? "OK" : "FAIL",
+                gpsValid ? "fix" : "search",
+                readBattery(),
+                isStationary,
+                loRaTxFailCount);
 }
 
 void servicePowerOnLoRaInit() {
@@ -2016,12 +2056,7 @@ void checkCriticalBattery() {
   char alertBuf[128];
   serializeJson(alertDoc, alertBuf, sizeof(alertBuf));
 
-  if (loraReady) {
-    LoRa.beginPacket();
-    LoRa.print(alertBuf);
-    if (LoRa.endPacket() == 1) lastLoRaTxSuccess = millis();
-    else loraErrorPending = true;
-  }
+  if (loraReady && !sendRawPayload(alertBuf)) loraErrorPending = true;
 
   if (BAT_CAL_CUTOFF_TEST_MODE) {
     Serial.println(F("[PWR] Critical battery alert sent - cutoff calibration test mode keeps device awake"));
@@ -2118,6 +2153,7 @@ void loop() {
   }
 
   unsigned long now = millis();
+  printHeartbeat();
   if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
     lastExpireMs = now;
     expireNeighbors();
@@ -2130,6 +2166,23 @@ void loop() {
 
   static unsigned long lastPwrUpdate = 0;
   static bool lastStationary = false;
+  static unsigned long stationaryStartMs = 0;
+  if (isStationary) {
+    if (stationaryStartMs == 0) stationaryStartMs = now;
+    if (stationaryStartMs > 0 && now - stationaryStartMs > STATIONARY_MAX_MS) {
+      Serial.println(F("[PWR] Stationary timeout - forcing wake"));
+      isStationary = false;
+      stationaryCount = 0;
+      stationaryStartMs = 0;
+      setPower(true);
+      powerOnStartedMs = millis();
+      pendingPowerOnLoRaInit = true;
+      loraSleepingDuringStationary = false;
+      currentTxInterval = TX_INTERVAL_NORMAL;
+    }
+  } else {
+    stationaryStartMs = 0;
+  }
   if (now - lastPwrUpdate >= currentTxInterval) {
     lastPwrUpdate = now;
     updateStationaryStatus();
@@ -2137,6 +2190,7 @@ void loop() {
     if (isStationary != lastStationary) {
       lastStationary = isStationary;
       if (isStationary) {
+        stationaryStartMs = now;
 #if STATIONARY_POWER_OFF_ENABLED
         setPower(false);
         loraReady = false;

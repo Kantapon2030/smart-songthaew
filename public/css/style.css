@@ -173,6 +173,8 @@ a { color: inherit; }
   justify-content: flex-end;
   gap: 2px;
   min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
 }

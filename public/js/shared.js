@@ -521,6 +521,7 @@ function renderSharedNavbar(options = {}) {
         ${navLinkEl('/', 'หน้าหลัก', 'home', active)}
         ${navLinkEl('/routes.html', 'เส้นทาง', 'routes', active)}
         ${navLinkEl('/dashboard.html', 'Dashboard', 'dashboard', active)}
+        ${navLinkEl('/operations.html', 'ปฏิบัติการ', 'operations', active)}
         <button class="nav-link" id="nav-btn-announcements" type="button" aria-haspopup="dialog">ประกาศ</button>
         ${navLinkEl('/about.html', 'เกี่ยวกับ VIBE', 'about', active)}
         <button class="nav-link" id="nav-btn-help" type="button" aria-haspopup="dialog">ช่วยเหลือ</button>

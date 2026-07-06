@@ -20,9 +20,15 @@
     }
     .history-controls {
       display: grid;
-      grid-template-columns: 150px minmax(180px, 260px) 110px 110px auto auto 1fr;
+      grid-template-columns: minmax(140px, 170px) minmax(170px, 1.4fr) minmax(105px, 120px) minmax(105px, 120px) minmax(80px, auto) minmax(104px, auto) minmax(120px, 1fr);
       gap: 8px;
       align-items: center;
+      min-width: 0;
+      overflow: hidden;
+    }
+    .history-controls > * {
+      min-width: 0;
+      max-width: 100%;
     }
     .history-workspace {
       min-height: 0;
@@ -66,6 +72,18 @@
       color: var(--color-muted);
       font-size: 11px;
       font-weight: 700;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    body.history-embedded .history-shell {
+      padding: 8px;
+    }
+    body.history-embedded .history-controls {
+      grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+    }
+    body.history-embedded #history-vehicle {
+      min-width: min(220px, 100%);
     }
     @media (max-width: 1100px) {
       html, body { overflow: auto; }
