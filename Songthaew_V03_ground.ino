@@ -18,7 +18,6 @@
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
 #include <LoRa.h>
 #include <SPI.h>
@@ -30,7 +29,8 @@
 #endif
 #include "mesh_config.h"
 
-#define GND_HTTP_BODY_SIZE 1024
+#define GND_HTTP_BODY_SIZE 768
+#define GND_BUFFER_SIZE    BUFFER_SIZE
 
 struct BufferedPacket {
   char body[GND_HTTP_BODY_SIZE];
@@ -59,7 +59,7 @@ struct SeenVehicle {
   bool used;
 };
 
-BufferedPacket packetBuffer[BUFFER_SIZE];
+BufferedPacket packetBuffer[GND_BUFFER_SIZE];
 DedupEntry dedupCache[DEDUP_CACHE_SIZE];
 SeenVehicle seenVehicles[SEEN_VEHICLE_SIZE];
 int dedupHead = 0;
@@ -75,6 +75,10 @@ unsigned long lastLoRaRetryMs = 0;
 unsigned long lastCommandPollMs = 0;
 unsigned long lastAdaptiveStatusMs = 0;
 unsigned long lastHttpLatencyMs = 0;
+unsigned long lastRxCycleLogMs = 0;
+unsigned long lastUploadBlockedLogMs = 0;
+unsigned long lastLoRaRxMs = 0;
+unsigned long lastLoRaRxKickMs = 0;
 unsigned long ledPulseUntilMs = 0;
 bool ledPulseActive = false;
 int wifiReconnectAttempts = 0;
@@ -92,6 +96,7 @@ char commandTarget[16] = "";
 char commandName[20] = "";
 long commandValue = 0;
 uint32_t commandTs = 0;
+bool rxCycleBusSeen[3] = { false, false, false };
 
 bool isVehiclePacket(JsonDocument& doc) {
   const char* type = doc["type"] | "";
@@ -101,6 +106,289 @@ bool isVehiclePacket(JsonDocument& doc) {
 
 bool isValidThailandCoord(float lat, float lng);
 int postToServer(const char* body);
+
+uint32_t groundSlotOffset(uint8_t index) {
+  if (index == 0) return 200UL;
+  if (index == 1) return 1800UL;
+  if (index == 2) return 3400UL;
+  return 0UL;
+}
+
+int trackedBusIndex(const char* vehicleId) {
+  if (vehicleId == nullptr) return -1;
+  if (strcmp(vehicleId, "BUS_01") == 0) return 0;
+  if (strcmp(vehicleId, "BUS_02") == 0) return 1;
+  if (strcmp(vehicleId, "BUS_03") == 0) return 2;
+  return -1;
+}
+
+void markRxCycleSeen(const char* vehicleId) {
+  int index = trackedBusIndex(vehicleId);
+  if (index >= 0) rxCycleBusSeen[index] = true;
+}
+
+uint32_t groundCyclePhase(unsigned long now) {
+  if (lastBeaconMs == 0) return now % TX_INTERVAL_MS;
+  return (uint32_t)((now - lastBeaconMs) % TX_INTERVAL_MS);
+}
+
+bool phaseInRxWindow(uint32_t phase, uint32_t slotOffset) {
+  uint32_t windowStart = slotOffset > GND_SLOT_WINDOW_BEFORE_MS ? slotOffset - GND_SLOT_WINDOW_BEFORE_MS : 0;
+  uint32_t windowEnd = slotOffset + GND_SLOT_WINDOW_AFTER_MS;
+  if (windowEnd >= TX_INTERVAL_MS) {
+    return phase >= windowStart || phase <= (windowEnd % TX_INTERVAL_MS);
+  }
+  return phase >= windowStart && phase <= windowEnd;
+}
+
+bool inGroundRxWindow(unsigned long now) {
+  if (!GND_COEXIST_SCHEDULER_ENABLED) return false;
+  uint32_t phase = groundCyclePhase(now);
+  for (uint8_t i = 0; i < 3; i++) {
+    if (phaseInRxWindow(phase, groundSlotOffset(i))) return true;
+  }
+  return false;
+}
+
+uint32_t msUntilNextRxWindow(unsigned long now) {
+  if (!GND_COEXIST_SCHEDULER_ENABLED) return TX_INTERVAL_MS;
+  uint32_t phase = groundCyclePhase(now);
+  uint32_t best = TX_INTERVAL_MS;
+  for (uint8_t i = 0; i < 3; i++) {
+    uint32_t slotOffset = groundSlotOffset(i);
+    uint32_t windowStart = slotOffset > GND_SLOT_WINDOW_BEFORE_MS ? slotOffset - GND_SLOT_WINDOW_BEFORE_MS : 0;
+    uint32_t delta = windowStart >= phase ? windowStart - phase : (TX_INTERVAL_MS - phase) + windowStart;
+    if (delta < best) best = delta;
+  }
+  return best;
+}
+
+bool schedulerCanStartNetworkTask() {
+  if (!GND_COEXIST_SCHEDULER_ENABLED) return true;
+  unsigned long now = millis();
+  if (inGroundRxWindow(now)) return false;
+  return msUntilNextRxWindow(now) >= GND_HTTP_MIN_SAFE_GAP_MS;
+}
+
+bool schedulerCanStartLoRaTxTask() {
+  if (!GND_COEXIST_SCHEDULER_ENABLED) return true;
+  return !inGroundRxWindow(millis());
+}
+
+bool parseUrl(const char* url, bool* https, char* host, size_t hostSize,
+              char* path, size_t pathSize, uint16_t* port) {
+  if (https == nullptr || host == nullptr || path == nullptr || port == nullptr) return false;
+  if (hostSize == 0 || pathSize == 0) return false;
+  *https = false;
+  *port = 0;
+  host[0] = '\0';
+  path[0] = '\0';
+  if (url == nullptr || url[0] == '\0') return false;
+
+  const char* hostStart = nullptr;
+  if (strncmp(url, "https://", 8) == 0) {
+    *https = true;
+    *port = 443;
+    hostStart = url + 8;
+  } else if (strncmp(url, "http://", 7) == 0) {
+    *https = false;
+    *port = 80;
+    hostStart = url + 7;
+  } else {
+    return false;
+  }
+
+  const char* pathStart = strchr(hostStart, '/');
+  const char* hostEnd = pathStart != nullptr ? pathStart : url + strlen(url);
+  const char* portStart = strchr(hostStart, ':');
+  if (portStart != nullptr && portStart < hostEnd) {
+    hostEnd = portStart;
+    *port = (uint16_t)atoi(portStart + 1);
+  }
+
+  size_t hostLen = (size_t)(hostEnd - hostStart);
+  if (hostLen == 0 || hostLen >= hostSize) return false;
+  memcpy(host, hostStart, hostLen);
+  host[hostLen] = '\0';
+
+  if (pathStart != nullptr && pathStart[0] != '\0') {
+    strlcpy(path, pathStart, pathSize);
+  } else {
+    strlcpy(path, "/", pathSize);
+  }
+
+  return true;
+}
+
+const char* httpErrorText(int code) {
+  switch (code) {
+    case -1: return "connect_failed";
+    case -2: return "send_header_failed";
+    case -3: return "send_payload_failed";
+    case -4: return "not_connected";
+    case -5: return "connection_lost";
+    case -6: return "dns_failed";
+    case -7: return "invalid_url";
+    case -8: return "low_ram";
+    case -11: return "read_timeout";
+    default: return code >= 200 && code < 300 ? "ok" : "http_error";
+  }
+}
+
+bool resolveHost(const char* host, IPAddress& ip) {
+  int result = WiFi.hostByName(host, ip);
+  if (result != 1) {
+    Serial.printf("[HTTP] dns failed host:%s wifi:%d rssi:%d heap:%u\n",
+                  host, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap());
+    return false;
+  }
+  return true;
+}
+
+void prepareSecureClient(WiFiClientSecure& client) {
+  client.setInsecure();
+  client.setBufferSizes(HTTPS_RX_BUFFER_SIZE, HTTPS_TX_BUFFER_SIZE);
+  client.setTimeout(HTTP_CONNECT_TIMEOUT);
+}
+
+bool readHttpLine(Client& client, char* line, size_t lineSize, unsigned long timeoutMs) {
+  if (lineSize == 0) return false;
+  size_t len = 0;
+  unsigned long start = millis();
+  while (millis() - start < timeoutMs) {
+    ESP.wdtFeed();
+    while (client.available()) {
+      char c = (char)client.read();
+      if (c == '\r') continue;
+      if (c == '\n') {
+        line[len] = '\0';
+        return true;
+      }
+      if (len < lineSize - 1) line[len++] = c;
+    }
+    if (!client.connected() && !client.available()) break;
+    yield();
+  }
+  line[len] = '\0';
+  return len > 0;
+}
+
+int readHttpResponse(Client& client, char* responseBody, size_t responseBodySize) {
+  char line[128];
+  if (!readHttpLine(client, line, sizeof(line), HTTP_TIMEOUT_MS)) return -11;
+  if (strncmp(line, "HTTP/", 5) != 0) return -11;
+  int statusCode = atoi(line + 9);
+
+  while (readHttpLine(client, line, sizeof(line), HTTP_TIMEOUT_MS)) {
+    if (line[0] == '\0') break;
+  }
+
+  if (responseBody != nullptr && responseBodySize > 0) {
+    size_t len = 0;
+    unsigned long start = millis();
+    while ((client.connected() || client.available()) && millis() - start < HTTP_TIMEOUT_MS) {
+      ESP.wdtFeed();
+      while (client.available()) {
+        char c = (char)client.read();
+        if (len < responseBodySize - 1) responseBody[len++] = c;
+      }
+      if (!client.connected() && !client.available()) break;
+      yield();
+    }
+    responseBody[len] = '\0';
+  }
+
+  return statusCode > 0 ? statusCode : -11;
+}
+
+template <typename TClient>
+int postBodyWithClient(TClient& client, const char* url, const char* body) {
+  bool https = false;
+  char host[80];
+  char path[128];
+  uint16_t port = 0;
+  if (!parseUrl(url, &https, host, sizeof(host), path, sizeof(path), &port)) {
+    Serial.println(F("[HTTP] invalid SERVER_URL"));
+    return -7;
+  }
+
+  IPAddress ip;
+  if (!resolveHost(host, ip)) return -6;
+
+  if (!client.connect(host, port)) {
+    Serial.printf("[HTTP] connect failed host:%s ip:%u.%u.%u.%u port:%u wifi:%d rssi:%d heap:%u\n",
+                  host, ip[0], ip[1], ip[2], ip[3], port, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap());
+    return -1;
+  }
+
+  size_t bodyLen = strlen(body);
+  client.print(F("POST "));
+  client.print(path);
+  client.print(F(" HTTP/1.1\r\nHost: "));
+  client.print(host);
+  client.print(F("\r\nUser-Agent: SongthaewGround/3\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: "));
+  client.print(bodyLen);
+  client.print(F("\r\n\r\n"));
+  size_t written = client.write((const uint8_t*)body, bodyLen);
+  if (written != bodyLen) {
+    client.stop();
+    return -3;
+  }
+
+  int code = readHttpResponse(client, nullptr, 0);
+  client.stop();
+  return code;
+}
+
+template <typename TClient>
+int getBodyWithClient(TClient& client, const char* url, char* responseBody, size_t responseBodySize) {
+  bool https = false;
+  char host[80];
+  char path[128];
+  uint16_t port = 0;
+  if (!parseUrl(url, &https, host, sizeof(host), path, sizeof(path), &port)) return -7;
+
+  IPAddress ip;
+  if (!resolveHost(host, ip)) return -6;
+
+  if (!client.connect(host, port)) {
+    Serial.printf("[HTTP] command connect failed host:%s ip:%u.%u.%u.%u port:%u wifi:%d rssi:%d heap:%u\n",
+                  host, ip[0], ip[1], ip[2], ip[3], port, WiFi.status(), WiFi.RSSI(), ESP.getFreeHeap());
+    return -1;
+  }
+
+  client.print(F("GET "));
+  client.print(path);
+  client.print(F(" HTTP/1.1\r\nHost: "));
+  client.print(host);
+  client.print(F("\r\nUser-Agent: SongthaewGround/3\r\nConnection: close\r\n\r\n"));
+
+  int code = readHttpResponse(client, responseBody, responseBodySize);
+  client.stop();
+  return code;
+}
+
+template <typename TClient>
+void pollCommandWithClient(TClient& client, const char* url) {
+  char response[512];
+  int code = getBodyWithClient(client, url, response, sizeof(response));
+  if (code == 200) {
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, response);
+    if (!err && doc["command"].is<JsonObject>()) {
+      strlcpy(commandTarget, doc["command"]["vehicleId"] | "all", sizeof(commandTarget));
+      strlcpy(commandName, doc["command"]["cmd"] | "", sizeof(commandName));
+      commandValue = doc["command"]["val"] | 0L;
+      commandTs = (uint32_t)millis();
+      commandPending = commandName[0] != '\0';
+      if (commandPending) {
+        Serial.printf("[CMD] queued target:%s cmd:%s val:%ld\n", commandTarget, commandName, commandValue);
+      }
+    }
+  } else if (code < 0) {
+    Serial.printf("[HTTP] command fail code:%d %s\n", code, httpErrorText(code));
+  }
+}
 
 void beginLedPulse(unsigned long durationMs) {
   ledPulseActive = true;
@@ -300,11 +588,11 @@ void noteVehicleSeen(const char* vehicleId, float rssi, float snr) {
 
 void serviceVehicleHeartbeats() {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+  if (activeBufferCount() > 0) return;
+  if (!schedulerCanStartNetworkTask()) return;
 
   unsigned long now = millis();
-  int sent = 0;
   for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
-    if (sent >= FLUSH_MAX_PER_CALL) return;
     if (!seenVehicles[i].used) continue;
     if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) {
       seenVehicles[i].used = false;
@@ -328,18 +616,19 @@ void serviceVehicleHeartbeats() {
     size_t bodyLen = serializeJson(hb, body, sizeof(body));
     if (bodyLen == 0 || bodyLen >= sizeof(body)) continue;
     seenVehicles[i].lastHeartbeatMs = now;
+    Serial.printf("[TASK] HTTP heartbeat %s\n", seenVehicles[i].vehicleId);
     int code = postToServer(body);
-    sent++;
     ESP.wdtFeed();
     Serial.printf("[HEARTBEAT] %s code:%d rssi:%.0f snr:%.1f\n",
                   seenVehicles[i].vehicleId, code, seenVehicles[i].rssi, seenVehicles[i].snr);
     yield();
+    return;
   }
 }
 
 int oldestBufferIndex() {
   int oldest = -1;
-  for (int i = 0; i < BUFFER_SIZE; i++) {
+  for (int i = 0; i < GND_BUFFER_SIZE; i++) {
     if (!packetBuffer[i].used) continue;
     if (oldest < 0 || packetBuffer[i].timestamp < packetBuffer[oldest].timestamp) {
       oldest = i;
@@ -350,7 +639,7 @@ int oldestBufferIndex() {
 
 int activeBufferCount() {
   int count = 0;
-  for (int i = 0; i < BUFFER_SIZE; i++) {
+  for (int i = 0; i < GND_BUFFER_SIZE; i++) {
     if (packetBuffer[i].used) count++;
   }
   return count;
@@ -360,17 +649,43 @@ void printGroundHeartbeat() {
   unsigned long now = millis();
   if (now - lastGroundHeartbeatMs < GND_HEARTBEAT_MS) return;
   lastGroundHeartbeatMs = now;
-  Serial.printf("[GND HEARTBEAT] uptime:%lus wifi:%s buf:%d rxTotal:%d fwdOK:%d\n",
+  Serial.printf("[GND HEARTBEAT] uptime:%lus wifi:%s buf:%d rxTotal:%d fwdOK:%d heap:%u next_rx:%lums\n",
                 (unsigned long)(now / 1000UL),
                 wifiConnected ? "OK" : "FAIL",
                 activeBufferCount(),
                 totalReceived,
-                totalForwarded);
+                totalForwarded,
+                ESP.getFreeHeap(),
+                (unsigned long)msUntilNextRxWindow(now));
   ESP.wdtFeed();
 }
 
+int seenVehicleAgeSeconds(const char* vehicleId) {
+  int index = findSeenVehicleIndex(vehicleId);
+  if (index < 0) return -1;
+  return (int)((millis() - seenVehicles[index].lastSeenMs) / 1000UL);
+}
+
+void printRxCycleStatus() {
+  unsigned long now = millis();
+  if (now - lastRxCycleLogMs < TX_INTERVAL_MS) return;
+  lastRxCycleLogMs = now;
+  Serial.printf("[RX cycle] BUS_01:%s/%ds BUS_02:%s/%ds BUS_03:%s/%ds buf:%d heap:%u\n",
+                rxCycleBusSeen[0] ? "Y" : "-",
+                seenVehicleAgeSeconds("BUS_01"),
+                rxCycleBusSeen[1] ? "Y" : "-",
+                seenVehicleAgeSeconds("BUS_02"),
+                rxCycleBusSeen[2] ? "Y" : "-",
+                seenVehicleAgeSeconds("BUS_03"),
+                activeBufferCount(),
+                ESP.getFreeHeap());
+  rxCycleBusSeen[0] = false;
+  rxCycleBusSeen[1] = false;
+  rxCycleBusSeen[2] = false;
+}
+
 int firstFreeBufferIndex() {
-  for (int i = 0; i < BUFFER_SIZE; i++) {
+  for (int i = 0; i < GND_BUFFER_SIZE; i++) {
     if (!packetBuffer[i].used) return i;
   }
   return -1;
@@ -392,7 +707,7 @@ void bufferPacket(const char* body) {
 }
 
 void freeBufferSlot(int index) {
-  if (index < 0 || index >= BUFFER_SIZE) return;
+  if (index < 0 || index >= GND_BUFFER_SIZE) return;
   packetBuffer[index].body[0] = '\0';
   packetBuffer[index].used = false;
   packetBuffer[index].timestamp = 0;
@@ -406,17 +721,21 @@ int postToServer(const char* body) {
   unsigned long started = millis();
   httpInProgress = true;
   httpStartMs = started;
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(HTTP_CONNECT_TIMEOUT);
-
-  HTTPClient http;
   int code = -1;
-  if (http.begin(client, SERVER_URL)) {
-    http.setTimeout(HTTP_TIMEOUT_MS);
-    http.addHeader("Content-Type", "application/json");
-    code = http.POST((uint8_t*)body, strlen(body));
-    http.end();
+  bool https = false;
+  char host[80];
+  char path[128];
+  uint16_t port = 0;
+  if (!parseUrl(SERVER_URL, &https, host, sizeof(host), path, sizeof(path), &port)) {
+    code = -7;
+  } else if (https) {
+    WiFiClientSecure client;
+    prepareSecureClient(client);
+    code = postBodyWithClient(client, SERVER_URL, body);
+  } else {
+    WiFiClient client;
+    client.setTimeout(HTTP_CONNECT_TIMEOUT);
+    code = postBodyWithClient(client, SERVER_URL, body);
   }
 
   lastHttpLatencyMs = millis() - started;
@@ -425,9 +744,15 @@ int postToServer(const char* body) {
     Serial.printf("[HTTP] TIMEOUT after %lums - skipping\n", lastHttpLatencyMs);
     return -1;
   }
-  Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
   if (code >= 200 && code < 300) totalForwarded++;
-  if (code < 200 || code >= 300) Serial.printf("[POST] fail code:%d\n", code);
+  if (code == 200 || code == 201) {
+    Serial.printf("[OK] Packet forwarded code:%d latency:%lums heap:%u\n",
+                  code, lastHttpLatencyMs, ESP.getFreeHeap());
+  } else {
+    Serial.printf("[FAIL] code:%d %s latency:%lums wifi:%d heap:%u\n",
+                  code, httpErrorText(code), lastHttpLatencyMs,
+                  WiFi.status(), ESP.getFreeHeap());
+  }
   return code;
 }
 
@@ -495,7 +820,12 @@ void printAdaptiveStatus() {
 
 void pollPendingCommand() {
   if (commandPending) return;
+#if COMMAND_POLL_MS >= (24UL * 60UL * 60UL * 1000UL)
+  return;
+#endif
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+  if (activeBufferCount() > 0) return;
+  if (!schedulerCanStartNetworkTask()) return;
   unsigned long now = millis();
   if (now - lastCommandPollMs < COMMAND_POLL_MS && lastCommandPollMs != 0) return;
   lastCommandPollMs = now;
@@ -503,28 +833,22 @@ void pollPendingCommand() {
   char url[160];
   buildApiUrl("/api/ground/command", url, sizeof(url));
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  client.setTimeout(HTTP_CONNECT_TIMEOUT);
-  HTTPClient http;
-  if (!http.begin(client, url)) return;
-  http.setTimeout(HTTP_TIMEOUT_MS);
-  int code = http.GET();
-  if (code == 200) {
-    StaticJsonDocument<256> doc;
-    DeserializationError err = deserializeJson(doc, http.getStream());
-    if (!err && doc["command"].is<JsonObject>()) {
-      strlcpy(commandTarget, doc["command"]["vehicleId"] | "all", sizeof(commandTarget));
-      strlcpy(commandName, doc["command"]["cmd"] | "", sizeof(commandName));
-      commandValue = doc["command"]["val"] | 0L;
-      commandTs = (uint32_t)millis();
-      commandPending = commandName[0] != '\0';
-      if (commandPending) {
-        Serial.printf("[CMD] queued target:%s cmd:%s val:%ld\n", commandTarget, commandName, commandValue);
-      }
-    }
+  bool https = false;
+  char host[80];
+  char path[128];
+  uint16_t port = 0;
+  if (!parseUrl(url, &https, host, sizeof(host), path, sizeof(path), &port)) return;
+  if (https) {
+    WiFiClientSecure client;
+    prepareSecureClient(client);
+    Serial.println(F("[TASK] command poll"));
+    pollCommandWithClient(client, url);
+  } else {
+    WiFiClient client;
+    client.setTimeout(HTTP_CONNECT_TIMEOUT);
+    Serial.println(F("[TASK] command poll"));
+    pollCommandWithClient(client, url);
   }
-  http.end();
 }
 
 void sendPendingCommand() {
@@ -553,12 +877,24 @@ void sendPendingCommand() {
 
 void flushBuffer() {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+  if (!schedulerCanStartNetworkTask()) {
+    if (millis() - lastUploadBlockedLogMs >= 5000UL) {
+      lastUploadBlockedLogMs = millis();
+      Serial.printf("[TASK] HTTP upload waiting safe gap next_rx:%lums buf:%d\n",
+                    (unsigned long)msUntilNextRxWindow(millis()), activeBufferCount());
+    }
+    return;
+  }
 
   int flushed = 0;
-  while (WiFi.status() == WL_CONNECTED && flushed < FLUSH_MAX_PER_CALL) {
+  int maxUpload = GND_MAX_UPLOAD_PER_IDLE_WINDOW;
+  if (activeBufferCount() >= GND_BUFFER_SIZE - 2) maxUpload = min(FLUSH_MAX_PER_CALL, maxUpload + 1);
+  while (WiFi.status() == WL_CONNECTED && flushed < maxUpload) {
+    if (!schedulerCanStartNetworkTask()) return;
     int index = oldestBufferIndex();
     if (index < 0) return;
 
+    Serial.printf("[TASK] HTTP upload slot:%d buf:%d\n", index, activeBufferCount());
     int code = postToServer(packetBuffer[index].body);
     if (code >= 200 && code < 300) {
       freeBufferSlot(index);
@@ -572,8 +908,6 @@ void flushBuffer() {
     ESP.wdtFeed();
     yield();
   }
-
-  wifiConnected = false;
 }
 
 void onWiFiGotIP(const WiFiEventStationModeGotIP& event) {
@@ -605,7 +939,7 @@ void serviceWiFi() {
   wifiReconnectAttempts++;
   Serial.printf("[WiFi] Reconnect attempt #%d\n", wifiReconnectAttempts);
   WiFi.disconnect();
-  delay(100);
+  yield();
   ESP.wdtFeed();
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   if (wifiReconnectAttempts > WIFI_MAX_RETRIES) {
@@ -643,12 +977,30 @@ bool initLoRa() {
   LoRa.setTxPower(activeLoRaTxPower);
   LoRa.enableCrc();
   LoRa.receive();
+  lastLoRaRxMs = millis();
+  lastLoRaRxKickMs = lastLoRaRxMs;
   Serial.println("[LoRa] ready");
   return true;
 }
 
+void serviceLoRaRxHealth() {
+  if (!loraReady) return;
+  unsigned long now = millis();
+
+  if (now - lastLoRaRxKickMs >= GND_LORA_RX_KICK_MS) {
+    lastLoRaRxKickMs = now;
+    LoRa.receive();
+  }
+
+  if (totalReceived == 0 && now - lastLoRaRxMs >= GND_LORA_NO_RX_REINIT_MS) {
+    Serial.println(F("[LORA] No RX yet - reinitializing receiver"));
+    loraReady = initLoRa();
+  }
+}
+
 void sendBeacon() {
   if (!loraReady) return;
+  if (!schedulerCanStartLoRaTxTask()) return;
   updateAdaptiveProfile();
 
   StaticJsonDocument<256> doc;
@@ -672,7 +1024,8 @@ void sendBeacon() {
   LoRa.print(payload);
   LoRa.endPacket();
   LoRa.receive();
-  Serial.println("[BEACON] sent");
+  lastBeaconMs = millis();
+  Serial.println("[TASK] beacon sent");
   sendPendingCommand();
 }
 
@@ -870,25 +1223,25 @@ void onLoRaReceive(int packetSize) {
   }
 
   noteVehicleSeen(seenVehicleId, receivedRssi, receivedSnr);
+  lastLoRaRxMs = millis();
   if (isDuplicate(packetId)) {
     Serial.printf("[DEDUP] skip duplicate: %s\n", packetId[0] ? packetId : "?");
     LoRa.receive();
     return;
   }
   totalReceived++;
+  markRxCycleSeen(seenVehicleId);
 
-  int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
-  bool ok = code >= 200 && code < 300;
-  bool badPacket = code >= 400 && code < 500;
-
-  if (!ok && !badPacket) bufferPacket(body);
-  beginLedPulse(ok ? 80UL : (badPacket ? 800UL : 250UL));
-  if (compactPacket) {
-    printPostLog(postDoc, code);
-  } else {
-    printReceiveLog(rx, receivedRssi, receivedSnr, code);
-  }
+  bufferPacket(body);
+  beginLedPulse(80UL);
   LoRa.receive();
+  Serial.printf("[TASK] LoRa RX queued id:%s buf:%d\n", seenVehicleId, activeBufferCount());
+
+  if (compactPacket) {
+    printPostLog(postDoc, -4);
+  } else {
+    printReceiveLog(rx, receivedRssi, receivedSnr, -4);
+  }
 }
 
 void setup() {
@@ -896,6 +1249,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  Serial.printf("[BOOT] Heap:%u buffer:%d x %d tls:%d/%d\n",
+                ESP.getFreeHeap(), GND_BUFFER_SIZE, GND_HTTP_BODY_SIZE,
+                HTTPS_RX_BUFFER_SIZE, HTTPS_TX_BUFFER_SIZE);
   ESP.wdtEnable(GND_WDT_TIMEOUT_MS);
   ESP.wdtFeed();
   Serial.printf("[BOOT] Watchdog enabled (%us)\n", (unsigned int)(GND_WDT_TIMEOUT_MS / 1000UL));
@@ -927,9 +1283,6 @@ void loop() {
     ESP.restart();
   }
   serviceStatusLed();
-  serviceWiFi();
-  pollPendingCommand();
-  printAdaptiveStatus();
 
   if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
     lastLoRaRetryMs = millis();
@@ -942,19 +1295,24 @@ void loop() {
   }
 
   unsigned long now = millis();
+  serviceWiFi();
+  serviceLoRaRxHealth();
   printGroundHeartbeat();
-  if (now - lastBeaconMs >= BEACON_INTERVAL_MS) {
-    lastBeaconMs = now;
+  printRxCycleStatus();
+  printAdaptiveStatus();
+
+  unsigned long beaconInterval = totalReceived == 0 ? GND_NO_RX_BEACON_INTERVAL_MS : BEACON_INTERVAL_MS;
+  if (now - lastBeaconMs >= beaconInterval && schedulerCanStartLoRaTxTask()) {
     sendBeacon();
   }
 
-  if (flushBufferRequested || now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+  if (flushBufferRequested || (activeBufferCount() > 0 && now - lastFlushMs >= 250UL)) {
     flushBufferRequested = false;
     lastFlushMs = now;
     flushBuffer();
   }
 
-  serviceVehicleHeartbeats();
+  pollPendingCommand();
 
   yield();
 }

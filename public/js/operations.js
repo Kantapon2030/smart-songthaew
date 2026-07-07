@@ -130,7 +130,11 @@ async function refreshOperations() {
 
 async function fetchHistoryAnalyticsForReports() {
   try {
-    const response = await authFetch(`/api/history/analytics?date=${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })}`);
+    const token = getAuthToken();
+    if (!token) return { vehicles: [], fleet: {} };
+    const response = await fetch(`/api/history/analytics?date=${new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Bangkok' })}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
     if (!response || !response.ok) return { vehicles: [], fleet: {} };
     return response.json();
   } catch (_) {

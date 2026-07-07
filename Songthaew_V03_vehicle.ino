@@ -140,6 +140,7 @@ bool loraErrorPending = false;
 bool pendingControlTx = false;
 unsigned long pendingControlTxAt = 0;
 char pendingControlPayload[MAX_LORA_PACKET_BYTES + 1] = "";
+char pendingControlPacketId[40] = "";
 
 BatteryCalibration batteryCal;
 bool batteryCalValid = false;
@@ -1206,23 +1207,41 @@ void applyVehicleConfig(JsonVariantConst cfg) {
   Serial.printf("[CFG] Applying new config SF%d tp:%d ti:%lums\n", sf, txPower, interval);
 }
 
-void scheduleControlBroadcast(JsonDocument& doc) {
-  if (pendingControlTx) return;
-  size_t len = serializeJson(doc, pendingControlPayload, sizeof(pendingControlPayload));
-  if (len == 0 || len > MAX_LORA_PACKET_BYTES) {
+bool scheduleRawBroadcast(const char* payload, const char* packetId) {
+  if (pendingControlTx) return false;
+  if (payload == nullptr || payload[0] == '\0' || strlen(payload) > MAX_LORA_PACKET_BYTES) {
     pendingControlPayload[0] = '\0';
-    return;
+    pendingControlPacketId[0] = '\0';
+    return false;
   }
+  strlcpy(pendingControlPayload, payload, sizeof(pendingControlPayload));
+  strlcpy(pendingControlPacketId, packetId ? packetId : "", sizeof(pendingControlPacketId));
   pendingControlTxAt = millis() + (unsigned long)random(200, 600);
   pendingControlTx = true;
+  return true;
+}
+
+void scheduleControlBroadcast(JsonDocument& doc) {
+  if (pendingControlTx) return;
+  char payload[MAX_LORA_PACKET_BYTES + 1];
+  size_t len = serializeJson(doc, payload, sizeof(payload));
+  if (len == 0 || len > MAX_LORA_PACKET_BYTES) return;
+  scheduleRawBroadcast(payload, "");
 }
 
 void serviceControlBroadcast() {
   if (!pendingControlTx || (long)(millis() - pendingControlTxAt) < 0) return;
   pendingControlTx = false;
-  if (pendingControlPayload[0] == '\0') return;
-  sendRawPayload(pendingControlPayload);
+  if (pendingControlPayload[0] == '\0') {
+    pendingControlPacketId[0] = '\0';
+    return;
+  }
+  bool sent = sendRawPayload(pendingControlPayload);
+  if (!sent && pendingControlPacketId[0] != '\0') {
+    queueCarryPayload(pendingControlPacketId, pendingControlPayload, "scheduled_tx_fail");
+  }
   pendingControlPayload[0] = '\0';
+  pendingControlPacketId[0] = '\0';
 }
 
 void relayConfigPacket(JsonDocument& source, int ttl) {
@@ -1664,7 +1683,10 @@ bool shouldRelay(JsonDocument& doc, int hop) {
     Serial.println("[RELAY] skip: TTL expired");
     return false;
   }
-  if (isGroundStationNearby()) return true;
+  if (RELAY_SUPPRESS_WHEN_GROUND_NEARBY && isGroundStationNearby()) {
+    Serial.println(F("[RELAY] skip: ground nearby"));
+    return false;
+  }
 
   float sourceLat = doc["lat"] | 0.0f;
   float sourceLng = doc["lng"] | 0.0f;
@@ -1712,10 +1734,10 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
                                doc["fix"] | false, status, includePosition, relayedLoraError,
                                payload, sizeof(payload));
 
-  bool sent = built && sendRawPayload(payload);
-  if (!hasForwardPath() || !sent) queueCarryPayload(packetId, payload, sent ? "relay_wait" : "relay_tx_fail");
+  bool scheduled = built && scheduleRawBroadcast(payload, packetId);
+  if (!hasForwardPath() || !scheduled) queueCarryPayload(packetId, payload, scheduled ? "relay_wait" : "relay_schedule_fail");
   Serial.printf("[RELAY] %s hop:%d bytes:%d rssi:%.0f %s\n",
-                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, sent ? "sent" : "failed");
+                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, scheduled ? "scheduled" : "failed");
 }
 
 void handleBeacon(JsonDocument& doc, float rssi, float snr) {
