@@ -31,8 +31,6 @@
 #include <SPI.h>
 #include <TinyGPS++.h>
 #include <ESP8266WiFi.h>
-#include <EEPROM.h>
-#include <LittleFS.h>
 #include <math.h>
 #if __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
@@ -77,21 +75,6 @@ struct CarryPacket {
   unsigned long lastAttempt;
 };
 
-struct BatteryCalibration {
-  uint32_t magic;
-  float fullV;
-  float emptyV;
-  uint32_t checksum;
-};
-
-struct CarryStore {
-  uint32_t magic;
-  uint16_t version;
-  uint16_t slots;
-  CarryPacket packets[CARRY_BUFFER_SIZE];
-  uint32_t checksum;
-};
-
 TinyGPSPlus gps;
 SoftwareSerial gpsSerial(GPS_RX_PIN, -1);
 
@@ -119,45 +102,14 @@ bool gpsTimestampValid = false;
 uint32_t gpsTimestamp = 0;
 uint8_t lastGpsSlotSecond = 255;
 uint8_t lastPpsSlotSecond = 255;
-uint32_t lastPpsSlotEpoch = 0;
-unsigned long lastGpsFixMs = 0;
-bool gpsFixHeld = false;
 
 unsigned long nextTxMs = 0;
 unsigned long lastExpireMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastCarryFlushMs = 0;
-unsigned long lastLoRaTxSuccess = 0;
-unsigned long lastLoRaHealthCheckMs = 0;
-unsigned long lastHeartbeatMs = 0;
 unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
-uint8_t loraBeginFailures = 0;
-int loRaTxFailCount = 0;
-bool carryStoreReady = false;
-bool loraErrorPending = false;
-bool pendingControlTx = false;
-unsigned long pendingControlTxAt = 0;
-char pendingControlPayload[MAX_LORA_PACKET_BYTES + 1] = "";
-char pendingControlPacketId[40] = "";
-
-BatteryCalibration batteryCal;
-bool batteryCalValid = false;
-bool batteryCalDirty = false;
-unsigned long lastBatteryCalSaveMs = 0;
-
-float lastKnownLat = 0.0f;
-float lastKnownLng = 0.0f;
-uint32_t lastKnownGpsTimestamp = 0;
-bool hasLastKnownGPS = false;
-unsigned long lastGpsSaveMs = 0;
-unsigned long lastGpsSearchLogMs = 0;
-bool tdmaGpsSynced = false;
-bool pendingGpsEepromSave = false;
-bool gpsValidTxCompleted = false;
-float pendingGpsSaveLat = 0.0f;
-float pendingGpsSaveLng = 0.0f;
 
 // Power Management State
 bool peripheralPower = false;
@@ -166,36 +118,10 @@ int stationaryCount = 0;
 float lastLat = 0.0f;
 float lastLng = 0.0f;
 unsigned long lastSleepCheck = 0;
-unsigned long lastBatteryPrintMs = 0;
 bool isStationary = false;
-bool pendingPowerOnLoRaInit = false;
-unsigned long powerOnStartedMs = 0;
-bool loraSleepingDuringStationary = false;
 
 volatile bool ppsFlag = false;
 volatile unsigned long ppsTickMs = 0;
-
-const char* CARRY_STORE_PATH = "/carry.bin";
-const uint32_t CARRY_STORE_MAGIC = 0x53434631UL;
-const uint16_t CARRY_STORE_VERSION = 1;
-const int GPS_EEPROM_LAT_ADDR = 0;
-const int GPS_EEPROM_LNG_ADDR = 4;
-const int GPS_EEPROM_TIME_ADDR = 8;
-const int GPS_EEPROM_MAGIC_ADDR = 12;
-const int BATTERY_CAL_EEPROM_ADDR = 16;
-
-void feedWatchdog() {
-  ESP.wdtFeed();
-  yield();
-}
-
-void waitWithWatchdog(unsigned long durationMs) {
-  unsigned long started = millis();
-  while (millis() - started < durationMs) {
-    feedWatchdog();
-    delay(10);
-  }
-}
 
 float toRadians(float degrees) {
   return degrees * PI / 180.0f;
@@ -218,7 +144,7 @@ bool isLeapYear(uint16_t year) {
 
 uint32_t gpsUnixTimestamp() {
   if (!gps.date.isValid() || !gps.time.isValid()) return 0;
-  if (gps.date.age() > GPS_TIME_FRESH_MS || gps.time.age() > GPS_TIME_FRESH_MS) return 0;
+  if (gps.date.age() > 2000 || gps.time.age() > 2000) return 0;
 
   static const uint8_t daysBeforeMonth[] = { 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334 };
   uint16_t year = gps.date.year();
@@ -256,15 +182,9 @@ int vehicleNumber() {
   return number > 0 ? number : 1;
 }
 
-uint32_t getSlotOffset(const char* vehicleId) {
-  if (strcmp(vehicleId, "BUS_01") == 0) return 200UL;
-  if (strcmp(vehicleId, "BUS_02") == 0) return 1800UL;
-  if (strcmp(vehicleId, "BUS_03") == 0) return 3400UL;
-  return 0UL;
-}
-
 unsigned long vehicleTxOffsetMs() {
-  return (unsigned long)getSlotOffset(VEHICLE_ID);
+  int slot = (vehicleNumber() - 1) % TX_SLOT_COUNT;
+  return (unsigned long)slot * TX_SLOT_SPACING_MS;
 }
 
 unsigned long txJitterMs() {
@@ -290,44 +210,18 @@ uint16_t gpsMsIntoMinute() {
   return ((uint16_t)gps.time.second() * 1000U) + ((uint16_t)gps.time.centisecond() * 10U);
 }
 
-uint32_t gpsMsIntoPeriod(uint32_t periodMs) {
-  if (periodMs == 0) return 0;
-
-  uint32_t centisecondMs = gps.time.isValid() ? ((uint32_t)gps.time.centisecond() * 10UL) : 0UL;
-  uint32_t periodSec = periodMs / 1000UL;
-  if (gpsTimestampValid && periodSec > 0) {
-    return (((gpsTimestamp % periodSec) * 1000UL) + centisecondMs) % periodMs;
-  }
-
-  return gpsMsIntoMinute() % periodMs;
-}
-
 bool gpsTxSlotDue() {
   if (!gpsTimeValid || ppsRecentlySeen()) return false;
 
-  const uint32_t periodMs = currentTxInterval;
-  const uint32_t slotStart = vehicleTxOffsetMs() % periodMs;
-  const uint32_t elapsed = gpsMsIntoPeriod(periodMs);
-  const uint32_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
+  const uint16_t periodMs = (uint16_t)currentTxInterval;
+  const uint16_t slotStart = (uint16_t)(vehicleTxOffsetMs() % periodMs);
+  const uint16_t elapsed = gpsMsIntoMinute() % periodMs;
+  const uint16_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
   const uint8_t second = gps.time.second();
 
   if (delta > GPS_TX_WINDOW_MS || second == lastGpsSlotSecond) return false;
   lastGpsSlotSecond = second;
   return true;
-}
-
-void syncTdmaToGpsTime() {
-  if (!gpsTimeValid || tdmaGpsSynced) return;
-
-  uint32_t slotOffset = getSlotOffset(VEHICLE_ID);
-  unsigned long now = millis();
-  unsigned long nextSlotMs = (now / TX_INTERVAL_MS) * TX_INTERVAL_MS + slotOffset;
-  if ((long)(nextSlotMs - now) <= 0) nextSlotMs += TX_INTERVAL_MS;
-
-  nextTxMs = nextSlotMs;
-  nextTxMode = "gps";
-  tdmaGpsSynced = true;
-  Serial.printf("[TDMA] synced to GPS time, slot offset: %lums\n", (unsigned long)slotOffset);
 }
 
 void ICACHE_RAM_ATTR onGpsPps() {
@@ -352,17 +246,9 @@ void processPpsSync() {
   ppsLastSeenMs = millis();
   if (!gpsTimeValid) return;
 
-  const uint32_t periodSec = currentTxInterval / 1000UL;
-  const uint32_t gpsSecond = gpsTimestampValid ? gpsTimestamp : gps.time.second();
+  const uint8_t periodSec = (uint8_t)(currentTxInterval / 1000UL);
   const uint8_t second = gps.time.second();
-  const uint32_t slotEpoch = periodSec > 0 ? gpsSecond / periodSec : 0;
-  if (periodSec == 0 || (gpsSecond % periodSec) != 0) return;
-  if (gpsTimestampValid) {
-    if (slotEpoch == lastPpsSlotEpoch) return;
-    lastPpsSlotEpoch = slotEpoch;
-  } else if (second == lastPpsSlotSecond) {
-    return;
-  }
+  if (periodSec == 0 || (second % periodSec) != 0 || second == lastPpsSlotSecond) return;
 
   lastPpsSlotSecond = second;
   nextTxMs = tickMs + TX_SYNC_GUARD_MS + vehicleTxOffsetMs() + txJitterMs();
@@ -473,22 +359,9 @@ void markSeen(const char* packetId) {
   seenIdx = (seenIdx + 1) % DEDUP_BUFFER;
 }
 
-void buildPacketId(char* out, size_t outSize, uint32_t packetTs = gpsTimestamp) {
+void buildPacketId(char* out, size_t outSize) {
   snprintf(out, outSize, "%s_%lu_%s_%lu",
-           VEHICLE_ID, (unsigned long)seq, bootId, (unsigned long)packetTs);
-}
-
-void buildControlPacketId(const char* type, const char* from, uint32_t ts, char* out, size_t outSize) {
-  if (outSize == 0) return;
-  snprintf(out, outSize, "%s_%s_%lu", type ? type : "ctrl", from ? from : "", (unsigned long)ts);
-}
-
-bool markControlSeen(const char* type, const char* from, uint32_t ts) {
-  char packetId[40];
-  buildControlPacketId(type, from, ts, packetId, sizeof(packetId));
-  if (alreadySeen(packetId)) return false;
-  markSeen(packetId);
-  return true;
+           VEHICLE_ID, (unsigned long)seq, bootId, (unsigned long)gpsTimestamp);
 }
 
 int findSharedStateIndex(const char* id) {
@@ -569,13 +442,11 @@ bool updateSharedStateFromDoc(JsonDocument& doc) {
   return true;
 }
 
-void updateOwnSharedState(const char* packetId, int battery, int hop, uint32_t packetGpsTs = gpsTimestamp) {
+void updateOwnSharedState(const char* packetId, int battery, int hop) {
   int index = sharedStateSlotFor(VEHICLE_ID);
-  bool usingLastKnown = !gpsValid && hasLastKnownGPS;
-  writeSharedState(index, VEHICLE_ID, bootId, packetId, seq, packetGpsTs,
-                   gpsValid ? gpsLat : (usingLastKnown ? lastKnownLat : 0.0f),
-                   gpsValid ? gpsLng : (usingLastKnown ? lastKnownLng : 0.0f),
-                   gpsValid ? gpsSpeed : 0.0f, (int)gpsHeading, battery, hop, gpsValid);
+  writeSharedState(index, VEHICLE_ID, bootId, packetId, seq, gpsTimestamp,
+                   gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
+                   gpsSpeed, (int)gpsHeading, battery, hop, gpsValid);
 }
 
 void updateKnownVehicle(const char* vehicleId, const char* shortId,
@@ -807,11 +678,10 @@ void buildVersionSummaryCompact(char* out, size_t outSize) {
 
 bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packetSeq,
                        const char* packetBootId, uint32_t packetGpsTs,
-                       float lat, float lng, float speed, int heading, int battery, int batteryVoltageMv,
+                       float lat, float lng, float speed, int heading, int battery,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
-                       const char* relayChain, bool gpsFix, const char* status,
-                       bool includePosition, bool loraError, char* payload, size_t payloadSize) {
+                       const char* relayChain, bool gpsFix, char* payload, size_t payloadSize) {
   StaticJsonDocument<256> doc;
 
   char shortId[8];
@@ -821,9 +691,7 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   doc["bi"] = packetBootId;
   doc["ts"] = packetGpsTs;
   doc["fx"] = gpsFix ? 1 : 0;
-  if (status != nullptr && status[0] != '\0') doc["st"] = status;
-  if (loraError) doc["le"] = 1;
-  if (includePosition) {
+  if (gpsFix) {
     char latText[12];
     char lngText[12];
     dtostrf(lat, 0, 6, latText);
@@ -833,7 +701,6 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   }
   doc["sp"] = (int)round(speed);
   doc["bt"] = battery;
-  doc["bv"] = batteryVoltageMv;
   doc["hp"] = hop;
   char packetHash[7];
   packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
@@ -970,85 +837,6 @@ bool serializeMeshPacket(JsonDocument& doc, char* out, size_t outSize) {
   return len > 0 && len <= MAX_LORA_PACKET_BYTES;
 }
 
-uint32_t carryStoreChecksum(const CarryStore& store) {
-  const uint8_t* data = (const uint8_t*)&store;
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < sizeof(CarryStore) - sizeof(uint32_t); i++) {
-    hash ^= data[i];
-    hash *= 16777619UL;
-  }
-  return hash;
-}
-
-void saveCarryBuffer() {
-  if (!carryStoreReady) return;
-
-  CarryStore store;
-  memset(&store, 0, sizeof(store));
-  store.magic = CARRY_STORE_MAGIC;
-  store.version = CARRY_STORE_VERSION;
-  store.slots = CARRY_BUFFER_SIZE;
-  memcpy(store.packets, carryBuffer, sizeof(carryBuffer));
-  store.checksum = carryStoreChecksum(store);
-
-  File file = LittleFS.open(CARRY_STORE_PATH, "w");
-  if (!file) {
-    Serial.println(F("[CARRY] persist open failed"));
-    return;
-  }
-
-  feedWatchdog();
-  size_t written = file.write((const uint8_t*)&store, sizeof(store));
-  file.close();
-  feedWatchdog();
-  if (written != sizeof(store)) Serial.println(F("[CARRY] persist write incomplete"));
-}
-
-void loadCarryBuffer() {
-  if (!carryStoreReady || !LittleFS.exists(CARRY_STORE_PATH)) return;
-
-  File file = LittleFS.open(CARRY_STORE_PATH, "r");
-  if (!file) return;
-
-  CarryStore store;
-  memset(&store, 0, sizeof(store));
-  size_t read = file.read((uint8_t*)&store, sizeof(store));
-  file.close();
-  feedWatchdog();
-
-  bool valid = read == sizeof(store) &&
-               store.magic == CARRY_STORE_MAGIC &&
-               store.version == CARRY_STORE_VERSION &&
-               store.slots == CARRY_BUFFER_SIZE &&
-               store.checksum == carryStoreChecksum(store);
-
-  if (!valid) {
-    Serial.println(F("[CARRY] stored buffer invalid, clearing"));
-    LittleFS.remove(CARRY_STORE_PATH);
-    return;
-  }
-
-  memcpy(carryBuffer, store.packets, sizeof(carryBuffer));
-  unsigned long now = millis();
-  int loaded = 0;
-  for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
-    if (!carryBuffer[i].used) continue;
-    carryBuffer[i].queuedAt = now;
-    carryBuffer[i].lastAttempt = 0;
-    loaded++;
-  }
-  Serial.printf("[CARRY] loaded %d persisted packet(s)\n", loaded);
-}
-
-void initCarryStore() {
-  carryStoreReady = LittleFS.begin();
-  if (!carryStoreReady) {
-    Serial.println(F("[CARRY] LittleFS init failed, RAM buffer only"));
-    return;
-  }
-  loadCarryBuffer();
-}
-
 int findCarryIndex(const char* packetId) {
   if (packetId == nullptr || packetId[0] == '\0') return -1;
   for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
@@ -1073,7 +861,7 @@ int oldestCarryIndex() {
   return oldest;
 }
 
-void clearCarrySlot(int index, bool persist = true) {
+void clearCarrySlot(int index) {
   if (index < 0 || index >= CARRY_BUFFER_SIZE) return;
   carryBuffer[index].packetId[0] = '\0';
   carryBuffer[index].payload[0] = '\0';
@@ -1081,7 +869,6 @@ void clearCarrySlot(int index, bool persist = true) {
   carryBuffer[index].attempts = 0;
   carryBuffer[index].queuedAt = 0;
   carryBuffer[index].lastAttempt = 0;
-  if (persist) saveCarryBuffer();
 }
 
 void expireCarryBuffer() {
@@ -1095,37 +882,14 @@ void expireCarryBuffer() {
 }
 
 bool sendRawPayload(const char* payload) {
-  if (!loraReady || payload == nullptr || payload[0] == '\0') {
-    if (payload != nullptr && payload[0] != '\0') loraErrorPending = true;
-    return false;
-  }
+  if (!loraReady || payload == nullptr || payload[0] == '\0') return false;
 
   LoRa.idle();
   LoRa.beginPacket();
   LoRa.print(payload);
   int result = LoRa.endPacket();
   LoRa.receive();
-  if (result == 1) {
-    lastLoRaTxSuccess = millis();
-    loRaTxFailCount = 0;
-    Serial.printf("[TX] OK seq:%lu\n", (unsigned long)seq);
-    return true;
-  }
-
-  loRaTxFailCount++;
-  Serial.printf("[TX] FAIL count:%d\n", loRaTxFailCount);
-  loraErrorPending = true;
-  if (loRaTxFailCount >= LORA_TX_FAIL_LIMIT) {
-    Serial.println(F("[LORA] 3 consecutive failures - reinit"));
-    loRaTxFailCount = 0;
-    loraReady = false;
-    loraSleepingDuringStationary = false;
-    if (peripheralPower) {
-      loraReady = initLoRa();
-      if (!loraReady) loraErrorPending = true;
-    }
-  }
-  return false;
+  return result == 1;
 }
 
 void queueCarryPacket(JsonDocument& doc, const char* reason) {
@@ -1154,7 +918,6 @@ void queueCarryPacket(JsonDocument& doc, const char* reason) {
   carryBuffer[slot].attempts = 0;
   carryBuffer[slot].queuedAt = millis();
   carryBuffer[slot].lastAttempt = 0;
-  saveCarryBuffer();
   Serial.printf("[CARRY] queued %s reason:%s\n", packetId, reason);
 }
 
@@ -1176,144 +939,11 @@ void queueCarryPayload(const char* packetId, const char* payload, const char* re
   carryBuffer[slot].attempts = 0;
   carryBuffer[slot].queuedAt = millis();
   carryBuffer[slot].lastAttempt = 0;
-  saveCarryBuffer();
   Serial.printf("[CARRY] queued %s reason:%s\n", packetId, reason);
 }
 
 bool hasForwardPath() {
   return findGroundStation() != nullptr || findBestRelay() != nullptr;
-}
-
-void applyVehicleConfig(JsonVariantConst cfg) {
-  if (!cfg.is<JsonObjectConst>()) return;
-
-  int sf = cfg["sf"] | ADAPTIVE_DEFAULT_SF;
-  int txPower = cfg["tp"] | ADAPTIVE_DEFAULT_TP;
-  unsigned long interval = cfg["ti"] | ADAPTIVE_DEFAULT_TI;
-
-  if (!ADAPTIVE_LORA_ENABLED) {
-    Serial.printf("[CFG] Received SF%d tp:%d ti:%lums - adaptive OFF, keeping defaults\n",
-                  sf, txPower, interval);
-    return;
-  }
-
-  sf = constrain(sf, 7, 12);
-  txPower = constrain(txPower, 2, 20);
-  interval = constrain(interval, 1000UL, 60000UL);
-
-  LoRa.setSpreadingFactor(sf);
-  LoRa.setTxPower(txPower);
-  currentTxInterval = interval;
-  Serial.printf("[CFG] Applying new config SF%d tp:%d ti:%lums\n", sf, txPower, interval);
-}
-
-bool scheduleRawBroadcast(const char* payload, const char* packetId) {
-  if (pendingControlTx) return false;
-  if (payload == nullptr || payload[0] == '\0' || strlen(payload) > MAX_LORA_PACKET_BYTES) {
-    pendingControlPayload[0] = '\0';
-    pendingControlPacketId[0] = '\0';
-    return false;
-  }
-  strlcpy(pendingControlPayload, payload, sizeof(pendingControlPayload));
-  strlcpy(pendingControlPacketId, packetId ? packetId : "", sizeof(pendingControlPacketId));
-  pendingControlTxAt = millis() + (unsigned long)random(200, 600);
-  pendingControlTx = true;
-  return true;
-}
-
-void scheduleControlBroadcast(JsonDocument& doc) {
-  if (pendingControlTx) return;
-  char payload[MAX_LORA_PACKET_BYTES + 1];
-  size_t len = serializeJson(doc, payload, sizeof(payload));
-  if (len == 0 || len > MAX_LORA_PACKET_BYTES) return;
-  scheduleRawBroadcast(payload, "");
-}
-
-void serviceControlBroadcast() {
-  if (!pendingControlTx || (long)(millis() - pendingControlTxAt) < 0) return;
-  pendingControlTx = false;
-  if (pendingControlPayload[0] == '\0') {
-    pendingControlPacketId[0] = '\0';
-    return;
-  }
-  bool sent = sendRawPayload(pendingControlPayload);
-  if (!sent && pendingControlPacketId[0] != '\0') {
-    queueCarryPayload(pendingControlPacketId, pendingControlPayload, "scheduled_tx_fail");
-  }
-  pendingControlPayload[0] = '\0';
-  pendingControlPacketId[0] = '\0';
-}
-
-void relayConfigPacket(JsonDocument& source, int ttl) {
-  if (!ADAPTIVE_LORA_ENABLED || ttl <= 0 || !source["cfg"].is<JsonObject>()) return;
-
-  StaticJsonDocument<256> relay;
-  relay["type"] = "cfg_relay";
-  relay["from"] = VEHICLE_ID;
-  relay["sid"] = source["sid"] | GROUND_ID;
-  JsonObject cfg = relay.createNestedObject("cfg");
-  cfg["sf"] = source["cfg"]["sf"] | ADAPTIVE_DEFAULT_SF;
-  cfg["tp"] = source["cfg"]["tp"] | ADAPTIVE_DEFAULT_TP;
-  cfg["ti"] = source["cfg"]["ti"] | ADAPTIVE_DEFAULT_TI;
-  cfg["vc"] = source["cfg"]["vc"] | 0;
-  cfg["adaptive"] = source["cfg"]["adaptive"] | ADAPTIVE_LORA_ENABLED;
-  relay["ttl"] = ttl;
-  relay["ts"] = millis();
-  scheduleControlBroadcast(relay);
-}
-
-void handleCfgRelay(JsonDocument& doc) {
-  const char* from = doc["from"] | "";
-  uint32_t ts = doc["ts"] | 0UL;
-  int ttl = doc["ttl"] | 0;
-
-  if (!markControlSeen("cfg_relay", from, ts)) return;
-  if (doc["cfg"].is<JsonObject>()) applyVehicleConfig(doc["cfg"]);
-  Serial.printf("[CFG_RELAY] from:%s ttl:%d sf:%d tp:%d\n",
-                from[0] ? from : "?", ttl, doc["cfg"]["sf"] | -1, doc["cfg"]["tp"] | -1);
-  if (ttl > 1) relayConfigPacket(doc, ttl - 1);
-}
-
-void relayCommandPacket(JsonDocument& source, int ttl) {
-  if (ttl <= 0) return;
-
-  StaticJsonDocument<192> relay;
-  relay["type"] = "cmd";
-  relay["target"] = source["target"] | "all";
-  relay["cmd"] = source["cmd"] | "";
-  relay["val"] = source["val"] | 0;
-  relay["ttl"] = ttl;
-  relay["ts"] = source["ts"] | millis();
-  relay["from"] = VEHICLE_ID;
-  scheduleControlBroadcast(relay);
-}
-
-void executeCommand(const char* cmd, long value) {
-  if (strcmp(cmd, "set_interval") == 0) {
-    currentTxInterval = constrain((unsigned long)value, 1000UL, 60000UL);
-    Serial.printf("[CMD] Received cmd:set_interval val:%ld\n", value);
-    return;
-  }
-  if (strcmp(cmd, "reboot") == 0) {
-    Serial.println(F("[CMD] Received cmd:reboot"));
-    Serial.flush();
-    ESP.restart();
-    return;
-  }
-}
-
-void handleCommandPacket(JsonDocument& doc) {
-  uint32_t ts = doc["ts"] | 0UL;
-  int ttl = doc["ttl"] | 0;
-  const char* target = doc["target"] | "";
-  const char* cmd = doc["cmd"] | "";
-  long value = doc["val"] | 0L;
-
-  if (!markControlSeen("cmd", target, ts)) return;
-  if (strcmp(target, VEHICLE_ID) == 0 || strcmp(target, "all") == 0) {
-    executeCommand(cmd, value);
-  }
-  if (ttl > 1) relayCommandPacket(doc, ttl - 1);
 }
 
 void flushCarryBuffer() {
@@ -1335,16 +965,12 @@ void flushCarryBuffer() {
 
   carryBuffer[index].attempts++;
   carryBuffer[index].lastAttempt = now;
-  saveCarryBuffer();
   Serial.printf("[CARRY] retry %s attempt:%u\n", carryBuffer[index].packetId, carryBuffer[index].attempts);
   if (carryBuffer[index].attempts >= CARRY_MAX_ATTEMPTS) clearCarrySlot(index);
 }
 
 bool sendJson(JsonDocument& doc) {
-  if (!loraReady) {
-    loraErrorPending = true;
-    return false;
-  }
+  if (!loraReady) return false;
 
   char payload[MAX_LORA_PACKET_BYTES + 1];
   if (!serializeMeshPacket(doc, payload, sizeof(payload))) {
@@ -1355,224 +981,34 @@ bool sendJson(JsonDocument& doc) {
   return sendRawPayload(payload);
 }
 
-void saveGPSToEEPROM(float lat, float lng) {
-  uint32_t timestamp = gpsTimestampValid ? gpsTimestamp : (uint32_t)(millis() / 1000UL);
-  uint32_t magic = GPS_EEPROM_MAGIC;
-
-  EEPROM.put(GPS_EEPROM_LAT_ADDR, lat);
-  EEPROM.put(GPS_EEPROM_LNG_ADDR, lng);
-  EEPROM.put(GPS_EEPROM_TIME_ADDR, timestamp);
-  EEPROM.put(GPS_EEPROM_MAGIC_ADDR, magic);
-  EEPROM.commit();
-
-  lastKnownLat = lat;
-  lastKnownLng = lng;
-  lastKnownGpsTimestamp = timestamp;
-  hasLastKnownGPS = true;
-  Serial.printf("[GPS] saved last known lat:%.6f lng:%.6f\n", lat, lng);
-}
-
-bool loadGPSFromEEPROM(float &lat, float &lng) {
-  uint32_t magic = 0;
-  uint32_t timestamp = 0;
-  EEPROM.get(GPS_EEPROM_MAGIC_ADDR, magic);
-  if (magic != GPS_EEPROM_MAGIC) return false;
-
-  EEPROM.get(GPS_EEPROM_LAT_ADDR, lat);
-  EEPROM.get(GPS_EEPROM_LNG_ADDR, lng);
-  EEPROM.get(GPS_EEPROM_TIME_ADDR, timestamp);
-
-  if (lat < -90.0f || lat > 90.0f || lng < -180.0f || lng > 180.0f) return false;
-
-  lastKnownLat = lat;
-  lastKnownLng = lng;
-  lastKnownGpsTimestamp = timestamp;
-  hasLastKnownGPS = true;
-  return true;
-}
-
-void queueGPSEepromSave(float lat, float lng) {
-  pendingGpsSaveLat = lat;
-  pendingGpsSaveLng = lng;
-  pendingGpsEepromSave = true;
-}
-
-void serviceGPSEepromSave() {
-  if (!pendingGpsEepromSave || !gpsValidTxCompleted) return;
-  if (millis() - lastLoRaTxSuccess < 750UL) return;
-
-  pendingGpsEepromSave = false;
-  saveGPSToEEPROM(pendingGpsSaveLat, pendingGpsSaveLng);
-  lastGpsSaveMs = millis();
-}
-
-uint32_t batteryCalChecksum(const BatteryCalibration& cal) {
-  const uint8_t* data = (const uint8_t*)&cal;
-  uint32_t hash = 2166136261UL;
-  for (size_t i = 0; i < sizeof(BatteryCalibration) - sizeof(uint32_t); i++) {
-    hash ^= data[i];
-    hash *= 16777619UL;
-  }
-  return hash;
-}
-
-float readBatteryVoltageRaw() {
-  int raw = analogRead(BAT_PIN);
-  float vOut = (raw / 1023.0f) * BAT_VCC;
-  return vOut * BAT_DIVIDER_RATIO;
-}
-
-void saveBatteryCalibration(bool force = false) {
-  if (!BAT_AUTO_CALIBRATE || !batteryCalDirty) return;
-  unsigned long now = millis();
-  if (!force && now - lastBatteryCalSaveMs < BAT_CAL_SAVE_INTERVAL_MS) return;
-
-  batteryCal.checksum = batteryCalChecksum(batteryCal);
-  EEPROM.put(BATTERY_CAL_EEPROM_ADDR, batteryCal);
-  EEPROM.commit();
-  batteryCalDirty = false;
-  lastBatteryCalSaveMs = now;
-  Serial.printf("[BAT-CAL] saved full:%.2fV empty:%.2fV\n", batteryCal.fullV, batteryCal.emptyV);
-}
-
-void updateBatteryCalibration(float vBat) {
-  if (!BAT_AUTO_CALIBRATE || vBat <= 0.0f) return;
-
-  if (!batteryCalValid) {
-    batteryCal.magic = 0x53425443UL;
-    batteryCal.fullV = vBat > BAT_FULL_V ? vBat : BAT_FULL_V;
-    batteryCal.emptyV = BAT_EMPTY_V;
-    batteryCalValid = true;
-    batteryCalDirty = true;
-    saveBatteryCalibration(true);
-    return;
-  }
-
-  if (vBat > batteryCal.fullV + BAT_CAL_UPDATE_STEP_V) {
-    batteryCal.fullV = vBat;
-    batteryCalDirty = true;
-  }
-  if (vBat < batteryCal.emptyV - BAT_CAL_UPDATE_STEP_V) {
-    batteryCal.emptyV = vBat;
-    batteryCalDirty = true;
-  }
-  saveBatteryCalibration(false);
-}
-
-void initBatteryCalibration() {
-  EEPROM.get(BATTERY_CAL_EEPROM_ADDR, batteryCal);
-  batteryCalValid = batteryCal.magic == 0x53425443UL &&
-                    batteryCal.checksum == batteryCalChecksum(batteryCal) &&
-                    batteryCal.fullV > batteryCal.emptyV &&
-                    batteryCal.fullV > 3.0f &&
-                    batteryCal.fullV < 5.5f &&
-                    batteryCal.emptyV > 2.0f &&
-                    batteryCal.emptyV < 4.2f;
-
-  if (!batteryCalValid) {
-    float vBat = readBatteryVoltageRaw();
-    batteryCal.magic = 0x53425443UL;
-    batteryCal.fullV = vBat > BAT_FULL_V ? vBat : BAT_FULL_V;
-    batteryCal.emptyV = BAT_EMPTY_V;
-    batteryCalValid = true;
-    batteryCalDirty = true;
-    saveBatteryCalibration(true);
-  }
-
-  Serial.printf("[BAT-CAL] full:%.2fV empty:%.2fV auto:%d\n",
-                batteryCal.fullV, batteryCal.emptyV, BAT_AUTO_CALIBRATE);
-}
-
-float readBatteryVoltage() {
-  float vBat = readBatteryVoltageRaw();
-  updateBatteryCalibration(vBat);
-  return vBat;
-}
-
-float batteryPercentFromVoltage(float vBat) {
-  float emptyV = batteryCalValid ? batteryCal.emptyV : BAT_EMPTY_V;
-  float fullV = batteryCalValid ? batteryCal.fullV : BAT_FULL_V;
-  if (fullV - emptyV < BAT_CAL_MIN_RANGE_V) {
-    emptyV = BAT_EMPTY_V;
-    fullV = BAT_FULL_V;
-  }
-  float percent = (vBat - emptyV) * 100.0f / (fullV - emptyV);
-  return constrain(percent, 0.0f, 100.0f);
-}
-
 float readBattery() {
-  float vBat = readBatteryVoltage();
-  return batteryPercentFromVoltage(vBat);
-}
-
-void printBatteryStatus() {
   int raw = analogRead(BAT_PIN);
   float vOut = (raw / 1023.0f) * BAT_VCC;
-  float vBat = vOut * BAT_DIVIDER_RATIO;
-  updateBatteryCalibration(vBat);
-  float percent = batteryPercentFromVoltage(vBat);
-  Serial.printf("[BAT] raw:%d vout:%.2fV vbat:%.2fV percent:%.0f%% cal:%.2f-%.2fV\n",
-                raw, vOut, vBat, percent, batteryCal.emptyV, batteryCal.fullV);
+  float vBat = vOut * (BAT_R1 + BAT_R2) / BAT_R2;
+  float percent = ((vBat * 100.0f) - 330.0f) * 100.0f / (420.0f - 330.0f);
+  return constrain(percent, 0.0f, 100.0f);
 }
 
 void readGPS() {
   while (gpsSerial.available()) {
     gps.encode(gpsSerial.read());
-    ESP.wdtFeed();
   }
 
-  unsigned long now = millis();
-  bool wasGpsValid = gpsValid;
-  static bool firstFixDone = false;
-  bool freshGpsFix = gps.location.isValid() && gps.location.age() <= GPS_LOCATION_FRESH_MS;
-  gpsTimeValid = gps.time.isValid() && gps.time.age() <= GPS_TIME_FRESH_MS;
-  if (freshGpsFix) lastGpsFixMs = now;
-  gpsFixHeld = !freshGpsFix && lastGpsFixMs > 0 && now - lastGpsFixMs <= GPS_FIX_HOLD_MS;
-  gpsValid = freshGpsFix || gpsFixHeld;
+  gpsValid = gps.location.isValid() && gps.location.age() < 2000;
+  gpsTimeValid = gps.time.isValid() && gps.time.age() < 2000;
   gpsTimestamp = gpsUnixTimestamp();
   gpsTimestampValid = gpsTimestamp > 0;
-  gpsSats = gps.satellites.isValid() ? gps.satellites.value() : 0;
-  gpsHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
-
-  if (freshGpsFix) {
+  if (gpsValid) {
     gpsLat = gps.location.lat();
     gpsLng = gps.location.lng();
-    gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
-    gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
-    if (!firstFixDone) {
-      firstFixDone = true;
-      Serial.printf("[GPS] Fix acquired! lat:%.6f lng:%.6f sats:%lu hdop:%.1f\n",
-                    gpsLat, gpsLng, (unsigned long)gpsSats, gpsHdop);
-      if (gpsTimeValid && !tdmaGpsSynced) syncTdmaToGpsTime();
-      queueGPSEepromSave(gpsLat, gpsLng);
-      Serial.println(tdmaGpsSynced
-        ? F("[GPS] First fix - EEPROM save queued, TDMA synced")
-        : F("[GPS] First fix - EEPROM save queued, waiting GPS time for TDMA"));
-    } else if (!wasGpsValid) {
-      Serial.printf("[GPS] Fix reacquired! lat:%.6f lng:%.6f sats:%lu hdop:%.1f\n",
-                    gpsLat, gpsLng, (unsigned long)gpsSats, gpsHdop);
-    }
-    if (gpsTimeValid && !tdmaGpsSynced) syncTdmaToGpsTime();
-    if (lastGpsSaveMs == 0 || millis() - lastGpsSaveMs >= GPS_SAVE_INTERVAL_MS) {
-      queueGPSEepromSave(gpsLat, gpsLng);
-    }
-  } else if (!gpsValid) {
-    gpsSpeed = 0.0f;
-    gpsHeading = 0.0f;
   }
-
-  if (!gpsValid && millis() - lastGpsSearchLogMs >= 5000UL) {
-    lastGpsSearchLogMs = millis();
-    Serial.printf("[GPS] Searching... sats:%lu\n", (unsigned long)gpsSats);
-  }
+  gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
+  gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
+  gpsSats = gps.satellites.isValid() ? gps.satellites.value() : 0;
+  gpsHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
 }
 
 void transmitPacket(const char* txMode = "auto") {
-  if (peripheralPower && !loraReady) {
-    loraReady = initLoRa();
-    if (!loraReady) loraErrorPending = true;
-  }
-
   Neighbor* ground = findGroundStation();
   Neighbor* relay = ground == nullptr ? findBestRelay() : nullptr;
   bool direct = ground != nullptr;
@@ -1581,37 +1017,26 @@ void transmitPacket(const char* txMode = "auto") {
   float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
   float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
   int battery = (int)round(readBattery());
-  int batteryVoltageMv = (int)round(readBatteryVoltage() * 1000.0f);
-  bool usingHeldGPS = gpsValid && gpsFixHeld;
-  bool usingLastKnown = !gpsValid && hasLastKnownGPS;
-  const char* gpsStatus = gpsValid ? (usingHeldGPS ? "gps_hold" : "gps_fix") : (usingLastKnown ? "last_known" : "searching_gps");
-  float txLat = gpsValid ? gpsLat : (usingLastKnown ? lastKnownLat : 0.0f);
-  float txLng = gpsValid ? gpsLng : (usingLastKnown ? lastKnownLng : 0.0f);
-  float txSpeed = (gpsValid && !usingHeldGPS) ? gpsSpeed : 0.0f;
-  uint32_t txGpsTimestamp = gpsValid ? (gpsTimestampValid ? gpsTimestamp : lastKnownGpsTimestamp) : (usingLastKnown ? lastKnownGpsTimestamp : 0UL);
-  bool reportLoraError = loraErrorPending;
 
   seq++;
   char packetId[40];
-  buildPacketId(packetId, sizeof(packetId), txGpsTimestamp);
+  buildPacketId(packetId, sizeof(packetId));
   markSeen(packetId);
 
-  updateOwnSharedState(packetId, battery, hop, txGpsTimestamp);
+  updateOwnSharedState(packetId, battery, hop);
 
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
-  bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, txGpsTimestamp,
-                               txLat, txLng, txSpeed, (int)gpsHeading, battery, batteryVoltageMv, hop, MAX_HOPS - hop,
+  bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
+                               gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
+                               gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
-                               !hasRoute, "", gpsValid, gpsStatus, true, reportLoraError, payload, sizeof(payload));
+                               !hasRoute, "", gpsValid, payload, sizeof(payload));
 
   bool sent = built && sendRawPayload(payload);
-  if (sent && reportLoraError) loraErrorPending = false;
-  if (sent && gpsValid) gpsValidTxCompleted = true;
-  if (built && (!hasRoute || !sent)) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
+  if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
   if (hasRoute) flushCarryBuffer();
-  Serial.printf("[TX]   %s | hop:%d | gpsValid:%s | bat:%d%% | mode:%s | bytes:%u | %s\n",
-                VEHICLE_ID, hop, gpsValid ? "true" : "false", battery,
-                txMode, (unsigned int)strlen(payload), sent ? "sent" : "failed");
+  Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f %s\n",
+                VEHICLE_ID, txMode, hop, strlen(payload), bestRssi, sent ? "sent" : "failed");
 }
 
 bool wouldCreateLoop(JsonVariantConst relayChain, const char* myId) {
@@ -1683,10 +1108,7 @@ bool shouldRelay(JsonDocument& doc, int hop) {
     Serial.println("[RELAY] skip: TTL expired");
     return false;
   }
-  if (RELAY_SUPPRESS_WHEN_GROUND_NEARBY && isGroundStationNearby()) {
-    Serial.println(F("[RELAY] skip: ground nearby"));
-    return false;
-  }
+  if (isGroundStationNearby()) return true;
 
   float sourceLat = doc["lat"] | 0.0f;
   float sourceLng = doc["lng"] | 0.0f;
@@ -1720,24 +1142,20 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   const char* vehicleId = doc["vid"] | "";
   const char* packetId = doc["pid"] | "";
   const char* packetBootId = doc["bid"] | "";
-  const char* status = doc["status"] | "";
-  bool includePosition = doc.containsKey("lat") && doc.containsKey("lng");
-  bool relayedLoraError = (doc["lora_error"] | false) || ((doc["le"] | 0) == 1);
   char relayChain[40];
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
   buildRelayChainCompactFromDoc(doc, relayChain, sizeof(relayChain));
   bool built = buildLoRaPacket(vehicleId, packetId, doc["seq"] | 0UL, packetBootId,
                                doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
-                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1, doc["bv"] | -1,
+                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
                                hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
                                VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
-                               doc["fix"] | false, status, includePosition, relayedLoraError,
-                               payload, sizeof(payload));
+                               doc["fix"] | false, payload, sizeof(payload));
 
-  bool scheduled = built && scheduleRawBroadcast(payload, packetId);
-  if (!hasForwardPath() || !scheduled) queueCarryPayload(packetId, payload, scheduled ? "relay_wait" : "relay_schedule_fail");
+  bool sent = built && sendRawPayload(payload);
+  if (!hasForwardPath() || !sent) queueCarryPayload(packetId, payload, sent ? "relay_wait" : "relay_tx_fail");
   Serial.printf("[RELAY] %s hop:%d bytes:%d rssi:%.0f %s\n",
-                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, scheduled ? "scheduled" : "failed");
+                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, sent ? "sent" : "failed");
 }
 
 void handleBeacon(JsonDocument& doc, float rssi, float snr) {
@@ -1746,10 +1164,6 @@ void handleBeacon(JsonDocument& doc, float rssi, float snr) {
   float lng = doc["lng"] | GROUND_LNG;
   updateNeighbor(stationId, rssi, snr, lat, lng);
   syncTxSlotFromBeacon(millis());
-  if (doc["cfg"].is<JsonObject>()) {
-    applyVehicleConfig(doc["cfg"]);
-    relayConfigPacket(doc, 2);
-  }
   Serial.printf("[RX] beacon %s rssi:%.0f snr:%.1f next_tx:%lums\n",
                 stationId, rssi, snr, nextTxMs);
 }
@@ -1799,12 +1213,9 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["spd"] = compact["sp"] | 0;
   expanded["hdg"] = compact["hd"] | 0;
   expanded["bat"] = compact["bt"] | -1;
-  expanded["bv"] = compact["bv"] | -1;
   expanded["hop"] = compact["hp"] | 0;
   expanded["ttl"] = compact["tt"] | (MAX_HOPS - (int)(compact["hp"] | 0));
   expanded["lq"] = compact["lq"] | 0;
-  if (compact["st"].is<const char*>()) expanded["status"] = compact["st"].as<const char*>();
-  if (compact.containsKey("le")) expanded["lora_error"] = (compact["le"] | 0) == 1;
   float lat = expanded["lat"] | 0.0f;
   float lng = expanded["lng"] | 0.0f;
   bool gpsFix = compact.containsKey("fx")
@@ -1872,10 +1283,6 @@ void onLoRaReceive(int packetSize) {
   const char* compactType = doc["t"] | "";
   if (strcmp(type, "beacon") == 0 || strcmp(compactType, "b") == 0) {
     handleBeacon(doc, rssi, snr);
-  } else if (strcmp(type, "cfg_relay") == 0) {
-    handleCfgRelay(doc);
-  } else if (strcmp(type, "cmd") == 0) {
-    handleCommandPacket(doc);
   } else if (strcmp(type, "vehicle_data") == 0 || strcmp(compactType, "vd") == 0) {
     handleVehicleData(doc, rssi, snr);
   } else if (doc["id"].is<const char*>() && doc["pk"].is<const char*>()) {
@@ -1885,93 +1292,20 @@ void onLoRaReceive(int packetSize) {
 }
 
 bool initLoRa() {
-  unsigned long initStarted = millis();
-
-  for (uint8_t attempt = 1; attempt <= LORA_REINIT_RETRIES; attempt++) {
-    LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
-    feedWatchdog();
-    unsigned long started = millis();
-    bool begun = LoRa.begin(LORA_FREQ);
-    unsigned long elapsed = millis() - started;
-    feedWatchdog();
-
-    if (begun && elapsed <= LORA_BEGIN_TIMEOUT_MS) {
-      loraBeginFailures = 0;
-      LoRa.setSignalBandwidth(LORA_BW);
-      LoRa.setSpreadingFactor(ADAPTIVE_DEFAULT_SF);
-      LoRa.setCodingRate4(LORA_CR);
-      LoRa.setSyncWord(LORA_SYNC);
-      LoRa.setTxPower(ADAPTIVE_DEFAULT_TP);
-      LoRa.enableCrc();
-      LoRa.receive();
-      Serial.printf("[LoRa] ready (SF%d, BW%lu, TxPwr%d)\n",
-                    ADAPTIVE_DEFAULT_SF, (unsigned long)LORA_BW, ADAPTIVE_DEFAULT_TP);
-      return true;
-    }
-
-    loraBeginFailures++;
-    Serial.printf("[LoRa] init failed (%u/%u, %lums), will retry\n",
-                  loraBeginFailures, (unsigned int)LORA_BEGIN_MAX_FAILURES, elapsed);
-    if (loraBeginFailures >= LORA_BEGIN_MAX_FAILURES) {
-      Serial.println(F("[LoRa] init failed too many times, restarting"));
-      Serial.flush();
-      ESP.restart();
-      return false;
-    }
-    if (millis() - initStarted >= LORA_BEGIN_TIMEOUT_MS) break;
-    if (attempt < LORA_REINIT_RETRIES) waitWithWatchdog(500UL);
+  LoRa.setPins(LORA_SS, LORA_RST, LORA_DIO0);
+  if (!LoRa.begin(LORA_FREQ)) {
+    Serial.println("[LoRa] init failed, will retry");
+    return false;
   }
-
-  loraErrorPending = true;
-  return false;
-}
-
-void checkLoRaHealth() {
-  unsigned long now = millis();
-  if (now - lastLoRaHealthCheckMs < LORA_HEALTH_CHECK_MS) return;
-  lastLoRaHealthCheckMs = now;
-
-  if (!peripheralPower || !loraReady) return;
-
-  unsigned long healthWindow = currentTxInterval + LORA_HEALTH_CHECK_MS;
-  if (now - lastLoRaTxSuccess <= healthWindow) return;
-
-  Serial.println(F("[LORA] Health check failed - reinit"));
-  loraReady = false;
-  loraSleepingDuringStationary = false;
-  loraReady = initLoRa();
-  if (loraReady) {
-    lastLoRaTxSuccess = millis();
-    loRaTxFailCount = 0;
-  } else {
-    loraErrorPending = true;
-  }
-}
-
-void printHeartbeat() {
-  unsigned long now = millis();
-  if (now - lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) return;
-  lastHeartbeatMs = now;
-  Serial.printf("[HEARTBEAT] uptime:%lus pwr:%s lora:%s gps:%s bat:%.0f%% stationary:%d txFail:%d\n",
-                (unsigned long)(now / 1000UL),
-                peripheralPower ? "ON" : "OFF",
-                loraReady ? "OK" : "FAIL",
-                gpsValid ? "fix" : "search",
-                readBattery(),
-                isStationary,
-                loRaTxFailCount);
-}
-
-void servicePowerOnLoRaInit() {
-  if (!pendingPowerOnLoRaInit) return;
-  if (millis() - powerOnStartedMs < GPS_POWER_WAIT_MS) return;
-
-  pendingPowerOnLoRaInit = false;
-  loraReady = initLoRa();
-  if (!loraReady) {
-    loraErrorPending = true;
-    Serial.println(F("[LORA] power-on init failed, lora_error will be reported"));
-  }
+  LoRa.setSignalBandwidth(LORA_BW);
+  LoRa.setSpreadingFactor(LORA_SF);
+  LoRa.setCodingRate4(LORA_CR);
+  LoRa.setSyncWord(LORA_SYNC);
+  LoRa.setTxPower(LORA_TX_DBM);
+  LoRa.enableCrc();
+  LoRa.receive();
+  Serial.println("[LoRa] ready");
+  return true;
 }
 
 void setPower(bool on) {
@@ -2078,17 +1412,13 @@ void checkCriticalBattery() {
   char alertBuf[128];
   serializeJson(alertDoc, alertBuf, sizeof(alertBuf));
 
-  if (loraReady && !sendRawPayload(alertBuf)) loraErrorPending = true;
-
-  if (BAT_CAL_CUTOFF_TEST_MODE) {
-    Serial.println(F("[PWR] Critical battery alert sent - cutoff calibration test mode keeps device awake"));
-    return;
+  if (loraReady) {
+    LoRa.beginPacket();
+    LoRa.print(alertBuf);
+    LoRa.endPacket();
   }
 
-  Serial.println(F("[PWR] Alert sent - entering deep sleep"));
-  Serial.flush();
-  setPower(false);
-  ESP.deepSleep(5 * 60 * 1000000ULL);
+  Serial.println(F("[PWR] Critical battery alert sent - staying awake"));
 }
 
 void printPowerStatus() {
@@ -2101,41 +1431,8 @@ void printPowerStatus() {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println();
-  Serial.println(F("================================"));
-  Serial.printf(" VIBE Vehicle Node - %s\n", VEHICLE_ID);
-  Serial.println(F(" Firmware V03"));
-  Serial.printf("[BOOT] Build:%s RF:%.0fHz SF%d BW%lu CR4/%d SW:0x%02X pins ss:%d rst:%d dio0:%d\n",
-                FW_BUILD_ID, LORA_FREQ, ADAPTIVE_DEFAULT_SF, (unsigned long)LORA_BW,
-                LORA_CR, LORA_SYNC, LORA_SS, LORA_RST, LORA_DIO0);
-  Serial.println(F("================================"));
-
-  ESP.wdtEnable(WDT_TIMEOUT_MS);
-  ESP.wdtFeed();
-  Serial.printf("[BOOT] Watchdog enabled (%us)\n", (unsigned int)(WDT_TIMEOUT_MS / 1000UL));
-
-  EEPROM.begin(128);
-  Serial.print(F("[BOOT] Loading last GPS from EEPROM... "));
-  float storedLat = 0.0f;
-  float storedLng = 0.0f;
-  if (loadGPSFromEEPROM(storedLat, storedLng)) {
-    Serial.printf("lat:%.3f lng:%.3f\n", storedLat, storedLng);
-    gpsLat = storedLat;
-    gpsLng = storedLng;
-    gpsValid = true;
-    gpsFixHeld = true;
-    lastGpsFixMs = millis();
-    gpsTimestamp = lastKnownGpsTimestamp;
-    gpsTimestampValid = lastKnownGpsTimestamp > 0;
-    Serial.println(F("[BOOT] GPS continuity hold enabled from last known position"));
-  } else {
-    Serial.println(F("none"));
-  }
-
-  initCarryStore();
-  initBatteryCalibration();
+  ESP.wdtEnable(8000);
   initPowerPin();
-  Serial.println(F("[BOOT] GPS module powered ON"));
   enableModemSleep();
   gpsSerial.begin(GPS_BAUD);
   pinMode(GPS_PPS_PIN, INPUT);
@@ -2145,69 +1442,35 @@ void setup() {
   snprintf(bootId, sizeof(bootId), "%04X", (unsigned int)random(0, 0x10000));
   seq = 0;
 
-  Serial.printf("[BOOT] boot id:%s\n", bootId);
-  Serial.print(F("[BOOT] LoRa init... "));
+  Serial.printf("\nSmart Songthaew Vehicle V03 | %s | boot:%s\n", VEHICLE_ID, bootId);
   loraReady = initLoRa();
-  Serial.println(loraReady ? F("OK (SF9, BW125, TxPwr20)") : F("FAILED"));
+  nextTxMs = millis() + vehicleTxOffsetMs() + txJitterMs();
   Serial.printf("[TX-SLOT] pps_pin:D1 offset:%lums guard:%lums jitter_max:%lums\n",
                 vehicleTxOffsetMs(), (unsigned long)TX_SYNC_GUARD_MS, (unsigned long)TX_JITTER_MS);
-
-  waitWithWatchdog(BOOT_TX_DELAY_MS);
-  Serial.println(F("[BOOT] Sending first beacon (no GPS fix required)..."));
-  transmitPacket("boot");
-  scheduleNextTx(millis());
 }
 
 void loop() {
-  ESP.wdtFeed();
   readGPS();
   processPpsSync();
-  serviceControlBroadcast();
-  serviceGPSEepromSave();
-  servicePowerOnLoRaInit();
-  checkLoRaHealth();
 
-  if (peripheralPower && !loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
+  if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
     lastLoRaRetryMs = millis();
     loraReady = initLoRa();
   }
 
-  if (peripheralPower && loraReady) {
+  if (loraReady) {
     int packetSize = LoRa.parsePacket();
     if (packetSize > 0) onLoRaReceive(packetSize);
   }
 
   unsigned long now = millis();
-  printHeartbeat();
   if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
     lastExpireMs = now;
     expireNeighbors();
   }
 
-  if (now - lastBatteryPrintMs >= 5000UL) {
-    lastBatteryPrintMs = now;
-    printBatteryStatus();
-  }
-
   static unsigned long lastPwrUpdate = 0;
   static bool lastStationary = false;
-  static unsigned long stationaryStartMs = 0;
-  if (isStationary) {
-    if (stationaryStartMs == 0) stationaryStartMs = now;
-    if (stationaryStartMs > 0 && now - stationaryStartMs > STATIONARY_MAX_MS) {
-      Serial.println(F("[PWR] Stationary timeout - forcing wake"));
-      isStationary = false;
-      stationaryCount = 0;
-      stationaryStartMs = 0;
-      setPower(true);
-      powerOnStartedMs = millis();
-      pendingPowerOnLoRaInit = true;
-      loraSleepingDuringStationary = false;
-      currentTxInterval = TX_INTERVAL_NORMAL;
-    }
-  } else {
-    stationaryStartMs = 0;
-  }
   if (now - lastPwrUpdate >= currentTxInterval) {
     lastPwrUpdate = now;
     updateStationaryStatus();
@@ -2215,50 +1478,22 @@ void loop() {
     if (isStationary != lastStationary) {
       lastStationary = isStationary;
       if (isStationary) {
-        stationaryStartMs = now;
-#if STATIONARY_POWER_OFF_ENABLED
-        setPower(false);
-        loraReady = false;
-        pendingPowerOnLoRaInit = false;
-        loraSleepingDuringStationary = false;
-#else
-        if (!peripheralPower) setPower(true);
-        pendingPowerOnLoRaInit = false;
-        Serial.println(F("[PWR] Stationary - GPS power kept ON"));
-#endif
+        Serial.println(F("[PWR] Stationary - peripherals stay ON"));
       } else {
-        if (!peripheralPower) {
-          setPower(true);
-          powerOnStartedMs = millis();
-          pendingPowerOnLoRaInit = true;
-        } else {
-          pendingPowerOnLoRaInit = false;
-        }
-        loraSleepingDuringStationary = false;
+        Serial.println(F("[PWR] Moving - peripherals stay ON"));
       }
     }
+    if (!peripheralPower) setPower(true);
     checkCriticalBattery();
   }
 
-  if (!pendingPowerOnLoRaInit && (long)(now - nextTxMs) >= 0) {
-    if (loraSleepingDuringStationary) {
-      loraReady = initLoRa();
-      loraSleepingDuringStationary = false;
-    }
+  if ((long)(now - nextTxMs) >= 0) {
     transmitPacket(nextTxMode);
     scheduleNextTx(now);
-  } else if (!pendingPowerOnLoRaInit && gpsTxSlotDue()) {
-    if (loraSleepingDuringStationary) {
-      loraReady = initLoRa();
-      loraSleepingDuringStationary = false;
-    }
+  } else if (gpsTxSlotDue()) {
     transmitPacket("gps");
     scheduleNextTx(now);
-  } else if (peripheralPower && isStationary && loraReady && !loraSleepingDuringStationary) {
-    LoRa.sleep();
-    loraSleepingDuringStationary = true;
   }
 
   yield();
-  ESP.wdtFeed();
 }

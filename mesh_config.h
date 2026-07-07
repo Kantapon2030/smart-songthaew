@@ -5,8 +5,6 @@
 #ifndef MESH_CONFIG_H
 #define MESH_CONFIG_H
 
-#define FW_BUILD_ID    "2026-07-07-rxdiag-02"
-
 // Ground station location (can be overridden in songthaew_secrets.h)
 #ifndef GROUND_LAT
 #define GROUND_LAT    8.4304
@@ -33,13 +31,13 @@
 // LoRa RF settings
 #define LORA_FREQ       923E6
 #define LORA_BW         125E3
-#define LORA_SF         9
+#define LORA_SF         7
 #define LORA_CR         5
 #define LORA_SYNC       0x34
-#define LORA_TX_DBM     20
+#define LORA_TX_DBM     17
 
 // Packet priority limits
-#define MAX_LORA_PACKET_BYTES 170
+#define MAX_LORA_PACKET_BYTES 200
 #define LORA_TIER1_LIMIT      140
 #define LORA_TIER2_LIMIT      170
 #define LORA_TIER3_LIMIT      180
@@ -51,79 +49,28 @@
 #define GPS_BAUD        9600
 #define GPS_MIN_SATS    4
 #define GPS_TIMEOUT_MS  60000UL
-#define GPS_LOCATION_FRESH_MS 3000UL
-#define GPS_TIME_FRESH_MS     3000UL
-#define GPS_FIX_HOLD_MS       86400000UL
 
 // Battery sense voltage divider
 #define BAT_PIN         A0
 #define BAT_R1          330000.0
 #define BAT_R2          82000.0
 #define BAT_VCC         3.3
-#define BAT_DIVIDER_RATIO 6.8833  // Calibrated: 4.13V battery -> 0.60V at A0
-#define BAT_EMPTY_V     3.30
-#define BAT_FULL_V      4.13
-#define BAT_AUTO_CALIBRATE true
-#define BAT_CAL_CUTOFF_TEST_MODE true
-#define BAT_CAL_MIN_RANGE_V 0.50
-#define BAT_CAL_SAVE_INTERVAL_MS 60000UL
-#define BAT_CAL_UPDATE_STEP_V 0.01
 
 // TDMA and timing
 #define TX_INTERVAL_MS        5000UL
-#define TX_SLOT_COUNT         3
-#define TX_SLOT_SPACING_MS    1600UL
+#define TX_SLOT_COUNT         VEHICLE_COUNT
+#define TX_SLOT_SPACING_MS    500UL
 #define TX_JITTER_MS          30UL
-#define TX_SYNC_GUARD_MS      200UL
+#define TX_SYNC_GUARD_MS      100UL
 #define GPS_TX_WINDOW_MS      250UL
 #define BEACON_INTERVAL_MS    10000UL
 #define NEIGHBOR_EXPIRE_MS    30000UL
 #define WIFI_RETRY_MS         30000UL
-#define WIFI_RECONNECT_MS     10000UL
 #define WIFI_SETUP_TIMEOUT_MS 20000UL
 #define FLUSH_INTERVAL_MS     5000UL
-#define HTTP_TIMEOUT_MS       8000
-#define HTTP_CONNECT_TIMEOUT  5000
-#define HTTPS_RX_BUFFER_SIZE  512
-#define HTTPS_TX_BUFFER_SIZE  512
-#define GND_COEXIST_SCHEDULER_ENABLED false
-#define GND_SLOT_WINDOW_BEFORE_MS 120UL
-#define GND_SLOT_WINDOW_AFTER_MS 650UL
-#define GND_HTTP_MIN_SAFE_GAP_MS 300UL
-#define GND_MAX_UPLOAD_PER_IDLE_WINDOW 1
-#define GND_NO_RX_BEACON_INTERVAL_MS 60000UL
-#define GND_LORA_RX_KICK_MS 1000UL
-#define GND_LORA_NO_RX_REINIT_MS 60000UL
-#define WIFI_MAX_RETRIES      10
-#define FLUSH_MAX_PER_CALL    3
-#define GND_HEARTBEAT_MS      30000UL
-#define GND_WDT_TIMEOUT_MS    8000
 #define EXPIRE_INTERVAL_MS    5000UL
 #define CARRY_RETRY_MS        7000UL
 #define CARRY_PACKET_TTL_MS   180000UL
-#define WDT_TIMEOUT_MS        8000
-#define LORA_HEALTH_CHECK_MS  30000UL
-#define LORA_REINIT_RETRIES   3
-#define LORA_TX_FAIL_LIMIT    3
-#define LORA_BEGIN_TIMEOUT_MS 5000UL
-#define LORA_BEGIN_MAX_FAILURES LORA_REINIT_RETRIES
-#define GPS_POWER_WAIT_MS     2000UL
-#define GPS_EEPROM_MAGIC      0xBEEF1234UL
-#define GPS_SAVE_INTERVAL_MS  60000UL
-#define BOOT_TX_DELAY_MS      500UL
-#define COMMAND_POLL_MS       (24UL * 60UL * 60UL * 1000UL)
-#define ADAPTIVE_STATUS_MS    30000UL
-
-// Adaptive LoRa - disabled by default for stability.
-// Enable only when vehicle count exceeds threshold.
-#define ADAPTIVE_LORA_ENABLED   false
-#define ADAPTIVE_DEFAULT_SF     9
-#define ADAPTIVE_DEFAULT_TP     20
-#define ADAPTIVE_DEFAULT_TI     5000UL
-#define ADAPTIVE_THRESHOLD_VC   3
-#define ADAPTIVE_HIGH_SF        8
-#define ADAPTIVE_HIGH_TP        17
-#define ADAPTIVE_HIGH_TI        5000UL
 
 // Mesh sizing
 #define MAX_NEIGHBORS         10
@@ -143,7 +90,6 @@
 // Relay policy
 #define RELAY_DISTANCE_MARGIN_M 20.0f
 #define MIN_RELAY_LINK_QUALITY  20
-#define RELAY_SUPPRESS_WHEN_GROUND_NEARBY true
 
 // Optional current sensor placeholder
 #define INA219_ENABLED false
@@ -158,15 +104,10 @@
 #define BAT_LOW_PCT             30    // below this -> reduce TX frequency
 
 // Adaptive TX intervals (ms)
-#define WEB_OFFLINE_TIMEOUT_MS  90000UL
-#define STATIONARY_TX_MARGIN_MS 30000UL
 #define TX_INTERVAL_NORMAL      5000UL
 #define TX_INTERVAL_LOW_BAT     15000UL
-#define TX_INTERVAL_STATIONARY  (WEB_OFFLINE_TIMEOUT_MS - STATIONARY_TX_MARGIN_MS)
+#define TX_INTERVAL_STATIONARY  30000UL
 #define SLEEP_CHECK_MS          60000UL // check sleep condition every 60s
-#define STATIONARY_POWER_OFF_ENABLED 0
-#define STATIONARY_MAX_MS       (30UL * 60UL * 1000UL)
-#define HEARTBEAT_INTERVAL_MS   60000UL
 
 // Stationary detection
 #define STATIONARY_DIST_M       5.0f  // meters - if moved less than this
