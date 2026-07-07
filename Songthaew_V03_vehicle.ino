@@ -2105,6 +2105,9 @@ void setup() {
   Serial.println(F("================================"));
   Serial.printf(" VIBE Vehicle Node - %s\n", VEHICLE_ID);
   Serial.println(F(" Firmware V03"));
+  Serial.printf("[BOOT] Build:%s RF:%.0fHz SF%d BW%lu CR4/%d SW:0x%02X pins ss:%d rst:%d dio0:%d\n",
+                FW_BUILD_ID, LORA_FREQ, ADAPTIVE_DEFAULT_SF, (unsigned long)LORA_BW,
+                LORA_CR, LORA_SYNC, LORA_SS, LORA_RST, LORA_DIO0);
   Serial.println(F("================================"));
 
   ESP.wdtEnable(WDT_TIMEOUT_MS);

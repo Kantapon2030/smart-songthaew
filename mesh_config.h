@@ -5,6 +5,8 @@
 #ifndef MESH_CONFIG_H
 #define MESH_CONFIG_H
 
+#define FW_BUILD_ID    "2026-07-07-rxdiag-02"
+
 // Ground station location (can be overridden in songthaew_secrets.h)
 #ifndef GROUND_LAT
 #define GROUND_LAT    8.4304
@@ -157,7 +159,7 @@
 
 // Adaptive TX intervals (ms)
 #define WEB_OFFLINE_TIMEOUT_MS  90000UL
-#define STATIONARY_TX_MARGIN_MS 10000UL
+#define STATIONARY_TX_MARGIN_MS 30000UL
 #define TX_INTERVAL_NORMAL      5000UL
 #define TX_INTERVAL_LOW_BAT     15000UL
 #define TX_INTERVAL_STATIONARY  (WEB_OFFLINE_TIMEOUT_MS - STATIONARY_TX_MARGIN_MS)

@@ -1186,6 +1186,8 @@ void onLoRaReceive(int packetSize) {
 
   float receivedRssi = LoRa.packetRssi();
   float receivedSnr = LoRa.packetSnr();
+  Serial.printf("[RF] packet bytes:%d rssi:%.0f snr:%.1f head:%.32s\n",
+                len, receivedRssi, receivedSnr, payload);
 
   StaticJsonDocument<768> rx;
   DeserializationError error = deserializeJson(rx, payload);
@@ -1210,6 +1212,8 @@ void onLoRaReceive(int packetSize) {
     deserializeJson(postDoc, body);
   } else {
     if (!isVehiclePacket(rx)) {
+      Serial.printf("[RX] ignored packet type:%s compact:%s\n",
+                    rx["type"] | "", rx["t"] | "");
       LoRa.receive();
       return;
     }
@@ -1249,6 +1253,9 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  Serial.printf("[BOOT] Build:%s RF:%.0fHz SF%d BW%lu CR4/%d SW:0x%02X pins ss:%d rst:%d dio0:%d\n",
+                FW_BUILD_ID, LORA_FREQ, activeLoRaSf, (unsigned long)LORA_BW,
+                LORA_CR, LORA_SYNC, LORA_SS, LORA_RST, LORA_DIO0);
   Serial.printf("[BOOT] Heap:%u buffer:%d x %d tls:%d/%d\n",
                 ESP.getFreeHeap(), GND_BUFFER_SIZE, GND_HTTP_BODY_SIZE,
                 HTTPS_RX_BUFFER_SIZE, HTTPS_TX_BUFFER_SIZE);

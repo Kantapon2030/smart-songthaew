@@ -409,8 +409,8 @@ function validGpsTime(value, now = unixNow()) {
 }
 function vehicleStatus(lastSeen, now = unixNow()) {
   const age = Math.max(0, now - Number(lastSeen || 0));
-  if (age <= 15) return 'online';
-  if (age <= 60) return 'delayed';
+  if (age <= 90) return 'online';
+  if (age <= 120) return 'delayed';
   return 'offline';
 }
 function legacyHeaders(res, successor) {
@@ -550,11 +550,16 @@ function currentForFleetResponse(vehicleId, entry = {}, demoMode = false) {
   const current = entry.current && !demoMode ? currentForLiveMode(entry.current) : entry.current;
   if (!current) return null;
   const routeId = current.routeId || current.route_id || entry.routeId || 'unassigned';
+  const receivedAt = Number(current.server_received_at || current.serverReceivedAt || current.last_seen || current.lastSeen || Math.floor(Number(current.timestamp || 0) / 1000));
+  const lastSeen = Number.isFinite(receivedAt) && receivedAt > 0 ? receivedAt : 0;
   return {
     ...current,
     vehicle_id: current.vehicle_id || current.vehicleId || vehicleId,
     routeId,
     route_id: current.route_id || routeId,
+    server_received_at: lastSeen,
+    last_seen: lastSeen,
+    status: current.status || vehicleStatus(lastSeen),
     ...normalizeTelemetryFields(current, entry),
   };
 }
