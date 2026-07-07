@@ -566,7 +566,7 @@ function selectApproachingVehicle(target) {
   const onlineVehicles = Object.values(vehicleData).filter(vehicle => (
     vehicle.status === 'online'
     && vehicle.gps_fix !== false
-    && String(vehicle.route_id || vehicle.routeId || currentRouteId) === String(currentRouteId)
+    && sameRouteId(vehicle.route_id || vehicle.routeId || currentRouteId, currentRouteId)
   ));
   if (!onlineVehicles.length) {
     selectedVehicleId = null;

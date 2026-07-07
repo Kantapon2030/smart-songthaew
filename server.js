@@ -398,6 +398,8 @@ const ETA_WINDOW_MS = 60 * 1000;
 const etaCache = new Map();
 const etaRateLimits = new Map();
 const ROUTE_ALIASES = {
+  route_001: 'NST-PROMKHIRI',
+  '001': 'NST-PROMKHIRI',
   route_nakhon_phromkhiri: 'NST-PROMKHIRI',
   nakhon_phromkhiri: 'NST-PROMKHIRI',
 };
@@ -412,6 +414,14 @@ function vehicleStatus(lastSeen, now = unixNow()) {
   if (age <= 90) return 'online';
   if (age <= 120) return 'delayed';
   return 'offline';
+}
+function isConnectivityStatus(status) {
+  return ['online', 'delayed', 'offline'].includes(String(status || '').toLowerCase());
+}
+function normalizeTelemetryStatus(status) {
+  const value = String(status || '').trim();
+  if (!value || isConnectivityStatus(value)) return '';
+  return value.slice(0, 40);
 }
 function legacyHeaders(res, successor) {
   res.set('Deprecation', 'true');
@@ -435,7 +445,7 @@ function normalizeTelemetryFields(current = {}, entry = {}) {
     'rssi', 'snr', 'link_quality', 'seq', 'ttl', 'received_rssi',
     'received_snr', 'heading', 'bearing'
   ];
-  const textFields = ['boot_id', 'packet_id', 'relay_from', 'source'];
+  const textFields = ['boot_id', 'packet_id', 'relay_from', 'source', 'telemetry_status', 'gps_status'];
   const boolFields = ['store_forward', 'gps_fix', 'sleepMode', 'demo'];
   const arrayFields = ['relay_chain', 'neighbors', 'version_summary'];
 
@@ -540,8 +550,13 @@ function hasValidGpsFix(current = {}) {
   return current.gps_fix !== false && validLatLng(Number(current.lat), Number(current.lng));
 }
 
+function hasLastKnownPosition(current = {}) {
+  const telemetryStatus = current.telemetry_status || normalizeTelemetryStatus(current.status);
+  return ['last_known', 'gps_hold'].includes(telemetryStatus) && validLatLng(Number(current.lat), Number(current.lng));
+}
+
 function currentForLiveMode(current = {}) {
-  if (hasValidGpsFix(current)) return current;
+  if (hasValidGpsFix(current) || hasLastKnownPosition(current)) return current;
   const { lat, lng, ...withoutCoordinates } = current;
   return withoutCoordinates;
 }
@@ -552,6 +567,7 @@ function currentForFleetResponse(vehicleId, entry = {}, demoMode = false) {
   const routeId = current.routeId || current.route_id || entry.routeId || 'unassigned';
   const receivedAt = Number(current.server_received_at || current.serverReceivedAt || current.last_seen || current.lastSeen || Math.floor(Number(current.timestamp || 0) / 1000));
   const lastSeen = Number.isFinite(receivedAt) && receivedAt > 0 ? receivedAt : 0;
+  const telemetryStatus = current.telemetry_status || normalizeTelemetryStatus(current.status);
   return {
     ...current,
     vehicle_id: current.vehicle_id || current.vehicleId || vehicleId,
@@ -559,7 +575,8 @@ function currentForFleetResponse(vehicleId, entry = {}, demoMode = false) {
     route_id: current.route_id || routeId,
     server_received_at: lastSeen,
     last_seen: lastSeen,
-    status: current.status || vehicleStatus(lastSeen),
+    status: vehicleStatus(lastSeen),
+    ...(telemetryStatus ? { telemetry_status: telemetryStatus } : {}),
     ...normalizeTelemetryFields(current, entry),
   };
 }
@@ -1303,6 +1320,9 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const plateValue = sanitizePlate(plate || req.body.license_plate || req.body.licensePlate);
   const headingValue = Number(req.body.heading ?? req.body.bearing);
   const sleepMode = req.body.sleepMode === true;
+  const telemetryStatus = normalizeTelemetryStatus(req.body.status);
+  const incomingRouteId = routeId && routeId !== 'unassigned' ? routeId : (req.body.route_id || 'unassigned');
+  const incomingDirection = direction && direction !== 'unknown' ? direction : (req.body.route_direction || req.body.dir || 'unknown');
 
   if (!vehicleId) {
     return res.status(400).json({ error: 'vehicleId is required' });
@@ -1318,10 +1338,11 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
       timestamp: ts,
       server_received_at: lastSeen,
       last_seen: lastSeen,
+      status: vehicleStatus(lastSeen, lastSeen),
       vehicle_id: vehicleId,
       routeId: heartbeatRouteId,
       route_id: heartbeatRouteId,
-      direction: req.body.direction || previous.direction || 'unknown',
+      direction: incomingDirection !== 'unknown' ? incomingDirection : (previous.direction || 'unknown'),
       source,
       relay_via: req.body.relay_via || previous.relay_via || 'lora',
       heartbeat: true,
@@ -1337,6 +1358,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     }
     if (hop !== null) patch.hop = hop;
     if (plateValue) patch.plate = plateValue;
+    if (telemetryStatus) patch.telemetry_status = telemetryStatus;
     if (Number.isFinite(headingValue)) {
       patch.heading = headingValue;
       patch.bearing = headingValue;
@@ -1367,6 +1389,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const spdF  = parseFloat(speed)  || 0;
   const batI  = parseInt(battery, 10) ?? -1;
   const ts    = Date.now();
+  const lastSeen = Math.floor(ts / 1000);
   const today = todayStr();
   const hour  = new Date().getHours();
 
@@ -1379,7 +1402,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const hdopF  = parseFloat(hdop)        || -1;  // HDOP จริง
   const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
   const gpsTimeRaw = Number(req.body.gps_timestamp ?? req.body.gps_time);
-  const gpsTime = validGpsTime(gpsTimeRaw, Math.floor(ts / 1000)) ? gpsTimeRaw : null;
+  const gpsTime = validGpsTime(gpsTimeRaw, lastSeen) ? gpsTimeRaw : null;
   const gpsFix = req.body.gps_fix === false ? false : hasValidGPS;
 
   const data = {
@@ -1395,13 +1418,15 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     hdop:        hdopF,   // HDOP จริงจาก GPS
     rssi:        rssiI,   // WiFi RSSI dBm จริง
     timestamp:   ts,
-    server_received_at: Math.floor(ts / 1000),
-    last_seen:   Math.floor(ts / 1000),
+    server_received_at: lastSeen,
+    last_seen:   lastSeen,
+    status:      vehicleStatus(lastSeen, lastSeen),
     gps_time:    gpsTime,
     gps_timestamp: gpsTime,
     gps_fix:     gpsFix,
-    routeId:     routeId   || 'unassigned',
-    direction:   direction || 'unknown',
+    routeId:     incomingRouteId,
+    route_id:    incomingRouteId,
+    direction:   incomingDirection,
   };
   if (Number.isFinite(headingValue)) {
     data.heading = headingValue;
@@ -1409,6 +1434,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   }
   if (plateValue) data.plate = plateValue;
   if (sleepMode) data.sleepMode = true;
+  if (telemetryStatus) data.telemetry_status = telemetryStatus;
 
   // Preserve existing telemetry payloads by storing mesh fields only when supplied.
   if (hop !== null) data.hop = hop;
@@ -1454,11 +1480,13 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
         if (!hasValidGPS) {
           await db.ref(`fleet/${vehicleId}/current`).update({
             timestamp: ts,
-            server_received_at: Math.floor(ts / 1000),
-            last_seen: Math.floor(ts / 1000),
+            server_received_at: lastSeen,
+            last_seen: lastSeen,
+            status: vehicleStatus(lastSeen, lastSeen),
             gps_fix: false,
-            routeId: routeId || previous?.routeId || 'unassigned',
-            direction: direction || previous?.direction || 'unknown',
+            routeId: incomingRouteId || previous?.routeId || 'unassigned',
+            route_id: incomingRouteId || previous?.route_id || previous?.routeId || 'unassigned',
+            direction: incomingDirection !== 'unknown' ? incomingDirection : (previous?.direction || 'unknown'),
             battery: batI,
             speed: 0,
             ...(plateValue ? { plate: plateValue } : {}),
@@ -1467,6 +1495,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
             ...(link_quality !== null ? { link_quality } : {}),
             ...(rssiI !== null ? { rssi: rssiI } : {}),
             ...(snr !== null ? { snr } : {}),
+            ...(telemetryStatus ? { telemetry_status: telemetryStatus } : {}),
             last_ignored_reason: decision.reason,
           });
           return res.status(200).json({ message: 'Telemetry heartbeat updated', status: 'heartbeat', reason: decision.reason, timestamp: ts });
@@ -1484,8 +1513,8 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     if (hasValidGPS) updates[`history/${today}/${vehicleId}/${ts}`] = data;
 
     // 3. Routes active
-    if (hasValidGPS && routeId && routeId !== 'unassigned') {
-      updates[`routes_active/${today}/${routeId}/${vehicleId}`] = {
+    if (hasValidGPS && incomingRouteId && incomingRouteId !== 'unassigned') {
+      updates[`routes_active/${today}/${incomingRouteId}/${vehicleId}`] = {
         lastActive: ts, lat: latF, lng: lngF,
       };
     }
@@ -1502,7 +1531,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     clearLocationsCache();
 
     const gpsStatus = hasValidGPS ? `${latF},${lngF}` : 'no-fix';
-  console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${direction}`);
+  console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${incomingDirection}`);
 
     return res.status(200).json({ message: 'Location & Route updated successfully', timestamp: ts });
 
@@ -1712,6 +1741,7 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
     const receivedAt = unixNow();
     const gpsTime = Number(req.body.gps_time);
     const gpsFix = req.body.gps_fix === true;
+    const telemetryStatus = normalizeTelemetryStatus(req.body.status);
     const lat = Number(req.body.lat), lng = Number(req.body.lng);
     const hasCoordinates = gpsFix && validLatLng(lat, lng);
     const currentRef = db.ref(`fleet/${vehicleId}/current`);
@@ -1724,12 +1754,14 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
           timestamp: receivedAt * 1000,
           server_received_at: receivedAt,
           last_seen: receivedAt,
+          status: vehicleStatus(receivedAt, receivedAt),
           gps_fix: gpsFix,
           route_id: previous?.route_id || previous?.routeId || 'unassigned',
           routeId: previous?.routeId || previous?.route_id || 'unassigned',
           direction: req.body.direction || previous?.direction || 'unknown',
           battery: req.body.battery ?? previous?.battery ?? -1,
           speed: previous?.speed ?? 0,
+          ...(telemetryStatus ? { telemetry_status: telemetryStatus } : {}),
           last_ignored_reason: decision.reason,
         });
         return res.json({ ok: true, status: 'heartbeat', reason: decision.reason, server_received_at: receivedAt, last_seen: receivedAt });
@@ -1748,6 +1780,7 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
       gps_time: packet.gps_time,
       server_received_at: receivedAt,
       last_seen: receivedAt,
+      status: vehicleStatus(receivedAt, receivedAt),
       gps_fix: gpsFix,
       boot_id: bootId,
       seq,
@@ -1764,6 +1797,7 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
       sats: req.body.sats ?? previous?.sats ?? -1,
       hdop: req.body.hdop ?? previous?.hdop ?? -1,
       rssi: req.body.rssi ?? previous?.rssi ?? null,
+      ...(telemetryStatus ? { telemetry_status: telemetryStatus } : {}),
     };
     const updates = { [`fleet/${vehicleId}/current`]: current, [`fleet/${vehicleId}/routeId`]: routeId };
     if (hasCoordinates) {

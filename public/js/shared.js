@@ -19,6 +19,12 @@ const DEST_NORTH = ROUTE_COORDS[ROUTE_COORDS.length - 1];
 const DEST_PHROMKHIRI = DEST_NORTH;
 const DEST_NAKHON = DEST_SOUTH;
 const REAL_VEHICLE_ID = 'songthaew_01';
+const ROUTE_ALIASES = {
+  route_001: 'NST-PROMKHIRI',
+  '001': 'NST-PROMKHIRI',
+  route_nakhon_phromkhiri: 'NST-PROMKHIRI',
+  nakhon_phromkhiri: 'NST-PROMKHIRI',
+};
 
 window.SYS = {
   demoMode: false,
@@ -94,8 +100,21 @@ function calculateBearing(la1, lo1, la2, lo2) {
   return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
 }
 
+function isConnectivityStatus(status) {
+  return ['online', 'delayed', 'offline'].includes(String(status || '').toLowerCase());
+}
+
+function canonicalRouteId(routeId) {
+  const value = String(routeId || '').trim();
+  return ROUTE_ALIASES[value] || value || 'unassigned';
+}
+
+function sameRouteId(a, b) {
+  return canonicalRouteId(a) === canonicalRouteId(b);
+}
+
 function isVehicleOnline(vehicle) {
-  if (vehicle?.status) return vehicle.status === 'online' || vehicle.status === 'delayed';
+  if (isConnectivityStatus(vehicle?.status)) return vehicle.status === 'online' || vehicle.status === 'delayed';
   const timeout = (window.SYS?.offlineTimeout ?? 90) * 1000;
   if (vehicle?.last_seen) return (Date.now() / 1000 - vehicle.last_seen) <= timeout / 1000;
   return Boolean(vehicle?.timestamp && (Date.now() - vehicle.timestamp) < timeout);
@@ -160,7 +179,9 @@ function normalizeLegacyVehicle(id, entry = {}, now = Date.now() / 1000) {
   const timestampMs = Number(current.timestamp || 0);
   const lastSeen = rawTimestamp > 0 ? rawTimestamp : timestampMs > 10_000_000_000 ? timestampMs / 1000 : timestampMs;
   const timeoutSec = window.SYS?.offlineTimeout ?? 90;
-  const status = current.status || (lastSeen && now - lastSeen <= timeoutSec ? 'online' : 'offline');
+  const computedStatus = lastSeen && now - lastSeen <= timeoutSec ? 'online' : 'offline';
+  const status = isConnectivityStatus(current.status) ? current.status : computedStatus;
+  const telemetryStatus = current.telemetry_status || (current.status && !isConnectivityStatus(current.status) ? current.status : '');
   const heading = Number(current.heading ?? current.bearing ?? 0);
   return {
     vehicle_id: current.vehicle_id || current.vehicleId || id,
@@ -172,6 +193,7 @@ function normalizeLegacyVehicle(id, entry = {}, now = Date.now() / 1000) {
     battery: current.battery,
     gps_fix: current.gps_fix ?? (Number.isFinite(Number(current.lat)) && Number.isFinite(Number(current.lng))),
     status,
+    telemetry_status: telemetryStatus || undefined,
     route_id: current.route_id || current.routeId || entry.routeId || 'unassigned',
     routeId: current.routeId || entry.routeId || current.route_id || 'unassigned',
     direction: current.direction || '',

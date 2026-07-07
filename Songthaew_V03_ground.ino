@@ -31,6 +31,7 @@
 
 #define GND_HTTP_BODY_SIZE 768
 #define GND_BUFFER_SIZE    BUFFER_SIZE
+#define GND_URL_SIZE       220
 
 struct BufferedPacket {
   char body[GND_HTTP_BODY_SIZE];
@@ -273,7 +274,8 @@ bool readHttpLine(Client& client, char* line, size_t lineSize, unsigned long tim
   return len > 0;
 }
 
-int readHttpResponse(Client& client, char* responseBody, size_t responseBodySize) {
+int readHttpResponse(Client& client, char* responseBody, size_t responseBodySize,
+                     char* redirectLocation = nullptr, size_t redirectLocationSize = 0) {
   char line[128];
   if (!readHttpLine(client, line, sizeof(line), HTTP_TIMEOUT_MS)) return -11;
   if (strncmp(line, "HTTP/", 5) != 0) return -11;
@@ -281,6 +283,12 @@ int readHttpResponse(Client& client, char* responseBody, size_t responseBodySize
 
   while (readHttpLine(client, line, sizeof(line), HTTP_TIMEOUT_MS)) {
     if (line[0] == '\0') break;
+    if (redirectLocation != nullptr && redirectLocationSize > 0 &&
+        (strncmp(line, "Location:", 9) == 0 || strncmp(line, "location:", 9) == 0)) {
+      const char* value = line + 9;
+      while (*value == ' ' || *value == '\t') value++;
+      strlcpy(redirectLocation, value, redirectLocationSize);
+    }
   }
 
   if (responseBody != nullptr && responseBodySize > 0) {
@@ -302,7 +310,8 @@ int readHttpResponse(Client& client, char* responseBody, size_t responseBodySize
 }
 
 template <typename TClient>
-int postBodyWithClient(TClient& client, const char* url, const char* body) {
+int postBodyWithClient(TClient& client, const char* url, const char* body,
+                       char* redirectLocation = nullptr, size_t redirectLocationSize = 0) {
   bool https = false;
   char host[80];
   char path[128];
@@ -335,9 +344,36 @@ int postBodyWithClient(TClient& client, const char* url, const char* body) {
     return -3;
   }
 
-  int code = readHttpResponse(client, nullptr, 0);
+  int code = readHttpResponse(client, nullptr, 0, redirectLocation, redirectLocationSize);
   client.stop();
   return code;
+}
+
+bool isRedirectStatus(int code) {
+  return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+}
+
+bool resolveRedirectUrl(const char* currentUrl, const char* location, char* out, size_t outSize) {
+  if (out == nullptr || outSize == 0 || location == nullptr || location[0] == '\0') return false;
+  out[0] = '\0';
+  if (strncmp(location, "https://", 8) == 0 || strncmp(location, "http://", 7) == 0) {
+    strlcpy(out, location, outSize);
+    return out[0] != '\0';
+  }
+  if (location[0] != '/') return false;
+
+  bool https = false;
+  char host[80];
+  char path[128];
+  uint16_t port = 0;
+  if (!parseUrl(currentUrl, &https, host, sizeof(host), path, sizeof(path), &port)) return false;
+  const bool defaultPort = (https && port == 443) || (!https && port == 80);
+  if (defaultPort) {
+    snprintf(out, outSize, "%s://%s%s", https ? "https" : "http", host, location);
+  } else {
+    snprintf(out, outSize, "%s://%s:%u%s", https ? "https" : "http", host, port, location);
+  }
+  return out[0] != '\0';
 }
 
 template <typename TClient>
@@ -722,20 +758,38 @@ int postToServer(const char* body) {
   httpInProgress = true;
   httpStartMs = started;
   int code = -1;
-  bool https = false;
-  char host[80];
-  char path[128];
-  uint16_t port = 0;
-  if (!parseUrl(SERVER_URL, &https, host, sizeof(host), path, sizeof(path), &port)) {
-    code = -7;
-  } else if (https) {
-    WiFiClientSecure client;
-    prepareSecureClient(client);
-    code = postBodyWithClient(client, SERVER_URL, body);
-  } else {
-    WiFiClient client;
-    client.setTimeout(HTTP_CONNECT_TIMEOUT);
-    code = postBodyWithClient(client, SERVER_URL, body);
+
+  char url[GND_URL_SIZE];
+  strlcpy(url, SERVER_URL, sizeof(url));
+  for (uint8_t attempt = 0; attempt < 3; attempt++) {
+    bool https = false;
+    char host[80];
+    char path[128];
+    uint16_t port = 0;
+    char redirectLocation[GND_URL_SIZE] = "";
+    if (!parseUrl(url, &https, host, sizeof(host), path, sizeof(path), &port)) {
+      code = -7;
+      break;
+    } else if (https) {
+      WiFiClientSecure client;
+      prepareSecureClient(client);
+      code = postBodyWithClient(client, url, body, redirectLocation, sizeof(redirectLocation));
+    } else {
+      WiFiClient client;
+      client.setTimeout(HTTP_CONNECT_TIMEOUT);
+      code = postBodyWithClient(client, url, body, redirectLocation, sizeof(redirectLocation));
+    }
+
+    if (isRedirectStatus(code) && redirectLocation[0] != '\0') {
+      char nextUrl[GND_URL_SIZE];
+      if (!resolveRedirectUrl(url, redirectLocation, nextUrl, sizeof(nextUrl))) break;
+      Serial.printf("[HTTP] redirect %d -> %s\n", code, nextUrl);
+      strlcpy(url, nextUrl, sizeof(url));
+      ESP.wdtFeed();
+      yield();
+      continue;
+    }
+    break;
   }
 
   lastHttpLatencyMs = millis() - started;
@@ -1085,7 +1139,7 @@ bool buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr,
   float lng = rx["lng"] | 0.0f;
   const char* status = rx["status"] | "";
   bool gpsFix = (rx["fix"] | true) && isValidThailandCoord(lat, lng);
-  bool lastKnownPosition = strcmp(status, "last_known") == 0 && isValidThailandCoord(lat, lng);
+  bool lastKnownPosition = (strcmp(status, "last_known") == 0 || strcmp(status, "gps_hold") == 0) && isValidThailandCoord(lat, lng);
 
   out["vehicleId"] = rx["vid"] | "";
   out["vehicle_id"] = rx["vid"] | "";
@@ -1259,6 +1313,16 @@ void setup() {
   Serial.printf("[BOOT] Heap:%u buffer:%d x %d tls:%d/%d\n",
                 ESP.getFreeHeap(), GND_BUFFER_SIZE, GND_HTTP_BODY_SIZE,
                 HTTPS_RX_BUFFER_SIZE, HTTPS_TX_BUFFER_SIZE);
+  bool serverHttps = false;
+  char serverHost[80];
+  char serverPath[128];
+  uint16_t serverPort = 0;
+  if (parseUrl(SERVER_URL, &serverHttps, serverHost, sizeof(serverHost), serverPath, sizeof(serverPath), &serverPort)) {
+    Serial.printf("[HTTP] target %s://%s:%u%s\n",
+                  serverHttps ? "https" : "http", serverHost, serverPort, serverPath);
+  } else {
+    Serial.println(F("[HTTP] invalid SERVER_URL - telemetry upload disabled"));
+  }
   ESP.wdtEnable(GND_WDT_TIMEOUT_MS);
   ESP.wdtFeed();
   Serial.printf("[BOOT] Watchdog enabled (%us)\n", (unsigned int)(GND_WDT_TIMEOUT_MS / 1000UL));
@@ -1318,6 +1382,8 @@ void loop() {
     lastFlushMs = now;
     flushBuffer();
   }
+
+  serviceVehicleHeartbeats();
 
   pollPendingCommand();
 
