@@ -484,11 +484,13 @@ function markerPosition(marker) {
   return Number.isFinite(Number(lat)) && Number.isFinite(Number(lng)) ? { lat: Number(lat), lng: Number(lng) } : null;
 }
 
-function routeCoordsForEta() {
+function routeCoordsForEta(dir = currentDirection) {
   const route = routesById[currentRouteId];
+  const coords = directionCoords(route, dir);
+  if (coords.length) return coords;
   const outbound = directionCoords(route, 'outbound');
-  if (outbound.length) return outbound;
-  return directionCoords(route, currentDirection);
+  if (dir === 'inbound' && outbound.length) return [...outbound].reverse();
+  return outbound;
 }
 
 function snapToRoute(lat, lng, routeCoords) {
@@ -531,9 +533,7 @@ function routeEtaCandidate(vehicle, target, routeCoords) {
   const vehicleIndex = snapToRoute(vehicle.lat, vehicle.lng, routeCoords);
   const targetIndex = snapToRoute(target.lat, target.lng, routeCoords);
   if (vehicleIndex < 0 || targetIndex < 0) return null;
-  const delta = currentDirection === 'inbound'
-    ? vehicleIndex - targetIndex
-    : targetIndex - vehicleIndex;
+  const delta = targetIndex - vehicleIndex;
   if (delta <= 0) return null;
   const distanceKm = routeDistanceKm(routeCoords, vehicleIndex, targetIndex);
   const speedKmh = Number(vehicle.speed) > 0 ? Number(vehicle.speed) : 30;
@@ -544,6 +544,30 @@ function routeEtaCandidate(vehicle, target, routeCoords) {
     delta,
     distanceKm,
     etaMin: Math.max(1, Math.round((distanceKm / speedKmh) * 60)),
+  };
+}
+
+function turnaroundEtaCandidate(vehicle, target) {
+  const vehicleDirection = canonicalVehicleDirection(vehicle);
+  if (!['outbound', 'inbound'].includes(vehicleDirection) || vehicleDirection === currentDirection) return null;
+  const currentCoords = routeCoordsForEta(vehicleDirection);
+  const targetCoords = routeCoordsForEta(currentDirection);
+  if (currentCoords.length < 2 || targetCoords.length < 2) return null;
+  const vehicleIndex = snapToRoute(vehicle.lat, vehicle.lng, currentCoords);
+  const targetIndex = snapToRoute(target.lat, target.lng, targetCoords);
+  if (vehicleIndex < 0 || targetIndex < 0) return null;
+  const remainingKm = routeDistanceKm(currentCoords, vehicleIndex, currentCoords.length - 1);
+  const approachKm = routeDistanceKm(targetCoords, 0, targetIndex);
+  const distanceKm = remainingKm + approachKm;
+  const speedKmh = Number(vehicle.speed) > 0 ? Number(vehicle.speed) : 24;
+  return {
+    vehicle,
+    vehicleIndex,
+    targetIndex,
+    delta: currentCoords.length + targetIndex - vehicleIndex,
+    distanceKm,
+    etaMin: Math.max(1, Math.round((distanceKm / speedKmh) * 60)),
+    turnaround: true,
   };
 }
 
@@ -560,9 +584,31 @@ function updateVehicleNotice(message = '') {
   notice.style.display = hasOnlineVehicles ? 'none' : 'block';
 }
 
+function selectNearestVehicleFallback(target, onlineVehicles) {
+  if (!target || !onlineVehicles.length) return null;
+  onlineVehicles.sort((a, b) => haversineKm(a.lat, a.lng, target.lat, target.lng) - haversineKm(b.lat, b.lng, target.lat, target.lng));
+  const vehicle = onlineVehicles[0];
+  const distanceKm = haversineKm(vehicle.lat, vehicle.lng, target.lat, target.lng);
+  const speedKmh = Number(vehicle.speed) > 0 ? Number(vehicle.speed) : 20;
+  selectedVehicleId = vehicle.vehicle_id;
+  etaState = {
+    key: `nearest:${selectedVehicleId}:${target.lat}:${target.lng}:${vehicle.last_seen || ''}`,
+    value: {
+      vehicle_id: selectedVehicleId,
+      eta_min: Math.max(1, Math.round((distanceKm / speedKmh) * 60)),
+      distance_m: Math.round(distanceKm * 1000),
+      route_based: false,
+    },
+    fetchedAt: Date.now(),
+  };
+  updateVehicleNotice();
+  if (selectedOrigin) updateOriginStatus(`${selectedOrigin.name}: ${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
+  return vehicle;
+}
+
 function selectApproachingVehicle(target) {
   if (!target) return null;
-  const routeCoords = routeCoordsForEta();
+  const routeCoords = routeCoordsForEta(currentDirection);
   const onlineVehicles = Object.values(vehicleData).filter(vehicle => (
     vehicle.status === 'online'
     && vehicle.gps_fix !== false
@@ -582,11 +628,17 @@ function selectApproachingVehicle(target) {
     updateVehicleNotice();
     return vehicle;
   }
-  const candidates = onlineVehicles
+  const directCandidates = onlineVehicles
     .filter(vehicle => canonicalVehicleDirection(vehicle) === currentDirection)
     .map(vehicle => routeEtaCandidate(vehicle, target, routeCoords))
-    .filter(Boolean)
-    .sort((a, b) => a.delta - b.delta || a.distanceKm - b.distanceKm);
+    .filter(Boolean);
+  const turnaroundCandidates = onlineVehicles
+    .filter(vehicle => canonicalVehicleDirection(vehicle) !== currentDirection)
+    .map(vehicle => turnaroundEtaCandidate(vehicle, target))
+    .filter(Boolean);
+  const candidates = [...directCandidates, ...turnaroundCandidates]
+    .sort((a, b) => a.etaMin - b.etaMin || a.distanceKm - b.distanceKm);
+  if (!candidates.length) return selectNearestVehicleFallback(target, onlineVehicles);
   if (!candidates.length) {
     selectedVehicleId = null;
     etaState = { key: `none:${currentRouteId}:${currentDirection}:${Date.now()}`, value: null, fetchedAt: Date.now() };
@@ -603,6 +655,7 @@ function selectApproachingVehicle(target) {
       eta_min: best.etaMin,
       distance_m: Math.round(best.distanceKm * 1000),
       route_based: true,
+      turnaround: best.turnaround === true,
     },
     fetchedAt: Date.now(),
   };

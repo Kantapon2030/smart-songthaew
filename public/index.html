@@ -284,47 +284,103 @@
         bottom: 56px; /* sit above mobile bottom-nav */
         width: 100%;
         max-width: 100%;
-        max-height: 45dvh;
-        border-radius: 14px 14px 0 0;
+        max-height: 34dvh;
+        border-radius: 12px 12px 0 0;
         border-bottom: none;
-        padding: 6px 12px 12px;
+        padding: 5px 10px 10px;
       }
 
-      .sidebar-handle { display: block; }
+      .sidebar-handle {
+        display: block;
+        width: 32px;
+        height: 3px;
+        margin-bottom: 8px;
+      }
+
+      .journey-title {
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+
+      .route-control-row {
+        gap: 6px;
+        margin-bottom: 7px;
+      }
+
+      .direction-row,
+      .search-row,
+      .location-control-row,
+      .popular-grid,
+      .recommended-list {
+        margin-top: 6px;
+      }
+
+      .section-label {
+        margin: 6px 0 3px;
+        font-size: 9px;
+      }
+
+      .origin-status {
+        min-height: 12px;
+        margin-top: 4px;
+        font-size: 9px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
       .vehicle-card {
-        top: calc(var(--nav-height) + 8px);
+        top: auto;
         right: 8px;
         left: 8px;
-        bottom: auto;
+        bottom: calc(34dvh + 56px + 8px);
         width: auto;
         max-width: 100%;
-        max-height: 132px;
+        max-height: 118px;
         overflow: hidden;
       }
 
       .vehicle-card .card-header {
-        padding: 7px 10px;
+        padding: 6px 10px;
         align-items: center;
+        min-height: 38px;
       }
 
       .vehicle-card .card-title {
         font-size: 12px;
         line-height: 1.15;
+        max-width: 220px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .vehicle-card .card-subtitle {
-        font-size: 10px;
-        margin-top: 1px;
+        font-size: 9px;
+        margin-top: 0;
       }
 
       .vehicle-card .card-body {
-        padding: 7px 10px 9px;
+        display: block;
+        padding: 6px 10px 8px;
       }
 
       .vehicle-hero {
         grid-template-columns: 1fr;
         gap: 2px;
+      }
+
+      #vehicle-route {
+        font-size: 11px;
+        line-height: 1.25;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      #vehicle-plate {
+        font-size: 9px;
+        margin-top: 1px !important;
       }
 
       .vehicle-image,
@@ -335,16 +391,25 @@
 
       .vehicle-stats {
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        margin-top: 6px;
+        margin-top: 5px;
+        gap: 4px;
       }
 
       .vehicle-stat {
-        padding: 4px 3px;
+        padding: 3px 3px;
+      }
+
+      .vehicle-stat strong {
+        font-size: 11px;
+      }
+
+      .vehicle-stat span {
+        font-size: 8px;
       }
 
       #mesh-toggle-wrap {
         right: 8px;
-        bottom: calc(45dvh + 56px + 210px);
+        bottom: calc(34dvh + 56px + 72px);
       }
 
       .popular-grid {
@@ -353,6 +418,15 @@
 
       .location-control-row {
         grid-template-columns: repeat(2, 1fr);
+      }
+
+      .location-control-row .button,
+      .route-control-row .button,
+      .search-control,
+      .select-control,
+      .segmented button {
+        min-height: 32px;
+        font-size: 11px;
       }
     }
 
