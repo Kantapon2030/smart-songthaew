@@ -107,6 +107,7 @@ unsigned long nextTxMs = 0;
 unsigned long lastExpireMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastCarryFlushMs = 0;
+unsigned long lastBatteryPrintMs = 0;
 unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
@@ -981,12 +982,28 @@ bool sendJson(JsonDocument& doc) {
   return sendRawPayload(payload);
 }
 
-float readBattery() {
+float readBatteryVoltage() {
   int raw = analogRead(BAT_PIN);
   float vOut = (raw / 1023.0f) * BAT_VCC;
-  float vBat = vOut * (BAT_R1 + BAT_R2) / BAT_R2;
-  float percent = ((vBat * 100.0f) - 330.0f) * 100.0f / (420.0f - 330.0f);
+  return vOut * BAT_DIVIDER_RATIO;
+}
+
+float batteryPercentFromVoltage(float vBat) {
+  float percent = (vBat - BAT_EMPTY_V) * 100.0f / (BAT_FULL_V - BAT_EMPTY_V);
   return constrain(percent, 0.0f, 100.0f);
+}
+
+float readBattery() {
+  return batteryPercentFromVoltage(readBatteryVoltage());
+}
+
+void printBatteryStatus() {
+  int raw = analogRead(BAT_PIN);
+  float vOut = (raw / 1023.0f) * BAT_VCC;
+  float vBat = vOut * BAT_DIVIDER_RATIO;
+  float percent = batteryPercentFromVoltage(vBat);
+  Serial.printf("[BAT] raw:%d vout:%.2fV vbat:%.2fV percent:%.0f%%\n",
+                raw, vOut, vBat, percent);
 }
 
 void readGPS() {
@@ -1016,7 +1033,8 @@ void transmitPacket(const char* txMode = "auto") {
   int hop = direct ? 0 : (relay ? constrain(relay->hop + 1, 1, MAX_HOPS) : 0);
   float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
   float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
-  int battery = (int)round(readBattery());
+  float batteryVoltage = readBatteryVoltage();
+  int battery = (int)round(batteryPercentFromVoltage(batteryVoltage));
 
   seq++;
   char packetId[40];
@@ -1035,8 +1053,9 @@ void transmitPacket(const char* txMode = "auto") {
   bool sent = built && sendRawPayload(payload);
   if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
   if (hasRoute) flushCarryBuffer();
-  Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f %s\n",
-                VEHICLE_ID, txMode, hop, strlen(payload), bestRssi, sent ? "sent" : "failed");
+  Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f bat:%d%% %.2fV %s\n",
+                VEHICLE_ID, txMode, hop, strlen(payload), bestRssi,
+                battery, batteryVoltage, sent ? "sent" : "failed");
 }
 
 bool wouldCreateLoop(JsonVariantConst relayChain, const char* myId) {
@@ -1467,6 +1486,11 @@ void loop() {
   if (now - lastExpireMs >= EXPIRE_INTERVAL_MS) {
     lastExpireMs = now;
     expireNeighbors();
+  }
+
+  if (now - lastBatteryPrintMs >= 5000UL) {
+    lastBatteryPrintMs = now;
+    printBatteryStatus();
   }
 
   static unsigned long lastPwrUpdate = 0;

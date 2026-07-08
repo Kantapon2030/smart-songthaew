@@ -2212,12 +2212,21 @@ let _demoVehicles = new Map();
 let _demoWriteLogCounts = new Map();
 let _demoLastTickAt = 0;
 let _demoLastError = null;
-const DEMO_MAX_METERS_PER_TICK = 100;
+const DEMO_SPEED_MULTIPLIER_MIN = 0.25;
+const DEMO_SPEED_MULTIPLIER_MAX = 2.0;
+const DEMO_MAX_ELAPSED_SECONDS = 3;
+const DEMO_BASE_SPEEDS_KMH = [16, 20, 24];
 const demoVehicleState = {
   DEMO_1: { coordIndex: 0, direction: 'outbound', forward: true },
   DEMO_2: { coordIndex: 0, direction: 'outbound', forward: true },
   DEMO_3: { coordIndex: 0, direction: 'inbound', forward: false },
 };
+
+function clampDemoSpeedMultiplier(value) {
+  const speed = Number(value);
+  if (!Number.isFinite(speed)) return 1;
+  return Math.max(DEMO_SPEED_MULTIPLIER_MIN, Math.min(DEMO_SPEED_MULTIPLIER_MAX, speed));
+}
 
 function buildVehiclePairs(nodes) {
   const vehicles = nodes.filter(node => node.type === 'vehicle' && node.status === 'online' && Number.isFinite(node.lat) && Number.isFinite(node.lng));
@@ -2260,6 +2269,20 @@ function demoRouteLengthMeters(coords = demoRouteCoords) {
   return total;
 }
 
+function demoDistanceAtCoordIndex(index, coords = demoRouteCoords) {
+  if (!Array.isArray(coords) || coords.length < 2) return 0;
+  const end = Math.max(0, Math.min(coords.length - 1, Number(index) || 0));
+  let distance = 0;
+  for (let i = 0; i < end; i++) {
+    const a = coords[i];
+    const b = coords[i + 1];
+    if (validLatLng(a?.lat, a?.lng) && validLatLng(b?.lat, b?.lng)) {
+      distance += haversineDistanceMeters(a, b);
+    }
+  }
+  return distance;
+}
+
 function demoPositionAtDistance(distanceM, coords = demoRouteCoords) {
   const total = demoRouteLengthMeters(coords);
   if (!total || coords.length < 2) return null;
@@ -2278,17 +2301,19 @@ function demoPositionAtDistance(distanceM, coords = demoRouteCoords) {
         lng,
         segmentIndex: i,
         bearing: bearingCalc(lat, lng, b.lat, b.lng),
+        direction: demoPointDirection(a, demoPointDirection(b)),
       };
     }
     remaining -= segment;
   }
   const first = coords[0];
   const next = coords[1];
-  return { lat: first.lat, lng: first.lng, segmentIndex: 0, bearing: bearingCalc(first.lat, first.lng, next.lat, next.lng) };
+  return { lat: first.lat, lng: first.lng, segmentIndex: 0, bearing: bearingCalc(first.lat, first.lng, next.lat, next.lng), direction: demoPointDirection(first) };
 }
 
 function initializeDemoFleet() {
   const len = demoRouteCoords.length;
+  const routeLengthM = demoRouteLengthMeters();
   console.log(`[DEMO] initializeDemoFleet coords=${len} source=${_demoRouteCoordSource} format=${_demoRouteCoordFormat}`);
   const indices = [
     0,
@@ -2296,12 +2321,18 @@ function initializeDemoFleet() {
     Math.floor((2 * len) / 3)
   ];
   DEMO_IDS.forEach((id, index) => {
+    const distanceM = routeLengthM
+      ? Math.min(routeLengthM - 1, demoDistanceAtCoordIndex(indices[index]))
+      : 0;
+    const startPosition = demoPositionAtDistance(distanceM);
     Object.assign(demoVehicleState[id], {
       id,
-      coordIndex: Math.max(0, Math.min(len - 1, indices[index])),
-      direction: index === 2 ? 'inbound' : 'outbound',
-      forward: index !== 2,
-      speed: [34, 43, 55][index],
+      coordIndex: startPosition?.segmentIndex ?? Math.max(0, Math.min(len - 1, indices[index])),
+      distanceM,
+      lastMovedAt: Date.now(),
+      direction: startPosition?.direction || (index === 2 ? 'inbound' : 'outbound'),
+      forward: true,
+      speed: DEMO_BASE_SPEEDS_KMH[index],
       battery: [93, 86, 79][index],
     });
   });
@@ -2314,33 +2345,32 @@ function initializeDemoFleet() {
 
 function moveDemoVehicle(vehicleId, timestamp, updates) {
   const vehicle = demoVehicleState[vehicleId] || _demoVehicles.get(vehicleId);
-  if (!vehicle || !demoRouteCoords.length) return null;
-  const len = demoRouteCoords.length;
+  const routeLengthM = demoRouteLengthMeters();
+  if (!vehicle || !routeLengthM || demoRouteCoords.length < 2) return null;
   const index = DEMO_IDS.indexOf(vehicleId);
-  const coordIndex = Number.isInteger(vehicle.coordIndex)
-    ? ((vehicle.coordIndex % len) + len) % len
+  const elapsedSeconds = vehicle.lastMovedAt
+    ? Math.max(0, Math.min(DEMO_MAX_ELAPSED_SECONDS, (timestamp - vehicle.lastMovedAt) / 1000))
     : 0;
-  const coord = demoRouteCoords[coordIndex];
-  const nextIndex = vehicle.forward ? (coordIndex + 1) % len : (coordIndex - 1 + len) % len;
-  const nextCoord = demoRouteCoords[nextIndex] || coord;
-  if (!coord || !Number.isFinite(coord.lat) || !Number.isFinite(coord.lng)) {
-    console.error(`[DEMO] Invalid coord for ${vehicleId} idx=${coordIndex}`);
+  vehicle.lastMovedAt = timestamp;
+
+  const wave = Math.sin(timestamp / 12000 + index * 1.7);
+  const baseSpeed = DEMO_BASE_SPEEDS_KMH[index] || 18;
+  const targetSpeed = (baseSpeed + wave * 2.5) * clampDemoSpeedMultiplier(_demoSpeedMultiplier);
+  vehicle.speed = Math.max(4, Math.min(42, vehicle.speed + (targetSpeed - vehicle.speed) * 0.18));
+  vehicle.distanceM = ((Number(vehicle.distanceM || 0) + (vehicle.speed * 1000 / 3600) * elapsedSeconds) % routeLengthM + routeLengthM) % routeLengthM;
+
+  const position = demoPositionAtDistance(vehicle.distanceM);
+  if (!position || !Number.isFinite(position.lat) || !Number.isFinite(position.lng)) {
+    console.error(`[DEMO] Invalid interpolated position for ${vehicleId} distance=${vehicle.distanceM}`);
     return null;
   }
-  const lat = coord.lat;
-  const lng = coord.lng;
-  const direction = vehicle.direction;
-  const wave = Math.sin(timestamp / 9000 + index * 1.7);
-  const targetSpeed = ([31, 38, 45][index] + wave * 5) * _demoSpeedMultiplier;
-  vehicle.speed = Math.max(8, Math.min(65, vehicle.speed + (targetSpeed - vehicle.speed) * 0.28));
+  const lat = position.lat;
+  const lng = position.lng;
+  const direction = position.direction || vehicle.direction || 'outbound';
+  vehicle.direction = direction;
+  vehicle.coordIndex = position.segmentIndex;
   vehicle.battery = Math.max(20, Number((vehicle.battery - 0.015).toFixed(2)));
-  if (vehicle.forward) {
-    vehicle.coordIndex = (coordIndex + 1) % len;
-  } else {
-    vehicle.coordIndex = coordIndex - 1;
-    if (vehicle.coordIndex < 0) vehicle.coordIndex = len - 1;
-  }
-  const bearing = bearingCalc(lat, lng, nextCoord.lat, nextCoord.lng);
+  const bearing = position.bearing;
 
   const current = {
     vehicle_id: vehicleId,
@@ -2390,10 +2420,10 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   updates[`fleet/${vehicleId}/description`] = `Demo vehicle ${index + 1}`;
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
   updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
-  console.log(`[DEMO tick] ${vehicleId} idx:${coordIndex} direction:${direction} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
+  console.log(`[DEMO tick] ${vehicleId} idx:${vehicle.coordIndex} direction:${direction} speed:${current.speed} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
   const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
   if (logCount < 3) {
-    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${coordIndex} direction=${direction} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
+    console.log(`[DEMO] write ${vehicleId} tick=${logCount + 1} path=fleet/${vehicleId}/current idx=${vehicle.coordIndex} direction=${direction} speed=${current.speed} lat=${current.lat} lng=${current.lng} routeId=${current.routeId}`);
     _demoWriteLogCounts.set(vehicleId, logCount + 1);
   }
   return current;
@@ -2485,9 +2515,16 @@ function buildDemoRoutePath(route = {}) {
     : [];
   const outbound = normalizeDemoRouteCoords(outboundRaw);
   const inbound = normalizeDemoRouteCoords(inboundRaw);
+  const coords = [];
+  appendDemoDirectionCoords(coords, outbound.coords, 'outbound');
+  if (inbound.coords.length > 1) {
+    appendDemoDirectionCoords(coords, inbound.coords, 'inbound');
+  } else if (outbound.coords.length > 1) {
+    appendDemoDirectionCoords(coords, [...outbound.coords].reverse(), 'inbound');
+  }
   return {
-    coords: outbound.coords,
-    format: outbound.format,
+    coords,
+    format: inbound.coords.length > 1 ? `${outbound.format}+inbound:${inbound.format}` : `${outbound.format}+reverse`,
     outboundCount: outbound.coords.length,
     inboundCount: inbound.coords.length,
     hasInbound: inbound.coords.length > 1,
@@ -2523,6 +2560,7 @@ async function startDemoFleet(options = {}) {
   ]);
   const routes = routesSnap.val() || {};
   const config = configSnap.val() || {};
+  _demoSpeedMultiplier = clampDemoSpeedMultiplier(config.demoSpeed ?? _demoSpeedMultiplier);
   const preferredRouteId = String(options.routeId || config.demoRouteId || '').trim();
   console.log(`[DEMO] startDemoFleet demoRouteIdConfig=${config.demoRouteId || '-'} requested=${preferredRouteId || '-'} assumption=routes is object keyed by routeId; coords may be [lat,lng] or {lat,lng}`);
   const selected = findDemoRouteWithCoords(routes, preferredRouteId);
@@ -2533,7 +2571,7 @@ async function startDemoFleet(options = {}) {
     _demoRouteCoordSource = 'firebase';
     _demoRouteId = routeId;
   } else {
-    const fallback = normalizeDemoRouteCoords(DEMO_FALLBACK_COORDS);
+    const fallback = buildDemoRoutePath({ coords: DEMO_FALLBACK_COORDS });
     demoRouteCoords = fallback.coords;
     _demoRouteCoordFormat = fallback.format;
     _demoRouteCoordSource = 'fallback';
@@ -2562,13 +2600,14 @@ app.post('/api/demo/start', authMiddleware, async (req,res)=>{
 });
 
 app.post('/api/demo/speed', authMiddleware, async (req,res)=>{
-  const speed=parseFloat(req.body.speed);
-  if(!isNaN(speed)&&speed>0&&speed<=10){
+  const requestedSpeed = parseFloat(req.body.speed);
+  if(!isNaN(requestedSpeed)&&requestedSpeed>0&&requestedSpeed<=DEMO_SPEED_MULTIPLIER_MAX){
+    const speed = clampDemoSpeedMultiplier(requestedSpeed);
     _demoSpeedMultiplier=speed;
     await db.ref('system/config').update({demoSpeed:speed,updatedAt:Date.now()});
     return res.json({ok:true,speed});
   }
-  res.status(400).json({error:'Invalid speed'});
+  res.status(400).json({error:`Invalid speed; use ${DEMO_SPEED_MULTIPLIER_MIN}-${DEMO_SPEED_MULTIPLIER_MAX}x`});
 });
 
 app.post('/api/demo/stop', authMiddleware, async (req,res)=>{
@@ -2590,6 +2629,7 @@ app.get('/api/demo/status', async (req,res)=>{
       coords: demoRouteCoords.length,
       coordFormat: _demoRouteCoordFormat,
       coordSource: _demoRouteCoordSource,
+      demoSpeed: _demoSpeedMultiplier,
       lastTickAt: _demoLastTickAt,
       lastTickAgeMs: _demoLastTickAt ? Date.now() - _demoLastTickAt : null,
       lastError: _demoLastError,
@@ -2615,6 +2655,8 @@ app.get('/api/demo/debug', async (_req, res) => {
         lat: Number.isFinite(Number(current.lat)) ? Number(current.lat) : null,
         lng: Number.isFinite(Number(current.lng)) ? Number(current.lng) : null,
         coordIndex: memory?.coordIndex ?? null,
+        distanceM: Number.isFinite(Number(memory?.distanceM)) ? Number(memory.distanceM.toFixed(1)) : null,
+        speed: Number.isFinite(Number(current.speed)) ? Number(current.speed) : null,
         direction: memory?.direction ?? null,
         forward: memory?.forward ?? null,
       };

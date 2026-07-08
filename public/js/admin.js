@@ -43,6 +43,7 @@ function onConfigChanged(cfg) {
 function applyConfigToUI(cfg) {
   _demoRunning      = cfg.demoMode;
   _demoVehicleCount = cfg.demoVehicles ?? 2;
+  const demoSpeed = Math.max(0.5, Math.min(2, Number(cfg.demoSpeed || 1)));
 
   document.getElementById('vcc-num').textContent          = _demoVehicleCount;
   document.getElementById('cfg-route').value              = cfg.routeName      ?? '';
@@ -54,6 +55,9 @@ function applyConfigToUI(cfg) {
   if (document.getElementById('cfg-ground-label')) document.getElementById('cfg-ground-label').value = ground.label || 'สถานีภาคพื้น';
   if (document.getElementById('cfg-ground-lat')) document.getElementById('cfg-ground-lat').value = ground.lat ?? 8.4304;
   if (document.getElementById('cfg-ground-lng')) document.getElementById('cfg-ground-lng').value = ground.lng ?? 99.9631;
+
+  if (document.getElementById('demo-speed-range')) document.getElementById('demo-speed-range').value = demoSpeed;
+  if (document.getElementById('demo-speed-val')) document.getElementById('demo-speed-val').textContent = demoSpeed.toFixed(1);
 
   const light     = document.getElementById('demo-light');
   const title     = document.getElementById('demo-state-title');
@@ -103,7 +107,7 @@ async function refreshDemoStatus() {
   const response = await fetch('/api/demo/status');
   if (!response.ok) throw new Error('Unable to read demo status');
   const status = await response.json();
-  const config = { ...window.SYS, demoMode: status.demoMode === true };
+  const config = { ...window.SYS, demoMode: status.demoMode === true, demoSpeed: status.demoSpeed ?? window.SYS?.demoSpeed ?? 1 };
   Object.assign(window.SYS, config);
   applyConfigToUI(config);
   return status;
@@ -147,6 +151,8 @@ async function changeDemoSpeed(speed) {
     });
     const r = response ? await response.json() : {};
     if (r.ok) {
+      Object.assign(window.SYS, { demoSpeed: r.speed });
+      applyConfigToUI(window.SYS);
       addLog('info', `ปรับความเร็วรถจำลองเป็น ${speed}x`);
     } else {
       addLog('err', `ล้มเหลว: ${r.error}`);
