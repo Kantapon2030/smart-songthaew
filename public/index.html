@@ -275,26 +275,21 @@
        Tablet / Mobile Responsive
     ──────────────────────────────────── */
     @media (max-width: 860px) {
-      /* Sidebar becomes bottom sheet */
       .journey-sidebar {
         position: fixed;
-        top: auto;
-        left: 0;
-        right: 0;
-        bottom: 56px; /* sit above mobile bottom-nav */
-        width: 100%;
-        max-width: 100%;
-        max-height: 34dvh;
-        border-radius: 12px 12px 0 0;
-        border-bottom: none;
-        padding: 5px 10px 10px;
+        top: 86px;
+        left: 8px;
+        right: 8px;
+        bottom: auto;
+        width: auto;
+        max-width: none;
+        max-height: 210px;
+        border-radius: 12px;
+        padding: 7px 10px 9px;
       }
 
       .sidebar-handle {
-        display: block;
-        width: 32px;
-        height: 3px;
-        margin-bottom: 8px;
+        display: none;
       }
 
       .journey-title {
@@ -302,9 +297,14 @@
         margin-bottom: 6px;
       }
 
+      .journey-sidebar .button {
+        padding-inline: 8px;
+      }
+
       .route-control-row {
+        grid-template-columns: 1fr auto;
         gap: 6px;
-        margin-bottom: 7px;
+        margin-bottom: 6px;
       }
 
       .direction-row,
@@ -329,14 +329,21 @@
         text-overflow: ellipsis;
       }
 
+      .search-row,
+      .section-label,
+      .recommended-list,
+      .vibe-sidebar-banner {
+        display: none;
+      }
+
       .vehicle-card {
         top: auto;
         right: 8px;
         left: 8px;
-        bottom: calc(34dvh + 56px + 8px);
+        bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 8px);
         width: auto;
         max-width: 100%;
-        max-height: 118px;
+        max-height: 176px;
         overflow: hidden;
       }
 
@@ -409,7 +416,7 @@
 
       #mesh-toggle-wrap {
         right: 8px;
-        bottom: calc(34dvh + 56px + 72px);
+        bottom: calc(56px + env(safe-area-inset-bottom, 0px) + 188px);
       }
 
       .popular-grid {
@@ -420,6 +427,10 @@
         grid-template-columns: repeat(2, 1fr);
       }
 
+      .popular-grid {
+        display: none;
+      }
+
       .location-control-row .button,
       .route-control-row .button,
       .search-control,
@@ -427,6 +438,10 @@
       .segmented button {
         min-height: 32px;
         font-size: 11px;
+      }
+
+      .route-control-row .select-control {
+        min-width: 0;
       }
     }
 
