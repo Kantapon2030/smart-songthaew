@@ -508,7 +508,8 @@ function selectedNodeTelemetryRows(node) {
     ['Selected vehicle', node.plate || node.vehicle_id || node.id],
     ['Vehicle ID', node.vehicle_id || node.id],
     ['Speed', formatSpeedKmh(node.speed)],
-    ['Battery', node.battery != null ? `${node.battery}%` : '--'],
+    ['Battery', formatNodeBattery(node)],
+    ['Battery raw', formatNodeBatteryRaw(node)],
     ['GPS quality', gps],
     ['RSSI / SNR', [formatMetric(node.received_rssi ?? node.rssi, ' dBm'), formatMetric(node.received_snr ?? node.snr, ' dB')].filter(value => value !== '--').join(' / ') || '--'],
     ['Link quality', node.link_quality != null ? `${node.link_quality}%` : '--'],
@@ -523,6 +524,24 @@ function selectedNodeTelemetryRows(node) {
 function formatMetric(value, suffix = '') {
   const number = Number(value);
   return Number.isFinite(number) ? `${number}${suffix}` : '--';
+}
+
+function formatNodeBattery(node) {
+  const battery = Number(node?.battery);
+  if (!Number.isFinite(battery)) return '--';
+  const voltage = Number(node?.battVoltage);
+  const parts = [`${battery.toFixed(Number.isInteger(battery) ? 0 : 1)}%`];
+  if (Number.isFinite(voltage)) parts.push(`${voltage} mV`);
+  return parts.join(' / ');
+}
+
+function formatNodeBatteryRaw(node) {
+  const raw = Number(node?.batteryRaw);
+  const a0Voltage = Number(node?.a0Voltage);
+  const parts = [];
+  if (Number.isFinite(raw)) parts.push(`raw ${raw}`);
+  if (Number.isFinite(a0Voltage)) parts.push(`A0 ${a0Voltage.toFixed(3)}V`);
+  return parts.length ? parts.join(' / ') : '--';
 }
 
 function formatNodePower(node) {

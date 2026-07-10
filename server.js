@@ -1112,7 +1112,7 @@ function telemetryTimestampMs(data = {}) {
   return Number.isFinite(receivedAt) && receivedAt > 0 ? receivedAt * 1000 : 0;
 }
 
-function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, demoMode) {
+function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, demoMode, batteryCalibration = {}) {
   const lat = parseFloat(data.lat);
   const lng = parseFloat(data.lng);
   const gpsFix = hasValidGpsFix(data);
@@ -1125,6 +1125,10 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
   const hop = isOnline && typeof data.hop === 'number' ? data.hop : null;
   const relayFrom = isOnline ? (data.relay_from || null) : null;
   const relayChain = isOnline && Array.isArray(data.relay_chain) ? data.relay_chain : [];
+  const batteryCalc = calculateBatteryFromRaw(
+    data.batteryRaw ?? data.a0Raw ?? data.rawA0 ?? data.a0,
+    batteryCalibration
+  );
   const node = {
     id: vehicleId,
     type: 'vehicle',
@@ -1140,7 +1144,7 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     direction: data.direction || 'unknown',
     hop,
     last_seen: lastSeen,
-    battery: typeof data.battery === 'number' ? data.battery : null,
+    battery: batteryCalc ? batteryCalc.battery : typeof data.battery === 'number' ? data.battery : null,
     speed: typeof data.speed === 'number' ? data.speed : null,
     relay_from: relayFrom,
     relay_chain: relayChain,
@@ -1152,7 +1156,9 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     ttl: typeof data.ttl === 'number' ? data.ttl : null,
     store_forward: data.store_forward === true,
     version_summary: Array.isArray(data.version_summary) ? data.version_summary : [],
-    battVoltage: typeof data.battVoltage === 'number' ? data.battVoltage : null,
+    battVoltage: batteryCalc ? batteryCalc.battVoltage : typeof data.battVoltage === 'number' ? data.battVoltage : null,
+    batteryRaw: batteryCalc ? batteryCalc.raw : typeof data.batteryRaw === 'number' ? data.batteryRaw : null,
+    a0Voltage: batteryCalc ? batteryCalc.a0Voltage : typeof data.a0Voltage === 'number' ? data.a0Voltage : null,
     currentMa: typeof data.currentMa === 'number' ? data.currentMa : null,
     powerMw: typeof data.powerMw === 'number' ? data.powerMw : null,
     txCount: typeof data.txCount === 'number' ? data.txCount : null,
@@ -3218,7 +3224,14 @@ app.get('/api/v1/network', async (req, res) => {
     const offlineTimeoutMs = Math.max(90, Number(sysConfig.offlineTimeout) || 90) * 1000;
     const nodes = Object.entries(fleetData)
       .filter(([vehicleId, vehicleData]) => demoMode || !isDemoVehicle(vehicleId, vehicleData))
-      .map(([vehicleId, vehicleData]) => normalizeNetworkNode(vehicleId, vehicleData.current || {}, vehicleData, offlineTimeoutMs, demoMode))
+      .map(([vehicleId, vehicleData]) => normalizeNetworkNode(
+        vehicleId,
+        vehicleData.current || {},
+        vehicleData,
+        offlineTimeoutMs,
+        demoMode,
+        sysConfig.batteryCalibration || {}
+      ))
       .filter(node => {
         if (demoMode && node.demo) {
           console.log(`[demo] including demo vehicle ${node.id}`);
