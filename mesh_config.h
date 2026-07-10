@@ -54,10 +54,13 @@
 #define BAT_PIN         A0
 #define BAT_R1          330000.0
 #define BAT_R2          82000.0
-#define BAT_VCC         3.3
-#define BAT_DIVIDER_RATIO 6.8833  // Calibrated: 4.13V battery -> 0.60V at A0
+#define BAT_ADC_REF_V   3.3     // NodeMCU/LOLIN A0 pin scale; 0.63V is measured at the board A0 pin
+#define BAT_DIVIDER_RATIO 6.6508  // Calibrated: 4.19V battery -> 0.63V at A0
 #define BAT_EMPTY_V     3.30
-#define BAT_FULL_V      4.13
+#define BAT_FULL_V      4.19
+#define BAT_SAMPLE_COUNT 15
+#define BAT_SAMPLE_DELAY_MS 2
+#define BAT_FILTER_ALPHA 0.15f
 
 // TDMA and timing
 #define TX_INTERVAL_MS        5000UL

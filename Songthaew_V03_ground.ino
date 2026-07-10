@@ -72,6 +72,8 @@ unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
 String lastHttpResponse = "";
 bool ledPulseActive = false;
+uint8_t consecutiveHttpFailures = 0;
+unsigned long lastForcedWifiReconnectMs = 0;
 
 bool isVehiclePacket(JsonDocument& doc) {
   const char* type = doc["type"] | "";
@@ -81,6 +83,18 @@ bool isVehiclePacket(JsonDocument& doc) {
 
 bool isValidThailandCoord(float lat, float lng);
 int postToServer(String body);
+
+void forceWifiReconnect(const char* reason) {
+  unsigned long now = millis();
+  if (now - lastForcedWifiReconnectMs < 10000UL && lastForcedWifiReconnectMs != 0) return;
+  lastForcedWifiReconnectMs = now;
+  wifiConnected = false;
+  Serial.printf("[WiFi] force reconnect reason:%s status:%d failures:%u\n",
+                reason ? reason : "unknown", WiFi.status(), consecutiveHttpFailures);
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+}
 
 void beginLedPulse(unsigned long durationMs) {
   ledPulseActive = true;
@@ -267,6 +281,8 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   }
   out["speed"] = compact["sp"] | 0;
   out["battery"] = compact["bt"] | -1;
+  out["battVoltage"] = compact["bv"] | -1;
+  out["batteryRaw"] = compact["ar"] | -1;
   out["hop"] = compact["hp"] | 0;
   out["packet_id"] = packetId;
   out["packet_hash"] = packetHash;
@@ -446,12 +462,14 @@ int postToServer(String body) {
   unsigned long started = millis();
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(8000);
 
   HTTPClient http;
   int code = -1;
   if (http.begin(client, SERVER_URL)) {
     http.addHeader("Content-Type", "application/json");
     http.setTimeout(8000);
+    http.setReuse(false);
     code = http.POST(body);
     lastHttpResponse = http.getString();
     http.end();
@@ -463,7 +481,15 @@ int postToServer(String body) {
     Serial.print("[HTTP_BODY] ");
     Serial.println(lastHttpResponse.substring(0, 180));
   }
-  if (code < 200 || code >= 300) Serial.printf("[POST] fail code:%d\n", code);
+  if (code >= 200 && code < 300) {
+    consecutiveHttpFailures = 0;
+  } else {
+    if (consecutiveHttpFailures < 255) consecutiveHttpFailures++;
+    Serial.printf("[POST] fail code:%d failures:%u\n", code, consecutiveHttpFailures);
+    if (code < 0 || consecutiveHttpFailures >= 3) {
+      forceWifiReconnect(code < 0 ? "http_negative" : "http_failures");
+    }
+  }
   return code;
 }
 
@@ -495,7 +521,10 @@ void serviceWiFi() {
   lastWifiCheckMs = now;
 
   wifiConnected = WiFi.status() == WL_CONNECTED;
-  if (wifiConnected) return;
+  if (wifiConnected) {
+    consecutiveHttpFailures = 0;
+    return;
+  }
 
   Serial.println("[WiFi] reconnecting");
   WiFi.disconnect();
@@ -617,6 +646,8 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   }
   out["speed"] = rx["spd"] | 0.0f;
   out["battery"] = rx["bat"] | -1;
+  out["battVoltage"] = rx["bv"] | -1;
+  out["batteryRaw"] = rx["ar"] | -1;
   out["routeId"] = rx["rid"] | ROUTE_ID;
   out["route_id"] = rx["rid"] | ROUTE_ID;
   out["direction"] = rx["dir"] | ROUTE_DIR;
@@ -657,10 +688,13 @@ void printReceiveLog(JsonDocument& rx, float rssi, float snr, int code) {
   float lng = rx["lng"] | 0.0f;
   float spd = rx["spd"] | 0.0f;
   int bat = rx["bat"] | -1;
+  int battVoltage = rx["bv"] | -1;
+  int batteryRaw = rx["ar"] | -1;
 
   Serial.println("--------------------");
   Serial.printf("[RX] %s | hop:%d | rssi:%.0f | snr:%.1f\n", vid, hop, rssi, snr);
-  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%%\n", lat, lng, spd, bat);
+  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%% | vbat:%dmV | a0:%d\n",
+                lat, lng, spd, bat, battVoltage, batteryRaw);
   if (code >= 200 && code < 300) {
     Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
   } else if (code >= 400 && code < 500) {
@@ -678,12 +712,15 @@ void printPostLog(JsonDocument& post, int code) {
   float lng = post["lng"] | 0.0f;
   float spd = post["speed"] | 0.0f;
   int bat = post["battery"] | -1;
+  int battVoltage = post["battVoltage"] | -1;
+  int batteryRaw = post["batteryRaw"] | -1;
   float rssi = post["received_rssi"] | 0.0f;
   float snr = post["received_snr"] | 0.0f;
 
   Serial.println("--------------------");
   Serial.printf("[RX] %s | hop:%d | rssi:%.0f | snr:%.1f\n", vid, hop, rssi, snr);
-  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%%\n", lat, lng, spd, bat);
+  Serial.printf("lat:%.6f lng:%.6f | spd:%.1fkm/h | bat:%d%% | vbat:%dmV | a0:%d\n",
+                lat, lng, spd, bat, battVoltage, batteryRaw);
   if (code >= 200 && code < 300) {
     Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
   } else if (code >= 400 && code < 500) {

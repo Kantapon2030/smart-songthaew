@@ -679,7 +679,7 @@ void buildVersionSummaryCompact(char* out, size_t outSize) {
 
 bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packetSeq,
                        const char* packetBootId, uint32_t packetGpsTs,
-                       float lat, float lng, float speed, int heading, int battery,
+                       float lat, float lng, float speed, int heading, int batteryRaw,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
                        const char* relayChain, bool gpsFix, char* payload, size_t payloadSize) {
@@ -701,7 +701,7 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
     doc["ln"] = serialized(lngText);
   }
   doc["sp"] = (int)round(speed);
-  doc["bt"] = battery;
+  doc["ar"] = batteryRaw;
   doc["hp"] = hop;
   char packetHash[7];
   packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
@@ -982,10 +982,13 @@ bool sendJson(JsonDocument& doc) {
   return sendRawPayload(payload);
 }
 
-float readBatteryVoltage() {
-  int raw = analogRead(BAT_PIN);
-  float vOut = (raw / 1023.0f) * BAT_VCC;
+float batteryVoltageFromRaw(int raw) {
+  float vOut = (raw / 1023.0f) * BAT_ADC_REF_V;
   return vOut * BAT_DIVIDER_RATIO;
+}
+
+float readBatteryVoltage() {
+  return batteryVoltageFromRaw(analogRead(BAT_PIN));
 }
 
 float batteryPercentFromVoltage(float vBat) {
@@ -999,8 +1002,8 @@ float readBattery() {
 
 void printBatteryStatus() {
   int raw = analogRead(BAT_PIN);
-  float vOut = (raw / 1023.0f) * BAT_VCC;
-  float vBat = vOut * BAT_DIVIDER_RATIO;
+  float vOut = (raw / 1023.0f) * BAT_ADC_REF_V;
+  float vBat = batteryVoltageFromRaw(raw);
   float percent = batteryPercentFromVoltage(vBat);
   Serial.printf("[BAT] raw:%d vout:%.2fV vbat:%.2fV percent:%.0f%%\n",
                 raw, vOut, vBat, percent);
@@ -1033,29 +1036,28 @@ void transmitPacket(const char* txMode = "auto") {
   int hop = direct ? 0 : (relay ? constrain(relay->hop + 1, 1, MAX_HOPS) : 0);
   float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
   float bestSnr = direct ? ground->snr : (relay ? relay->snr : 0.0f);
-  float batteryVoltage = readBatteryVoltage();
-  int battery = (int)round(batteryPercentFromVoltage(batteryVoltage));
+  int batteryRaw = analogRead(BAT_PIN);
 
   seq++;
   char packetId[40];
   buildPacketId(packetId, sizeof(packetId));
   markSeen(packetId);
 
-  updateOwnSharedState(packetId, battery, hop);
+  updateOwnSharedState(packetId, -1, hop);
 
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
   bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
                                gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
-                               gpsSpeed, (int)gpsHeading, battery, hop, MAX_HOPS - hop,
+                               gpsSpeed, (int)gpsHeading, batteryRaw, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
                                !hasRoute, "", gpsValid, payload, sizeof(payload));
 
   bool sent = built && sendRawPayload(payload);
   if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
   if (hasRoute) flushCarryBuffer();
-  Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f bat:%d%% %.2fV %s\n",
+  Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f a0:%d %s\n",
                 VEHICLE_ID, txMode, hop, strlen(payload), bestRssi,
-                battery, batteryVoltage, sent ? "sent" : "failed");
+                batteryRaw, sent ? "sent" : "failed");
 }
 
 bool wouldCreateLoop(JsonVariantConst relayChain, const char* myId) {
@@ -1166,7 +1168,7 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   buildRelayChainCompactFromDoc(doc, relayChain, sizeof(relayChain));
   bool built = buildLoRaPacket(vehicleId, packetId, doc["seq"] | 0UL, packetBootId,
                                doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
-                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["bat"] | -1,
+                               doc["spd"] | 0.0f, doc["hdg"] | 0, doc["ar"] | -1,
                                hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
                                VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
                                doc["fix"] | false, payload, sizeof(payload));
@@ -1232,6 +1234,8 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["spd"] = compact["sp"] | 0;
   expanded["hdg"] = compact["hd"] | 0;
   expanded["bat"] = compact["bt"] | -1;
+  expanded["bv"] = compact["bv"] | -1;
+  expanded["ar"] = compact["ar"] | -1;
   expanded["hop"] = compact["hp"] | 0;
   expanded["ttl"] = compact["tt"] | (MAX_HOPS - (int)(compact["hp"] | 0));
   expanded["lq"] = compact["lq"] | 0;

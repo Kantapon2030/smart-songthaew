@@ -33,6 +33,7 @@ window.SYS = {
   offlineTimeout: 90,
   announcement: '',
   groundStation: { id: 'GROUND_01', label: 'Ground Station', lat: 8.4304, lng: 99.9631 },
+  batteryCalibration: { adcMax: 1023, adcRefV: 3.3, dividerRatio: 6.6508, emptyVoltage: 3.30, fullVoltage: 4.19 },
   updatedAt: null,
 };
 
@@ -204,6 +205,8 @@ function normalizeLegacyVehicle(id, entry = {}, now = Date.now() / 1000) {
     seats_available: current.seats_available,
     seat_count: current.seat_count,
     battVoltage: current.battVoltage,
+    batteryRaw: current.batteryRaw,
+    a0Voltage: current.a0Voltage,
     currentMa: current.currentMa,
     powerMw: current.powerMw,
     txCount: current.txCount,

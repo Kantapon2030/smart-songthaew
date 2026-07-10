@@ -193,6 +193,72 @@
     .admin-tab-panel.active { display: block; }
     .admin-grid-panel.active { display: contents; }
 
+    .battery-cal-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .battery-preview-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .battery-preview-tile {
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--slate-50);
+    }
+
+    .battery-preview-label {
+      font-size: 10px;
+      font-weight: 800;
+      color: var(--slate-400);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .battery-preview-value {
+      margin-top: 5px;
+      font-family: var(--mono);
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--slate-800);
+    }
+
+    .battery-recommendations {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .battery-recommendation {
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 10px;
+      background: white;
+      font-size: 12px;
+      color: var(--slate-600);
+    }
+
+    .battery-note {
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 8px;
+      background: var(--amber-50);
+      color: #92400E;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 800px) {
+      .battery-cal-grid,
+      .battery-preview-grid { grid-template-columns: 1fr; }
+    }
+
     /* ── Speed / twin info ── */
     .twin-info-row {
       display: flex;
@@ -813,6 +879,7 @@
   ════════════════════════════ -->
   <div class="admin-tabs" role="tablist" aria-label="Admin sections">
     <button class="admin-tab-btn active" type="button" data-tab="overview" onclick="switchTab('overview')">Dashboard</button>
+    <button class="admin-tab-btn" type="button" data-tab="battery" onclick="switchTab('battery')">แบตเตอรี่</button>
     <button class="admin-tab-btn" type="button" data-tab="firmware" onclick="switchTab('firmware')">Firmware</button>
     <button class="admin-tab-btn" type="button" data-tab="history" onclick="switchTab('history')">ประวัติรถ</button>
     <a class="admin-tab-btn" href="/fieldtest.html" style="text-decoration:none;">Field Test</a>
@@ -1046,6 +1113,82 @@
 
   </div><!-- /admin-tab-overview -->
 
+  <div class="admin-tab-panel" id="admin-tab-battery">
+    <div class="card admin-card-full">
+      <div class="admin-card-head">
+        <div>
+          <div class="admin-card-title">ตั้งค่าคำนวณแบตเตอรี่จาก A0</div>
+          <div class="admin-card-sub">รถส่งค่า raw A0 ขึ้นมา แล้ว server คำนวณเปอร์เซ็นต์ให้ทุกหน้า</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="admin-btn admin-btn-outline" type="button" onclick="loadBatteryRecommendations()">รีเฟรชค่าแนะนำ</button>
+          <button class="admin-btn admin-btn-primary" type="button" onclick="saveBatteryCalibration()">บันทึก</button>
+        </div>
+      </div>
+      <div class="admin-card-body">
+        <div class="battery-cal-grid">
+          <div class="admin-form-row">
+            <label class="admin-label">ADC Max</label>
+            <input class="admin-input" type="number" min="1" max="4095" step="1" id="cfg-bat-adc-max" value="1023" oninput="updateBatteryPreview()"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">A0 Reference Voltage</label>
+            <input class="admin-input" type="number" min="0.1" max="5.5" step="0.001" id="cfg-bat-adc-ref" value="3.3" oninput="updateBatteryPreview()"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Divider Ratio</label>
+            <input class="admin-input" type="number" min="0.1" max="100" step="0.0001" id="cfg-bat-divider" value="6.6508" oninput="updateBatteryPreview()"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Test Raw A0</label>
+            <input class="admin-input" type="number" min="0" max="4095" step="1" id="cfg-bat-test-raw" value="195" oninput="updateBatteryPreview()"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Empty Voltage</label>
+            <input class="admin-input" type="number" min="0" max="20" step="0.01" id="cfg-bat-empty" value="3.30" oninput="updateBatteryPreview()"/>
+          </div>
+          <div class="admin-form-row">
+            <label class="admin-label">Full Voltage</label>
+            <input class="admin-input" type="number" min="0" max="20" step="0.01" id="cfg-bat-full" value="4.19" oninput="updateBatteryPreview()"/>
+          </div>
+        </div>
+
+        <div class="battery-preview-grid" id="battery-preview">
+          <div class="battery-preview-tile">
+            <div class="battery-preview-label">Raw A0</div>
+            <div class="battery-preview-value" id="bat-preview-raw">-</div>
+          </div>
+          <div class="battery-preview-tile">
+            <div class="battery-preview-label">A0 Voltage</div>
+            <div class="battery-preview-value" id="bat-preview-a0">-</div>
+          </div>
+          <div class="battery-preview-tile">
+            <div class="battery-preview-label">Battery Voltage</div>
+            <div class="battery-preview-value" id="bat-preview-vbat">-</div>
+          </div>
+          <div class="battery-preview-tile">
+            <div class="battery-preview-label">User Display</div>
+            <div class="battery-preview-value" id="bat-preview-pct">-</div>
+          </div>
+        </div>
+
+        <div class="battery-note">
+          ค่าเริ่มต้นตั้งตามที่จูนไว้: แบตเต็ม 4.19V และวัดที่ขา A0 ได้ประมาณ 0.63V.
+          ถ้าตอนนี้แบตเต็ม ให้ดูค่า raw ล่าสุดด้านล่างแล้วใช้ค่าแนะนำ Divider Ratio เฉลี่ยได้เลย
+          จากนั้นค่าที่ผู้ใช้เห็นจะถูกคำนวณที่เว็บ ไม่ต้องอัปโค้ดรถใหม่ทุกครั้งที่จูน.
+        </div>
+
+        <div style="margin-top:14px;">
+          <div class="admin-card-title">ค่าแนะนำจากรถล่าสุด</div>
+          <div class="admin-card-sub">คำนวณจาก batteryRaw ของแต่ละคัน โดยสมมติว่าแบตอยู่ที่ Full Voltage ที่ตั้งไว้</div>
+          <div class="battery-recommendations" id="battery-recommendations">
+            <div class="battery-recommendation">ยังไม่มีข้อมูล raw A0 จากรถ</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /admin-tab-battery -->
+
   <div class="admin-tab-panel" id="admin-tab-firmware">
     <div class="firmware-panel">
       <div class="card admin-card-full">
@@ -1239,6 +1382,10 @@
     if (tab === 'history') {
       const frame = document.querySelector('.admin-history-frame');
       if (frame && frame.getAttribute('src') !== historyFrameSrc()) frame.setAttribute('src', historyFrameSrc());
+    }
+    if (tab === 'battery' && typeof loadBatteryRecommendations === 'function') {
+      loadBatteryRecommendations();
+      updateBatteryPreview();
     }
   }
 

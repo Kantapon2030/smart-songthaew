@@ -56,6 +56,8 @@ function applyConfigToUI(cfg) {
   if (document.getElementById('cfg-ground-lat')) document.getElementById('cfg-ground-lat').value = ground.lat ?? 8.4304;
   if (document.getElementById('cfg-ground-lng')) document.getElementById('cfg-ground-lng').value = ground.lng ?? 99.9631;
 
+  applyBatteryCalibrationToUI(cfg.batteryCalibration || {});
+
   if (document.getElementById('demo-speed-range')) document.getElementById('demo-speed-range').value = demoSpeed;
   if (document.getElementById('demo-speed-val')) document.getElementById('demo-speed-val').textContent = demoSpeed.toFixed(1);
 
@@ -177,6 +179,166 @@ async function saveConfig() {
     showToast();
     syncConfig();
   } catch (e) { addLog('err', e.message); }
+}
+
+function defaultBatteryCalibration() {
+  return {
+    adcMax: 1023,
+    adcRefV: 3.3,
+    dividerRatio: 6.6508,
+    emptyVoltage: 3.30,
+    fullVoltage: 4.19,
+  };
+}
+
+function numberOrDefault(value, fallback, min = -Infinity, max = Infinity) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
+
+function normalizeBatteryCalibrationClient(input = {}) {
+  const defaults = defaultBatteryCalibration();
+  const cfg = {
+    adcMax: numberOrDefault(input.adcMax, defaults.adcMax, 1, 4095),
+    adcRefV: numberOrDefault(input.adcRefV, defaults.adcRefV, 0.1, 5.5),
+    dividerRatio: numberOrDefault(input.dividerRatio, defaults.dividerRatio, 0.1, 100),
+    emptyVoltage: numberOrDefault(input.emptyVoltage, defaults.emptyVoltage, 0, 20),
+    fullVoltage: numberOrDefault(input.fullVoltage, defaults.fullVoltage, 0, 20),
+  };
+  if (cfg.fullVoltage <= cfg.emptyVoltage) {
+    cfg.emptyVoltage = defaults.emptyVoltage;
+    cfg.fullVoltage = defaults.fullVoltage;
+  }
+  return cfg;
+}
+
+function batteryFromRawClient(rawValue, input = {}) {
+  const raw = Number(rawValue);
+  if (!Number.isFinite(raw) || raw < 0) return null;
+  const cfg = normalizeBatteryCalibrationClient(input);
+  const a0Voltage = raw / cfg.adcMax * cfg.adcRefV;
+  const batteryVoltage = a0Voltage * cfg.dividerRatio;
+  const percent = (batteryVoltage - cfg.emptyVoltage) * 100 / (cfg.fullVoltage - cfg.emptyVoltage);
+  return {
+    raw: Math.round(raw),
+    a0Voltage,
+    battVoltage: batteryVoltage,
+    battery: Math.min(100, Math.max(0, percent)),
+  };
+}
+
+function setBatteryInputValue(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.value = value;
+}
+
+function applyBatteryCalibrationToUI(input = {}) {
+  const cfg = normalizeBatteryCalibrationClient(input);
+  setBatteryInputValue('cfg-bat-adc-max', cfg.adcMax);
+  setBatteryInputValue('cfg-bat-adc-ref', cfg.adcRefV);
+  setBatteryInputValue('cfg-bat-divider', cfg.dividerRatio);
+  setBatteryInputValue('cfg-bat-empty', cfg.emptyVoltage);
+  setBatteryInputValue('cfg-bat-full', cfg.fullVoltage);
+  updateBatteryPreview();
+}
+
+function readBatteryCalibrationForm() {
+  return normalizeBatteryCalibrationClient({
+    adcMax: document.getElementById('cfg-bat-adc-max')?.value,
+    adcRefV: document.getElementById('cfg-bat-adc-ref')?.value,
+    dividerRatio: document.getElementById('cfg-bat-divider')?.value,
+    emptyVoltage: document.getElementById('cfg-bat-empty')?.value,
+    fullVoltage: document.getElementById('cfg-bat-full')?.value,
+  });
+}
+
+function updateBatteryPreview() {
+  if (!document.getElementById('bat-preview-raw')) return;
+  const cfg = readBatteryCalibrationForm();
+  const raw = document.getElementById('cfg-bat-test-raw')?.value ?? 0;
+  const calc = batteryFromRawClient(raw, cfg);
+  document.getElementById('bat-preview-raw').textContent = calc ? String(calc.raw) : '-';
+  document.getElementById('bat-preview-a0').textContent = calc ? `${calc.a0Voltage.toFixed(3)}V` : '-';
+  document.getElementById('bat-preview-vbat').textContent = calc ? `${calc.battVoltage.toFixed(2)}V` : '-';
+  document.getElementById('bat-preview-pct').textContent = calc ? `${calc.battery.toFixed(1)}%` : '-';
+}
+
+async function saveBatteryCalibration() {
+  try {
+    const batteryCalibration = readBatteryCalibrationForm();
+    const res = await authFetch('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ batteryCalibration }),
+    });
+    if (!res) return;
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(body.error || 'Battery calibration save failed');
+    Object.assign(window.SYS, { batteryCalibration });
+    addLog('ok', `Battery calibration saved: divider=${batteryCalibration.dividerRatio}`);
+    showToast('บันทึกค่าแบตเตอรี่แล้ว');
+    updateBatteryPreview();
+    await loadBatteryRecommendations();
+  } catch (e) {
+    addLog('err', e.message);
+    alert(e.message);
+  }
+}
+
+async function loadBatteryRecommendations() {
+  const box = document.getElementById('battery-recommendations');
+  if (!box) return;
+  box.innerHTML = '<div class="battery-recommendation">กำลังอ่านค่า raw A0 ล่าสุด...</div>';
+  try {
+    const res = await authFetch('/api/fleet');
+    if (!res) return;
+    const fleet = await res.json().catch(() => ({}));
+    const cfg = readBatteryCalibrationForm();
+    const rows = Object.entries(fleet || {})
+      .map(([vehicleId, vehicle]) => {
+        const current = vehicle.current || {};
+        const raw = Number(current.batteryRaw ?? current.a0Raw ?? current.rawA0);
+        if (!Number.isFinite(raw) || raw < 0) return null;
+        const calc = batteryFromRawClient(raw, cfg);
+        const a0Voltage = raw / cfg.adcMax * cfg.adcRefV;
+        const suggestedDivider = a0Voltage > 0 ? cfg.fullVoltage / a0Voltage : null;
+        return { vehicleId, raw, calc, suggestedDivider, timestamp: current.timestamp || current.last_seen || 0 };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.vehicleId.localeCompare(b.vehicleId));
+
+    if (!rows.length) {
+      box.innerHTML = '<div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถหลังอัป firmware</div>';
+      return;
+    }
+
+    const dividerValues = rows.map(row => row.suggestedDivider).filter(Number.isFinite);
+    const averageDivider = dividerValues.length
+      ? dividerValues.reduce((sum, value) => sum + value, 0) / dividerValues.length
+      : null;
+    const averageHtml = averageDivider
+      ? `<div class="battery-recommendation"><strong>แนะนำตอนแบตเต็ม:</strong> ใช้ Divider Ratio เฉลี่ย <code>${averageDivider.toFixed(4)}</code> จาก ${dividerValues.length} คัน แล้วกดบันทึก</div>`
+      : '';
+
+    box.innerHTML = averageHtml + rows.map(row => {
+      const age = row.timestamp ? new Date(Number(row.timestamp) > 10_000_000_000 ? Number(row.timestamp) : Number(row.timestamp) * 1000).toLocaleString('th-TH') : '-';
+      const dividerText = Number.isFinite(row.suggestedDivider) ? row.suggestedDivider.toFixed(4) : '-';
+      return `
+        <div class="battery-recommendation">
+          <strong>${escapeHtml(row.vehicleId)}</strong>
+          raw=<code>${escapeHtml(row.raw)}</code>,
+          A0=<code>${escapeHtml(row.calc.a0Voltage.toFixed(3))}V</code>,
+          Vbat=<code>${escapeHtml(row.calc.battVoltage.toFixed(2))}V</code>,
+          show=<code>${escapeHtml(row.calc.battery.toFixed(1))}%</code>,
+          suggested divider=<code>${escapeHtml(dividerText)}</code>
+          <div style="margin-top:4px;color:var(--slate-400);font-size:11px;">ล่าสุด: ${escapeHtml(age)}</div>
+        </div>
+      `;
+    }).join('');
+  } catch (e) {
+    box.innerHTML = `<div class="battery-recommendation">โหลดค่าแนะนำไม่สำเร็จ: ${escapeHtml(e.message)}</div>`;
+  }
 }
 
 function readGroundStationForm() {
@@ -729,6 +891,10 @@ async function checkAuth() {
   if (typeof renderSharedNavbar === 'function') {
     renderSharedNavbar({ active: 'admin' });
   }
+  if (typeof syncConfig === 'function') {
+    await syncConfig();
+    applyConfigToUI(window.SYS || {});
+  }
 
   const username = localStorage.getItem('adminUsername') || 'Admin';
   const el = document.getElementById('user-info');
@@ -736,6 +902,7 @@ async function checkAuth() {
 
   loadRoutes();
   loadFleet();
+  loadBatteryRecommendations();
   initDiagnostics();
   refreshStatus();
   refreshDemoStatus().catch(e => addLog('err', e.message));

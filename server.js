@@ -83,6 +83,13 @@ let locationsCache = { key: null, expiresAt: 0, payload: null };
 const LOCATIONS_CACHE_MS = 1000;
 let networkCache = { key: null, expiresAt: 0, payload: null };
 const NETWORK_CACHE_MS = 3000;
+const DEFAULT_BATTERY_CALIBRATION = {
+  adcMax: 1023,
+  adcRefV: 3.3,
+  dividerRatio: 6.6508,
+  emptyVoltage: 3.30,
+  fullVoltage: 4.19,
+};
 
 function clearLocationsCache() {
   locationsCache = { key: null, expiresAt: 0, payload: null };
@@ -98,6 +105,48 @@ function timeoutPromise(promise, timeoutMs, label = 'operation') {
 
 function firebaseKeyPart(value) {
   return String(value || '').replace(/[.#$\/\[\]]/g, '_');
+}
+
+function finiteNumberOrDefault(value, fallback, min = -Infinity, max = Infinity) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.min(max, Math.max(min, num));
+}
+
+function normalizeBatteryCalibrationConfig(input = {}) {
+  const defaults = DEFAULT_BATTERY_CALIBRATION;
+  const adcMax = finiteNumberOrDefault(input.adcMax, defaults.adcMax, 1, 4095);
+  const adcRefV = finiteNumberOrDefault(input.adcRefV, defaults.adcRefV, 0.1, 5.5);
+  const dividerRatio = finiteNumberOrDefault(input.dividerRatio, defaults.dividerRatio, 0.1, 100);
+  let emptyVoltage = finiteNumberOrDefault(input.emptyVoltage, defaults.emptyVoltage, 0, 20);
+  let fullVoltage = finiteNumberOrDefault(input.fullVoltage, defaults.fullVoltage, 0, 20);
+  if (fullVoltage <= emptyVoltage) {
+    emptyVoltage = defaults.emptyVoltage;
+    fullVoltage = defaults.fullVoltage;
+  }
+  return {
+    adcMax,
+    adcRefV,
+    dividerRatio,
+    emptyVoltage,
+    fullVoltage,
+  };
+}
+
+function calculateBatteryFromRaw(rawValue, calibrationInput = {}) {
+  const raw = Number(rawValue);
+  if (!Number.isFinite(raw) || raw < 0) return null;
+  const calibration = normalizeBatteryCalibrationConfig(calibrationInput);
+  const a0Voltage = raw / calibration.adcMax * calibration.adcRefV;
+  const batteryVoltage = a0Voltage * calibration.dividerRatio;
+  const percent = (batteryVoltage - calibration.emptyVoltage) * 100 /
+    (calibration.fullVoltage - calibration.emptyVoltage);
+  return {
+    raw: Math.round(raw),
+    a0Voltage: Number(a0Voltage.toFixed(3)),
+    battVoltage: Math.round(batteryVoltage * 1000),
+    battery: Number(Math.min(100, Math.max(0, percent)).toFixed(1)),
+  };
 }
 
 // ── Auth Middleware ───────────────────────────────────────────────────────────
@@ -441,7 +490,7 @@ function sanitizePlate(value) {
 function normalizeTelemetryFields(current = {}, entry = {}) {
   const out = {};
   const numericFields = [
-    'battVoltage', 'currentMa', 'powerMw', 'txCount', 'sats', 'hdop',
+    'batteryRaw', 'a0Voltage', 'battVoltage', 'currentMa', 'powerMw', 'txCount', 'sats', 'hdop',
     'rssi', 'snr', 'link_quality', 'seq', 'ttl', 'received_rssi',
     'received_snr', 'heading', 'bearing'
   ];
@@ -1316,6 +1365,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const source = req.body.source || 'vehicle';
   const received_rssi = typeof req.body.received_rssi === 'number' ? req.body.received_rssi : null;
   const received_snr = typeof req.body.received_snr === 'number' ? req.body.received_snr : null;
+  const batteryRawInput = req.body.batteryRaw ?? req.body.a0Raw ?? req.body.rawA0 ?? req.body.a0 ?? -1;
 
   const plateValue = sanitizePlate(plate || req.body.license_plate || req.body.licensePlate);
   const headingValue = Number(req.body.heading ?? req.body.bearing);
@@ -1387,14 +1437,19 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   // frontend จะรู้ว่า online อยู่แต่ยังไม่มี GPS fix
 
   const spdF  = parseFloat(speed)  || 0;
-  const batI  = parseInt(battery, 10) ?? -1;
   const ts    = Date.now();
   const lastSeen = Math.floor(ts / 1000);
   const today = todayStr();
   const hour  = new Date().getHours();
 
+  const batteryCalibrationSnap = await db.ref('system/config/batteryCalibration').once('value');
+  const batteryCalc = calculateBatteryFromRaw(batteryRawInput, batteryCalibrationSnap.val() || {});
+
   // Power fields
-  const batVF  = parseFloat(battVoltage) || -1;
+  const incomingBatI = Number(battery);
+  const incomingBatVF = Number(battVoltage);
+  const batI = batteryCalc ? batteryCalc.battery : (Number.isFinite(incomingBatI) ? incomingBatI : -1);
+  const batVF  = batteryCalc ? batteryCalc.battVoltage : (Number.isFinite(incomingBatVF) ? incomingBatVF : -1);
   const currF  = parseFloat(currentMa)   || -1;
   const powF   = parseFloat(powerMw)     || (currF > 0 && batVF > 0 ? parseFloat((currF * batVF / 1000).toFixed(0)) : -1);
   const txI    = parseInt(txCount,   10) || -1;
@@ -1411,6 +1466,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     speed:       hasValidGPS ? parseFloat(spdF.toFixed(1)) : 0,
     battery:     batI,
     battVoltage: batVF,    // mV
+    ...(batteryCalc ? { batteryRaw: batteryCalc.raw, a0Voltage: batteryCalc.a0Voltage } : {}),
     currentMa:   currF,    // mA
     powerMw:     powF,     // mW
     txCount:     txI,
@@ -1488,6 +1544,8 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
             route_id: incomingRouteId || previous?.route_id || previous?.routeId || 'unassigned',
             direction: incomingDirection !== 'unknown' ? incomingDirection : (previous?.direction || 'unknown'),
             battery: batI,
+            battVoltage: batVF,
+            ...(batteryCalc ? { batteryRaw: batteryCalc.raw, a0Voltage: batteryCalc.a0Voltage } : {}),
             speed: 0,
             ...(plateValue ? { plate: plateValue } : {}),
             ...(Number.isFinite(headingValue) ? { heading: headingValue, bearing: headingValue } : {}),
@@ -1531,7 +1589,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
     clearLocationsCache();
 
     const gpsStatus = hasValidGPS ? `${latF},${lngF}` : 'no-fix';
-  console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${incomingDirection}`);
+  console.log(`[GPS] ${vehicleId} | ${gpsStatus} | ${spdF}km/h | bat:${batI}% | ${batVF}mV | raw:${batteryCalc?.raw ?? '-'} | ${currF}mA | sats:${satsI} | hdop:${hdopF} | rssi:${rssiI} | ${incomingDirection}`);
 
     return res.status(200).json({ message: 'Location & Route updated successfully', timestamp: ts });
 
@@ -2116,6 +2174,7 @@ app.get('/api/config', async (req, res) => {
       offlineTimeout: (cfg.offlineTimeout && cfg.offlineTimeout >= 90) ? cfg.offlineTimeout : 90,
       announcement:   cfg.announcement  ?? '',
       groundStation:  normalizeGroundStationConfig(cfg.groundStation),
+      batteryCalibration: normalizeBatteryCalibrationConfig(cfg.batteryCalibration),
       updatedAt:      cfg.updatedAt      ?? null,
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -2133,6 +2192,9 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     if ('groundStation' in req.body) {
       patch.groundStation = normalizeGroundStationConfig(req.body.groundStation);
+    }
+    if ('batteryCalibration' in req.body) {
+      patch.batteryCalibration = normalizeBatteryCalibrationConfig(req.body.batteryCalibration);
     }
     patch.updatedAt = Date.now();
     await db.ref('system/config').update(patch);
