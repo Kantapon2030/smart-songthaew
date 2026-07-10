@@ -28,6 +28,7 @@ let routeMarkers   = [];
 
 let _demoVehicleCount = 1;
 let _demoRunning      = false;
+let batteryLatestRows = [];
 
 // ── Clock ────────────────────────────────────────────────────
 setInterval(() => {
@@ -262,6 +263,53 @@ function updateBatteryPreview() {
   document.getElementById('bat-preview-a0').textContent = calc ? `${calc.a0Voltage.toFixed(3)}V` : '-';
   document.getElementById('bat-preview-vbat').textContent = calc ? `${calc.battVoltage.toFixed(2)}V` : '-';
   document.getElementById('bat-preview-pct').textContent = calc ? `${calc.battery.toFixed(1)}%` : '-';
+  renderBatteryCurrentReadings(batteryLatestRows, cfg);
+}
+
+function formatBatteryTimestamp(timestamp) {
+  const num = Number(timestamp);
+  if (!Number.isFinite(num) || num <= 0) return '-';
+  const ms = num > 10_000_000_000 ? num : num * 1000;
+  return new Date(ms).toLocaleString('th-TH');
+}
+
+function renderBatteryCurrentReadings(rows = batteryLatestRows, cfg = readBatteryCalibrationForm()) {
+  const box = document.getElementById('battery-current-readings');
+  if (!box) return;
+  if (!rows.length) {
+    box.innerHTML = '<div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถ</div>';
+    return;
+  }
+  box.innerHTML = rows.map(row => {
+    const calc = batteryFromRawClient(row.raw, cfg);
+    const age = formatBatteryTimestamp(row.timestamp);
+    return `
+      <div class="battery-current-card">
+        <div class="battery-current-title">
+          <span>${escapeHtml(row.vehicleId)}</span>
+          <span style="color:var(--slate-400);font-size:11px;">${escapeHtml(age)}</span>
+        </div>
+        <div class="battery-current-metrics">
+          <div class="battery-current-metric">
+            <div class="battery-current-label">Measured Raw A0</div>
+            <div class="battery-current-value">${escapeHtml(row.raw)}</div>
+          </div>
+          <div class="battery-current-metric">
+            <div class="battery-current-label">Measured A0</div>
+            <div class="battery-current-value">${calc ? escapeHtml(calc.a0Voltage.toFixed(3)) : '-'}V</div>
+          </div>
+          <div class="battery-current-metric">
+            <div class="battery-current-label">Calculated Vbat</div>
+            <div class="battery-current-value">${calc ? escapeHtml(calc.battVoltage.toFixed(2)) : '-'}V</div>
+          </div>
+          <div class="battery-current-metric">
+            <div class="battery-current-label">Calculated User</div>
+            <div class="battery-current-value">${calc ? escapeHtml(calc.battery.toFixed(1)) : '-'}%</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 async function saveBatteryCalibration() {
@@ -289,6 +337,8 @@ async function saveBatteryCalibration() {
 async function loadBatteryRecommendations() {
   const box = document.getElementById('battery-recommendations');
   if (!box) return;
+  const currentBox = document.getElementById('battery-current-readings');
+  if (currentBox) currentBox.innerHTML = '<div class="battery-recommendation">Loading current vehicle battery...</div>';
   box.innerHTML = '<div class="battery-recommendation">กำลังอ่านค่า raw A0 ล่าสุด...</div>';
   try {
     const res = await authFetch('/api/fleet');
@@ -307,6 +357,9 @@ async function loadBatteryRecommendations() {
       })
       .filter(Boolean)
       .sort((a, b) => a.vehicleId.localeCompare(b.vehicleId));
+
+    batteryLatestRows = rows;
+    renderBatteryCurrentReadings(rows, cfg);
 
     if (!rows.length) {
       box.innerHTML = '<div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถหลังอัป firmware</div>';
@@ -337,6 +390,8 @@ async function loadBatteryRecommendations() {
       `;
     }).join('');
   } catch (e) {
+    batteryLatestRows = [];
+    renderBatteryCurrentReadings([]);
     box.innerHTML = `<div class="battery-recommendation">โหลดค่าแนะนำไม่สำเร็จ: ${escapeHtml(e.message)}</div>`;
   }
 }

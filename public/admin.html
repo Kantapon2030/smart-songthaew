@@ -235,6 +235,59 @@
       margin-top: 10px;
     }
 
+    .battery-current-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .battery-current-card {
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      padding: 12px;
+      background: white;
+    }
+
+    .battery-current-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--slate-700);
+    }
+
+    .battery-current-metrics {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .battery-current-metric {
+      border-radius: 8px;
+      background: var(--slate-50);
+      padding: 8px;
+      min-width: 0;
+    }
+
+    .battery-current-label {
+      font-size: 9px;
+      font-weight: 800;
+      color: var(--slate-400);
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .battery-current-value {
+      margin-top: 4px;
+      font-family: var(--mono);
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--slate-800);
+    }
+
     .battery-recommendation {
       border: 1px solid var(--slate-200);
       border-radius: 8px;
@@ -256,7 +309,8 @@
 
     @media (max-width: 800px) {
       .battery-cal-grid,
-      .battery-preview-grid { grid-template-columns: 1fr; }
+      .battery-preview-grid,
+      .battery-current-metrics { grid-template-columns: 1fr; }
     }
 
     /* ── Speed / twin info ── */
@@ -1153,6 +1207,18 @@
           </div>
         </div>
 
+        <div style="margin-top:14px;">
+          <div class="admin-card-title">แบตเตอรี่ตอนนี้จากรถจริง</div>
+          <div class="admin-card-sub">ค่าที่วัดได้คือ raw A0 ล่าสุดจากรถ ส่วน A0/Vbat/% คือค่าที่คำนวณด้วยสูตรด้านบน</div>
+          <div class="battery-current-grid" id="battery-current-readings">
+            <div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถ</div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <div class="admin-card-title">ทดสอบสูตรจากค่า Raw A0</div>
+          <div class="admin-card-sub">ใช้ช่อง Test Raw A0 เพื่อทดลองสูตรก่อนบันทึก หรือเทียบกับค่าจากรถจริงด้านบน</div>
+        </div>
         <div class="battery-preview-grid" id="battery-preview">
           <div class="battery-preview-tile">
             <div class="battery-preview-label">Raw A0</div>
