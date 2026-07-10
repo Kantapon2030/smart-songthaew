@@ -42,6 +42,10 @@ struct BufferedPacket {
 #define SEEN_VEHICLE_SIZE 20
 #define HEARTBEAT_INTERVAL_MS 30000UL
 #define SEEN_VEHICLE_EXPIRE_MS 90000UL
+#define GROUND_EXPECTED_VEHICLES 3
+#define GROUND_RX_WINDOW_MS (TX_SYNC_GUARD_MS + (GROUND_EXPECTED_VEHICLES * TX_SLOT_SPACING_MS) + 1200UL)
+#define GROUND_RX_QUIET_MS 1800UL
+#define GROUND_HTTP_FLUSH_INTERVAL_MS 500UL
 
 struct DedupEntry {
   char packetId[DEDUP_PACKET_ID_LEN];
@@ -70,6 +74,7 @@ unsigned long lastFlushMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
+unsigned long lastRxMs = 0;
 String lastHttpResponse = "";
 bool ledPulseActive = false;
 uint8_t consecutiveHttpFailures = 0;
@@ -83,6 +88,7 @@ bool isVehiclePacket(JsonDocument& doc) {
 
 bool isValidThailandCoord(float lat, float lng);
 int postToServer(String body);
+void bufferPacket(String body);
 
 void forceWifiReconnect(const char* reason) {
   unsigned long now = millis();
@@ -381,9 +387,13 @@ void noteVehicleSeen(const char* vehicleId, float rssi, float snr) {
   seenVehicles[index].used = true;
 }
 
-void serviceVehicleHeartbeats() {
-  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+bool isLoRaRxWindow(unsigned long now = millis()) {
+  bool beaconWindow = lastBeaconMs != 0 && now - lastBeaconMs < GROUND_RX_WINDOW_MS;
+  bool rxQuietWindow = lastRxMs != 0 && now - lastRxMs < GROUND_RX_QUIET_MS;
+  return beaconWindow || rxQuietWindow;
+}
 
+void serviceVehicleHeartbeats() {
   unsigned long now = millis();
   for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
     if (!seenVehicles[i].used) continue;
@@ -408,9 +418,9 @@ void serviceVehicleHeartbeats() {
     String body;
     serializeJson(hb, body);
     seenVehicles[i].lastHeartbeatMs = now;
-    int code = postToServer(body);
-    Serial.printf("[HEARTBEAT] %s code:%d rssi:%.0f snr:%.1f\n",
-                  seenVehicles[i].vehicleId, code, seenVehicles[i].rssi, seenVehicles[i].snr);
+    bufferPacket(body);
+    Serial.printf("[HEARTBEAT] queued %s rssi:%.0f snr:%.1f\n",
+                  seenVehicles[i].vehicleId, seenVehicles[i].rssi, seenVehicles[i].snr);
     yield();
   }
 }
@@ -493,10 +503,11 @@ int postToServer(String body) {
   return code;
 }
 
-void flushBuffer() {
+void flushBuffer(uint8_t maxPosts = 1) {
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
 
-  while (WiFi.status() == WL_CONNECTED) {
+  uint8_t posted = 0;
+  while (WiFi.status() == WL_CONNECTED && posted < maxPosts) {
     int index = oldestBufferIndex();
     if (index < 0) return;
 
@@ -509,6 +520,7 @@ void flushBuffer() {
     } else {
       return;
     }
+    posted++;
     yield();
   }
 
@@ -699,6 +711,8 @@ void printReceiveLog(JsonDocument& rx, float rssi, float snr, int code) {
     Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
   } else if (code >= 400 && code < 500) {
     Serial.printf("-> HTTP %d drop (%lums)\n", code, lastHttpLatencyMs);
+  } else if (code == -2) {
+    Serial.println("-> queued for HTTP after RX window");
   } else {
     Serial.printf("-> buffered code:%d wifi_status:%d\n", code, WiFi.status());
   }
@@ -725,6 +739,8 @@ void printPostLog(JsonDocument& post, int code) {
     Serial.printf("-> HTTP %d (%lums)\n", code, lastHttpLatencyMs);
   } else if (code >= 400 && code < 500) {
     Serial.printf("-> HTTP %d drop (%lums)\n", code, lastHttpLatencyMs);
+  } else if (code == -2) {
+    Serial.println("-> queued for HTTP after RX window");
   } else {
     Serial.printf("-> buffered code:%d wifi_status:%d\n", code, WiFi.status());
   }
@@ -743,6 +759,7 @@ void onLoRaReceive(int packetSize) {
 
   float receivedRssi = LoRa.packetRssi();
   float receivedSnr = LoRa.packetSnr();
+  lastRxMs = millis();
 
   String raw(payload);
   StaticJsonDocument<768> rx;
@@ -774,12 +791,9 @@ void onLoRaReceive(int packetSize) {
     return;
   }
 
-  int code = wifiConnected && WiFi.status() == WL_CONNECTED ? postToServer(body) : -1;
-  bool ok = code >= 200 && code < 300;
-  bool badPacket = code >= 400 && code < 500;
-
-  if (!ok && !badPacket) bufferPacket(body);
-  beginLedPulse(ok ? 80UL : (badPacket ? 800UL : 250UL));
+  bufferPacket(body);
+  int code = -2; // queued for HTTP after the LoRa receive window
+  beginLedPulse(80UL);
   if (compactPacket) {
     printPostLog(postDoc, code);
   } else {
@@ -820,9 +834,10 @@ void loop() {
     sendBeacon();
   }
 
-  if (now - lastFlushMs >= FLUSH_INTERVAL_MS) {
+  bool rxWindow = isLoRaRxWindow(now);
+  if (!rxWindow && now - lastFlushMs >= GROUND_HTTP_FLUSH_INTERVAL_MS) {
     lastFlushMs = now;
-    flushBuffer();
+    flushBuffer(1);
   }
 
   serviceVehicleHeartbeats();

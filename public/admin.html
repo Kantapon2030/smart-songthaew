@@ -161,9 +161,10 @@
     .admin-tabs {
       grid-column: 1 / -1;
       display: flex;
+      flex-wrap: wrap;
       gap: 8px;
       padding: 4px 0;
-      overflow-x: auto;
+      overflow-x: visible;
       scrollbar-width: none;
       -webkit-overflow-scrolling: touch;
     }
@@ -180,7 +181,9 @@
       font-weight: 800;
       cursor: pointer;
       white-space: nowrap;
-      flex: 0 0 auto;
+      flex: 0 1 auto;
+      text-align: center;
+      text-decoration: none;
     }
 
     .admin-tab-btn.active {
@@ -192,6 +195,25 @@
     .admin-tab-panel { display: none; grid-column: 1 / -1; }
     .admin-tab-panel.active { display: block; }
     .admin-grid-panel.active { display: contents; }
+
+    @media (max-width: 760px) {
+      .admin-tabs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .admin-tab-btn {
+        width: 100%;
+        min-height: 42px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 10px 8px;
+        white-space: normal;
+        line-height: 1.2;
+      }
+    }
 
     .battery-cal-grid {
       display: grid;
@@ -932,7 +954,6 @@
        DIGITAL TWIN CONTROL
   ════════════════════════════ -->
   <div class="admin-tabs" role="tablist" aria-label="Admin sections">
-    <a class="admin-tab-btn" href="/dashboard.html" style="text-decoration:none;">Dashboard</a>
     <button class="admin-tab-btn active" type="button" data-tab="overview" onclick="switchTab('overview')">ภาพรวม</button>
     <button class="admin-tab-btn" type="button" data-tab="battery" onclick="switchTab('battery')">แบตเตอรี่</button>
     <button class="admin-tab-btn" type="button" data-tab="firmware" onclick="switchTab('firmware')">Firmware</button>
@@ -1176,7 +1197,7 @@
           <div class="admin-card-sub">รถส่งค่า raw A0 ขึ้นมา แล้ว server คำนวณเปอร์เซ็นต์ให้ทุกหน้า</div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="admin-btn admin-btn-outline" type="button" onclick="loadBatteryRecommendations()">รีเฟรชค่าแนะนำ</button>
+          <button class="admin-btn admin-btn-outline" type="button" onclick="refreshBatteryTab()">รีเฟรชแบตเตอรี่</button>
           <button class="admin-btn admin-btn-primary" type="button" onclick="saveBatteryCalibration()">บันทึก</button>
         </div>
       </div>

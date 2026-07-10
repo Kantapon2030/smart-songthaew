@@ -312,6 +312,17 @@ function renderBatteryCurrentReadings(rows = batteryLatestRows, cfg = readBatter
   }).join('');
 }
 
+async function refreshBatteryTab() {
+  try {
+    if (typeof syncConfig === 'function') await syncConfig();
+    updateBatteryPreview();
+    await loadBatteryRecommendations();
+    addLog('info', 'Battery tab refreshed');
+  } catch (e) {
+    addLog('err', e.message);
+  }
+}
+
 async function saveBatteryCalibration() {
   try {
     const batteryCalibration = readBatteryCalibrationForm();
