@@ -29,6 +29,15 @@ let routeMarkers   = [];
 let _demoVehicleCount = 1;
 let _demoRunning      = false;
 let batteryLatestRows = [];
+let groundStationMap = null;
+let groundStationMarker = null;
+
+const DEFAULT_GROUND_STATION_CONFIG = {
+  id: 'GROUND_01',
+  label: 'สถานีภาคพื้น',
+  lat: 8.4304,
+  lng: 99.9631,
+};
 
 // ── Clock ────────────────────────────────────────────────────
 setInterval(() => {
@@ -56,6 +65,7 @@ function applyConfigToUI(cfg) {
   if (document.getElementById('cfg-ground-label')) document.getElementById('cfg-ground-label').value = ground.label || 'สถานีภาคพื้น';
   if (document.getElementById('cfg-ground-lat')) document.getElementById('cfg-ground-lat').value = ground.lat ?? 8.4304;
   if (document.getElementById('cfg-ground-lng')) document.getElementById('cfg-ground-lng').value = ground.lng ?? 99.9631;
+  syncGroundStationMapFromInputs({ pan: false });
 
   applyBatteryCalibrationToUI(cfg.batteryCalibration || {});
 
@@ -424,6 +434,131 @@ function readGroundStationForm() {
   };
 }
 
+function setGroundStationForm(groundStation, options = {}) {
+  const next = { ...DEFAULT_GROUND_STATION_CONFIG, ...(groundStation || {}) };
+  const idEl = document.getElementById('cfg-ground-id');
+  const labelEl = document.getElementById('cfg-ground-label');
+  const latEl = document.getElementById('cfg-ground-lat');
+  const lngEl = document.getElementById('cfg-ground-lng');
+  if (idEl) idEl.value = next.id || DEFAULT_GROUND_STATION_CONFIG.id;
+  if (labelEl) labelEl.value = next.label || DEFAULT_GROUND_STATION_CONFIG.label;
+  if (latEl) latEl.value = Number(next.lat).toFixed(6);
+  if (lngEl) lngEl.value = Number(next.lng).toFixed(6);
+  syncGroundStationMapFromInputs(options);
+}
+
+function renderGroundStationStatus(groundStation) {
+  const status = document.getElementById('ground-station-status');
+  if (!status) return;
+  try {
+    const next = groundStation || readGroundStationForm();
+    status.textContent = `${next.id} @ ${Number(next.lat).toFixed(6)}, ${Number(next.lng).toFixed(6)} - ${next.label}`;
+  } catch (e) {
+    status.textContent = e.message;
+  }
+}
+
+function setGroundStationLatLng(latlng, options = {}) {
+  const lat = Number(latlng?.lat);
+  const lng = Number(latlng?.lng);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+  const latEl = document.getElementById('cfg-ground-lat');
+  const lngEl = document.getElementById('cfg-ground-lng');
+  if (latEl) latEl.value = lat.toFixed(6);
+  if (lngEl) lngEl.value = lng.toFixed(6);
+
+  if (groundStationMarker) groundStationMarker.setLatLng([lat, lng]);
+  if (groundStationMap && options.pan !== false) {
+    groundStationMap.setView([lat, lng], Math.max(groundStationMap.getZoom(), 15));
+  }
+  renderGroundStationStatus();
+}
+
+function syncGroundStationMapFromInputs(options = {}) {
+  let groundStation;
+  try {
+    groundStation = readGroundStationForm();
+  } catch (e) {
+    renderGroundStationStatus();
+    return;
+  }
+  if (groundStationMarker) groundStationMarker.setLatLng([groundStation.lat, groundStation.lng]);
+  if (groundStationMap && options.pan !== false) {
+    groundStationMap.setView([groundStation.lat, groundStation.lng], groundStationMap.getZoom() || 15);
+  }
+  renderGroundStationStatus(groundStation);
+}
+
+function initGroundStationMap() {
+  const mapEl = document.getElementById('ground-station-map');
+  if (!mapEl || typeof L === 'undefined') return;
+  if (groundStationMap) {
+    setTimeout(() => groundStationMap.invalidateSize(), 50);
+    syncGroundStationMapFromInputs({ pan: false });
+    return;
+  }
+
+  let groundStation = DEFAULT_GROUND_STATION_CONFIG;
+  try {
+    groundStation = readGroundStationForm();
+  } catch (_) {}
+
+  groundStationMap = L.map(mapEl, {
+    zoomControl: true,
+    attributionControl: true,
+  }).setView([groundStation.lat, groundStation.lng], 15);
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors',
+  }).addTo(groundStationMap);
+
+  groundStationMarker = L.marker([groundStation.lat, groundStation.lng], {
+    draggable: true,
+    title: 'Ground Station',
+  }).addTo(groundStationMap);
+  groundStationMarker.bindPopup('Ground Station').openPopup();
+
+  groundStationMap.on('click', event => {
+    setGroundStationLatLng(event.latlng);
+  });
+  groundStationMarker.on('dragend', event => {
+    setGroundStationLatLng(event.target.getLatLng());
+  });
+
+  setTimeout(() => groundStationMap.invalidateSize(), 80);
+  renderGroundStationStatus(groundStation);
+}
+
+function useCurrentLocationForGroundStation() {
+  if (!navigator.geolocation) {
+    alert('เบราว์เซอร์นี้ไม่รองรับการอ่านตำแหน่งปัจจุบัน');
+    return;
+  }
+  addLog('info', 'กำลังอ่านตำแหน่งปัจจุบัน...');
+  navigator.geolocation.getCurrentPosition(
+    position => {
+      setGroundStationLatLng({
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+      });
+      addLog('ok', 'ตั้งตำแหน่งสถานีฐานจากตำแหน่งปัจจุบันแล้ว');
+    },
+    error => {
+      const message = error.message || 'ไม่สามารถอ่านตำแหน่งปัจจุบันได้';
+      addLog('err', message);
+      alert(message);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+  );
+}
+
+function resetGroundStationToDefault() {
+  setGroundStationForm(DEFAULT_GROUND_STATION_CONFIG);
+  addLog('info', 'คืนค่าตำแหน่งสถานีฐานเป็นค่าเริ่มต้นแล้ว');
+}
+
 async function saveGroundStationConfig() {
   try {
     const groundStation = readGroundStationForm();
@@ -435,6 +570,7 @@ async function saveGroundStationConfig() {
     if (!response) return;
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || 'บันทึกตำแหน่งสถานีภาคพื้นไม่สำเร็จ');
+    setGroundStationForm(body.groundStation, { pan: false });
     addLog('ok', `บันทึกสถานีภาคพื้น: ${body.groundStation.lat}, ${body.groundStation.lng}`);
     showToast('บันทึกตำแหน่งสถานีภาคพื้นแล้ว');
     await syncConfig();
@@ -969,6 +1105,7 @@ async function checkAuth() {
   loadRoutes();
   loadFleet();
   loadBatteryRecommendations();
+  initGroundStationMap();
   initDiagnostics();
   refreshStatus();
   refreshDemoStatus().catch(e => addLog('err', e.message));

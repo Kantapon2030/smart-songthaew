@@ -894,6 +894,31 @@
       color: var(--slate-400);
       font-size: 12px;
     }
+    .ground-station-tools {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 4px 0 12px;
+    }
+    .ground-station-map {
+      width: 100%;
+      height: 240px;
+      border: 1px solid var(--slate-200);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--slate-50);
+    }
+    .ground-station-status {
+      margin-top: 9px;
+      padding: 8px 10px;
+      border: 1px solid var(--blue-100);
+      border-radius: 8px;
+      background: var(--blue-50);
+      color: var(--slate-600);
+      font-family: var(--mono);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+    }
     .admin-history-frame {
       width: 100%;
       height: calc(100dvh - var(--nav-height, 56px) - 130px);
@@ -911,6 +936,7 @@
       .flash-toolbar > div { display: flex; gap: 8px; flex-wrap: wrap; }
       .diagnostics-controls,
       .diagnostics-summary { grid-template-columns: 1fr; }
+      .ground-station-tools { grid-template-columns: 1fr; }
       .admin-history-frame {
         height: calc(100dvh - var(--nav-height, 56px) - 112px);
         min-height: 620px;
@@ -1040,13 +1066,19 @@
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
         <div class="admin-form-row">
           <label class="admin-label">Latitude</label>
-          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lat" value="8.4304" placeholder="8.430400"/>
+          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lat" value="8.4304" placeholder="8.430400" onchange="syncGroundStationMapFromInputs()"/>
         </div>
         <div class="admin-form-row">
           <label class="admin-label">Longitude</label>
-          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lng" value="99.9631" placeholder="99.963100"/>
+          <input class="admin-input" type="number" step="0.000001" id="cfg-ground-lng" value="99.9631" placeholder="99.963100" onchange="syncGroundStationMapFromInputs()"/>
         </div>
       </div>
+      <div class="ground-station-tools">
+        <button class="admin-btn admin-btn-outline admin-btn-full" type="button" onclick="useCurrentLocationForGroundStation()">ใช้ตำแหน่งปัจจุบัน</button>
+        <button class="admin-btn admin-btn-outline admin-btn-full" type="button" onclick="resetGroundStationToDefault()">คืนค่าเริ่มต้น</button>
+      </div>
+      <div id="ground-station-map" class="ground-station-map" aria-label="เลือกตำแหน่งสถานีภาคพื้น"></div>
+      <div id="ground-station-status" class="ground-station-status">GROUND_01 @ 8.430400, 99.963100</div>
     </div>
   </div>
 
