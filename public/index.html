@@ -26,6 +26,25 @@
       z-index: 700;
     }
 
+    .home-quick-actions {
+      position: fixed;
+      z-index: 620;
+      right: 16px;
+      top: calc(var(--nav-height) + 16px);
+    }
+
+    .map-action {
+      min-height: 44px;
+      padding: 0 13px;
+      border: 1px solid rgba(37,99,235,.2);
+      border-radius: 999px;
+      background: rgba(255,255,255,.96);
+      box-shadow: 0 6px 18px rgba(15,23,42,.12);
+      color: var(--color-primary);
+      font-weight: 800;
+      backdrop-filter: blur(10px);
+    }
+
     /* ── Journey Sidebar (desktop) ── */
     .journey-sidebar {
       position: fixed;
@@ -277,19 +296,23 @@
     @media (max-width: 860px) {
       .journey-sidebar {
         position: fixed;
-        top: 86px;
+        top: auto;
         left: 8px;
         right: 8px;
-        bottom: auto;
+        bottom: calc(64px + env(safe-area-inset-bottom, 0px));
         width: auto;
         max-width: none;
-        max-height: 210px;
-        border-radius: 12px;
-        padding: 7px 10px 9px;
+        max-height: min(72dvh, 600px);
+        border-radius: 16px 16px 10px 10px;
+        padding: 9px 12px 12px;
+        box-shadow: 0 -8px 32px rgba(15,23,42,.16);
+        transition: max-height .24s ease, transform .24s ease;
       }
 
       .sidebar-handle {
-        display: none;
+        display: block;
+        width: 42px;
+        margin-bottom: 8px;
       }
 
       .journey-title {
@@ -329,12 +352,18 @@
         text-overflow: ellipsis;
       }
 
-      .search-row,
-      .section-label,
-      .recommended-list,
-      .vibe-sidebar-banner {
+      .journey-sidebar:not(.is-expanded) .search-row,
+      .journey-sidebar:not(.is-expanded) .section-label,
+      .journey-sidebar:not(.is-expanded) .recommended-list,
+      .journey-sidebar:not(.is-expanded) .vibe-sidebar-banner,
+      .journey-sidebar:not(.is-expanded) .popular-grid,
+      .journey-sidebar:not(.is-expanded) .location-control-row,
+      .journey-sidebar:not(.is-expanded) .origin-status {
         display: none;
       }
+
+      .journey-sidebar:not(.is-expanded) { max-height: 214px; }
+      .journey-sidebar.is-expanded { overflow-y: auto; }
 
       .vehicle-card {
         top: auto;
@@ -427,22 +456,26 @@
         grid-template-columns: repeat(2, 1fr);
       }
 
-      .popular-grid {
-        display: none;
-      }
-
       .location-control-row .button,
       .route-control-row .button,
       .search-control,
       .select-control,
       .segmented button {
-        min-height: 32px;
-        font-size: 11px;
+        min-height: 44px;
+        font-size: 14px;
       }
 
       .route-control-row .select-control {
         min-width: 0;
       }
+
+      .home-quick-actions {
+        top: calc(var(--nav-height) + 10px);
+        right: 10px;
+      }
+
+      .map-action { min-width: 44px; padding: 0 12px; }
+      .map-action .action-label { display: none; }
     }
 
     @media (max-width: 480px) {
@@ -562,11 +595,17 @@
   <!-- Navbar -->
   <div id="navbar-root"></div>
 
+  <div class="home-quick-actions" aria-label="เครื่องมือแผนที่">
+    <button id="planner-toggle-btn" class="map-action" type="button" aria-expanded="false" aria-controls="journey-planner">
+      <span aria-hidden="true">⌃</span><span class="action-label"> วางแผนการเดินทาง</span>
+    </button>
+  </div>
+
   <!-- No vehicles notice -->
   <div id="no-vehicles-notice" aria-live="polite">ยังไม่มีรถออนไลน์ในเส้นทางนี้</div>
 
   <!-- Journey Planner Sidebar -->
-  <aside class="journey-sidebar" aria-label="วางแผนการเดินทาง">
+  <aside id="journey-planner" class="journey-sidebar" aria-label="วางแผนการเดินทาง">
     <div class="sidebar-handle" aria-hidden="true"></div>
 
     <h1 class="journey-title">วางแผนการเดินทาง</h1>

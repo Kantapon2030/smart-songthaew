@@ -251,6 +251,18 @@
 
     @media (max-width: 600px) {
       .overview-grid { grid-template-columns: 1fr; }
+      .ops-sidebar {
+        position: sticky;
+        top: 56px;
+        z-index: 20;
+        gap: 6px;
+        scroll-snap-type: x proximity;
+      }
+      .ops-nav-item {
+        min-height: 44px;
+        padding: 0 12px;
+        scroll-snap-align: start;
+      }
     }
   </style>
 </head>

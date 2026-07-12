@@ -71,6 +71,14 @@ function bindPassengerControls() {
   });
   document.getElementById('route-select').addEventListener('change', event => changeRoute(event.target.value));
   document.getElementById('mesh-toggle-wrap').addEventListener('click', toggleMeshOverlay);
+  const planner = document.getElementById('journey-planner');
+  const plannerToggle = document.getElementById('planner-toggle-btn');
+  plannerToggle?.addEventListener('click', () => {
+    const expanded = planner.classList.toggle('is-expanded');
+    plannerToggle.setAttribute('aria-expanded', String(expanded));
+    plannerToggle.querySelector('[aria-hidden="true"]').textContent = expanded ? '⌄' : '⌃';
+  });
+  document.querySelector('.sidebar-handle')?.addEventListener('click', () => plannerToggle?.click());
 }
 
 async function initMap() {

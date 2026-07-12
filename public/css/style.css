@@ -29,6 +29,9 @@
 
   --color-amber:         #d97706;
   --color-amber-50:      #fffbeb;
+  --color-accent:        #f59e0b;
+  --color-accent-50:     #fffbeb;
+  --color-accent-100:    #fde68a;
 
   --color-offline:       #6b7280;
 
@@ -57,6 +60,7 @@
   /* Layout */
   --nav-height:          48px;
   --sidebar-width:       220px;
+  --tap-target:          44px;
 }
 
 /* ─── Reset ─── */
@@ -422,7 +426,12 @@ a { color: inherit; }
 /* ─────────────────────────────────────────
    Tables
 ───────────────────────────────────────── */
-.table-wrap { overflow-x: auto; }
+.table-wrap {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-color: var(--color-primary-100) transparent;
+  scrollbar-width: thin;
+}
 
 .data-table {
   width: 100%;
@@ -959,7 +968,7 @@ canvas.sparkline { display: block; }
 }
 
 @media (max-width: 768px) {
-  :root { --nav-height: auto; }
+  :root { --nav-height: 56px; }
 
   .app-navbar {
     position: sticky;
@@ -1220,4 +1229,33 @@ canvas.sparkline { display: block; }
 @media (min-width: 768px) and (max-width: 1023px) {
   .split-layout { flex-direction: column; }
   .split-layout .sidebar { width: 100%; max-height: 40vh; overflow-y: auto; }
+}
+
+@media (max-width: 767px) {
+  /* Bottom navigation replaces desktop links; keep the header focused. */
+  .app-navbar .nav-links { display: none !important; }
+  .app-navbar { min-height: 56px; padding: 6px 12px; }
+  .app-navbar .brand-icon,
+  .app-navbar .icon-button { width: var(--tap-target); height: var(--tap-target); }
+  .app-navbar .icon-button { border-radius: 50%; }
+  .app-navbar .brand-text { font-size: 13px; }
+
+  .table-wrap {
+    position: relative;
+    border-radius: var(--radius-control);
+    background: linear-gradient(90deg, #fff 86%, rgba(37,99,235,.08));
+  }
+  .segmented button,
+  .tabs .tab,
+  .mobile-section-tabs button,
+  .ops-nav-item { min-height: var(--tap-target) !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
 }
