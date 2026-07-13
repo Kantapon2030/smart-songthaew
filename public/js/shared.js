@@ -764,30 +764,25 @@ function renderAnnouncement(text) {
 /* ─────────────────────────────────────────
    Auth helpers
 ───────────────────────────────────────── */
-function getAuthToken()  { return localStorage.getItem('adminToken'); }
-function setAuthToken(t) { localStorage.setItem('adminToken', t); }
-function clearAuth() {
-  localStorage.removeItem('adminToken');
+function getAuthToken()  { return null; }
+function setAuthToken() { /* Session is an HttpOnly cookie. */ }
+async function clearAuth() {
+  try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch (_) {}
   localStorage.removeItem('adminUsername');
 }
-function isLoggedIn()  { return Boolean(getAuthToken()); }
-function authHeaders() {
-  const t = getAuthToken();
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
+function isLoggedIn()  { return false; }
+function authHeaders() { return {}; }
 
 async function authFetch(url, options = {}) {
   const headers = { ...options.headers, ...authHeaders() };
-  const response = await fetch(url, { ...options, headers });
+  const response = await fetch(url, { ...options, headers, credentials: 'same-origin' });
   if (response.status === 401) { clearAuth(); window.location.href = '/login.html'; return null; }
   return response;
 }
 
 async function requireAuth() {
-  const token = getAuthToken();
-  if (!token) { window.location.href = '/login.html'; return false; }
   try {
-    const response = await fetch('/api/auth/verify', { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch('/api/auth/verify', { credentials: 'same-origin' });
     const data = await response.json();
     if (!data.ok) { clearAuth(); window.location.href = '/login.html'; return false; }
     return true;

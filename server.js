@@ -29,11 +29,11 @@
 require('dotenv').config();
 
 const express    = require('express');
-const cors       = require('cors');
 const admin      = require('firebase-admin');
 const path       = require('path');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
+const crypto     = require('crypto');
 const packageJson = require('./package.json');
 
 // ── Firebase Init ─────────────────────────────────────────────────────────────
@@ -74,11 +74,16 @@ if (!JWT_SECRET) {
   process.exit(1);
 }
 const JWT_EXPIRES = '8h'; // 8 hours
+const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || '').trim();
+const ADMIN_PASSWORD_HASH = String(process.env.ADMIN_PASSWORD_HASH || '').trim();
+const SESSION_COOKIE = 'ss_admin_session';
+const SESSION_COOKIE_MAX_AGE_MS = 8 * 60 * 60 * 1000;
+const LOGIN_MAX_FAILURES = 5;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
 
 // ── Rate Limiting Store ───────────────────────────────────────────────────────
-const rateLimitStore = new Map(); // client/IP -> telemetry burst window
-const TELEMETRY_RATE_WINDOW_MS = 1000;
-const TELEMETRY_RATE_MAX = 150;
+const TELEMETRY_RATE_WINDOW_MS = 60 * 1000;
+const TELEMETRY_RATE_MAX = 120;
 let locationsCache = { key: null, expiresAt: 0, payload: null };
 const LOCATIONS_CACHE_MS = 1000;
 let networkCache = { key: null, expiresAt: 0, payload: null };
@@ -105,6 +110,36 @@ function timeoutPromise(promise, timeoutMs, label = 'operation') {
 
 function firebaseKeyPart(value) {
   return String(value || '').replace(/[.#$\/\[\]]/g, '_');
+}
+
+function hashKey(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function parseCookies(header = '') {
+  return String(header).split(';').reduce((cookies, part) => {
+    const index = part.indexOf('=');
+    if (index < 1) return cookies;
+    const key = part.slice(0, index).trim();
+    const value = part.slice(index + 1).trim();
+    try { cookies[key] = decodeURIComponent(value); } catch (_) { cookies[key] = value; }
+    return cookies;
+  }, {});
+}
+
+function authConfigured() {
+  return Boolean(JWT_SECRET && ADMIN_USERNAME && ADMIN_PASSWORD_HASH);
+}
+
+function sessionCookie(value, maxAge = SESSION_COOKIE_MAX_AGE_MS) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${SESSION_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(maxAge / 1000)}${secure}`;
+}
+
+function getBangkokHour(date = new Date()) {
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Bangkok', hour: '2-digit', hourCycle: 'h23',
+  }).format(date));
 }
 
 function finiteNumberOrDefault(value, fallback, min = -Infinity, max = Infinity) {
@@ -151,12 +186,12 @@ function calculateBatteryFromRaw(rawValue, calibrationInput = {}) {
 
 // ── Auth Middleware ───────────────────────────────────────────────────────────
 function authMiddleware(req, res, next) {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  const authHeader = req.headers.authorization || '';
+  const cookieToken = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  const token = cookieToken || (authHeader.startsWith('Bearer ') ? authHeader.substring(7) : '');
+  if (!token) {
     return res.status(401).json({ error: 'Unauthorized - No token' });
   }
-  
-  const token = authHeader.substring(7);
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
@@ -167,28 +202,26 @@ function authMiddleware(req, res, next) {
 }
 
 // ── Rate Limit Middleware ───────────────────────────────────────────────────
-function rateLimitMiddleware(req, res, next) {
+async function rateLimitMiddleware(req, res, next) {
+  const identity = req.get('X-Ground-Key') || req.get('X-Vehicle-Key') || req.body?.ground_id || req.body?.vehicle_id || req.ip || 'anonymous';
+  const ref = db.ref(`security/rate_limits/${hashKey(`${req.path}:${identity}`)}`);
   const now = Date.now();
-  const key = req.ip || req.headers['x-forwarded-for'] || 'telemetry';
-  const current = rateLimitStore.get(key);
-
-  if (!current || now - current.startedAt >= TELEMETRY_RATE_WINDOW_MS) {
-    rateLimitStore.set(key, { startedAt: now, count: 1 });
-    return next();
-  }
-
-  current.count += 1;
-  if (current.count > TELEMETRY_RATE_MAX) {
-    return res.status(429).json({
-      error: 'Too many telemetry bursts from VIBE nodes',
-      retryAfter: Math.ceil((TELEMETRY_RATE_WINDOW_MS - (now - current.startedAt)) / 1000),
+  try {
+    const result = await ref.transaction(current => {
+      if (!current || now - Number(current.startedAt || 0) >= TELEMETRY_RATE_WINDOW_MS) return { startedAt: now, count: 1 };
+      return { startedAt: current.startedAt, count: Number(current.count || 0) + 1 };
     });
+    if (Number(result.snapshot.val()?.count || 0) > TELEMETRY_RATE_MAX) {
+      return res.status(429).json({ error: 'Too many telemetry requests', retryAfter: 60 });
+    }
+    return next();
+  } catch (error) {
+    console.error('[RATE_LIMIT]', error.message);
+    return res.status(503).json({ error: 'Rate limiter unavailable' });
   }
-
-  next();
 }
 
-// ── Initialize Default Data ───────────────────────────────────────────────────
+// ── Explicit legacy seed helper (never called during application startup) ─────
 async function initializeDefaultData() {
   try {
     // ── Auto-purge stale DEMO/TWIN vehicles on startup ──
@@ -200,18 +233,6 @@ async function initializeDefaultData() {
       staleKeys.forEach(k => { purge[`fleet/${k}`] = null; });
       await db.ref().update(purge);
       console.log('[Init] Purged stale vehicles:', staleKeys.join(', '));
-    }
-
-    // Check if admin exists
-    const adminSnap = await db.ref('system/admin').once('value');
-    if (!adminSnap.exists()) {
-      const hashedPassword = bcrypt.hashSync('admin123', 10);
-      await db.ref('system/admin').set({
-        username: 'Admin123',
-        passwordHash: hashedPassword,
-        createdAt: Date.now()
-      });
-      console.log('[Init] Default admin created: Admin123 / admin123');
     }
 
     // Check if default route exists
@@ -265,8 +286,22 @@ const app  = express();
 const PORT = process.env.PORT || 3000;
 
 app.set('trust proxy', 1);
-app.use(cors());
-app.use(express.json());
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.set({
+    // Legacy pages still contain inline handlers. Keep this compatibility allowance
+    // while those handlers are migrated to addEventListener; all third-party origins
+    // remain explicitly allow-listed.
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com https://maps.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https:; connect-src 'self' https://maps.googleapis.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Permissions-Policy': 'geolocation=(self), camera=(), microphone=()',
+  });
+  if (process.env.NODE_ENV === 'production') res.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', async (_req, res) => {
@@ -278,9 +313,11 @@ app.get('/api/health', async (_req, res) => {
     console.error('[HEALTH] Firebase check failed:', error.message);
   }
 
-  res.status(firebase === 'ok' ? 200 : 503).json({
-    status: firebase === 'ok' ? 'ok' : 'degraded',
+  const ready = firebase === 'ok' && authConfigured();
+  res.status(ready ? 200 : 503).json({
+    status: ready ? 'ok' : 'degraded',
     firebase,
+    auth: authConfigured() ? 'ok' : 'misconfigured',
     uptime_s: Math.floor(process.uptime()),
     version: packageJson.version || 'unknown',
     ts: Date.now(),
@@ -1140,7 +1177,6 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     id: vehicleId,
     type: 'vehicle',
     vehicle_id: vehicleId,
-    plate: sanitizePlate(vehicleMeta?.plate || data.plate || data.license_plate || data.licensePlate) || null,
     lat: displayGpsFix ? lat : null,
     lng: displayGpsFix ? lng : null,
     status: isOnline ? 'online' : 'offline',
@@ -1162,7 +1198,6 @@ function normalizeNetworkNode(vehicleId, data, vehicleMeta, offlineThresholdMs, 
     gps_time: validGpsTime(Number(data.gps_time || data.gps_timestamp)) ? Number(data.gps_time || data.gps_timestamp) : null,
     ttl: typeof data.ttl === 'number' ? data.ttl : null,
     store_forward: data.store_forward === true,
-    version_summary: Array.isArray(data.version_summary) ? data.version_summary : [],
     battVoltage: batteryCalc ? batteryCalc.battVoltage : typeof data.battVoltage === 'number' ? data.battVoltage : null,
     batteryRaw: batteryCalc ? batteryCalc.raw : typeof data.batteryRaw === 'number' ? data.batteryRaw : null,
     a0Voltage: batteryCalc ? batteryCalc.a0Voltage : typeof data.a0Voltage === 'number' ? data.a0Voltage : null,
@@ -1340,6 +1375,11 @@ function calculateMeshHealth(nodes, links) {
 //  Body: { vehicleId, lat, lng, speed?, battery?, routeId?, direction? }
 // ============================================================
 app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
+  res.set('Link', '</api/v1/telemetry>; rel="successor-version"');
+  return res.status(410).json({ error: 'legacy_telemetry_retired', successor: '/api/v1/telemetry' });
+
+  /* Legacy implementation retained below temporarily for source-history review.
+     It is unreachable and must never accept writes. */
   legacyHeaders(res, '/api/v1/telemetry');
   logLegacy(req, req.body?.vehicleId);
   const {
@@ -1453,7 +1493,7 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const ts    = Date.now();
   const lastSeen = Math.floor(ts / 1000);
   const today = todayStr();
-  const hour  = new Date().getHours();
+  const hour  = getBangkokHour();
 
   const batteryCalibrationSnap = await db.ref('system/config/batteryCalibration').once('value');
   const batteryCalc = calculateBatteryFromRaw(batteryRawInput, batteryCalibrationSnap.val() || {});
@@ -1466,7 +1506,8 @@ app.post('/api/update-location', rateLimitMiddleware, async (req, res) => {
   const currF  = parseFloat(currentMa)   || -1;
   const powF   = parseFloat(powerMw)     || (currF > 0 && batVF > 0 ? parseFloat((currF * batVF / 1000).toFixed(0)) : -1);
   const txI    = parseInt(txCount,   10) || -1;
-  const satsI  = parseInt(sats,      10) ?? -1;  // จำนวนดาวเทียมจริง
+  const satsParsed = parseInt(sats, 10);
+  const satsI  = Number.isFinite(satsParsed) ? satsParsed : -1;  // จำนวนดาวเทียมจริง
   const hdopF  = parseFloat(hdop)        || -1;  // HDOP จริง
   const rssiI  = rssi !== null ? parseInt(rssi, 10) : null; // RSSI dBm จริง
   const gpsTimeRaw = Number(req.body.gps_timestamp ?? req.body.gps_time);
@@ -1876,7 +1917,7 @@ async function ingestGroundTelemetryPacket(data, batteryCalibration, receivedAt)
     const historyKey = `${receivedAt * 1000}_${firebaseKeyPart(bootId)}_${seq}`;
     updates[`history/${todayStr()}/${vehicleId}/${historyKey}`] = current;
     updates[`routes_active/${todayStr()}/${routeId}/${vehicleId}`] = { lastActive: receivedAt * 1000, lat, lng };
-    updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+    updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${getBangkokHour()}`] = admin.database.ServerValue.increment(1);
   }
   await db.ref().update(updates);
   await recordPdrPacketSafely(vehicleId, {
@@ -2008,7 +2049,7 @@ app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
       const historyKey = Date.now();
       updates[`history/${todayStr()}/${vehicleId}/${historyKey}`] = current;
       updates[`routes_active/${todayStr()}/${routeId}/${vehicleId}`] = { lastActive: receivedAt * 1000, lat, lng };
-      updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+      updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${getBangkokHour()}`] = admin.database.ServerValue.increment(1);
     }
     await db.ref().update(updates);
     await recordPdrPacketSafely(vehicleId, {
@@ -2077,7 +2118,7 @@ app.get('/api/analytics/speed-by-hour', async (req, res) => {
     for (const vehicleHistory of Object.values(histRaw)) {
       for (const rec of Object.values(vehicleHistory)) {
         if (rec?.timestamp && typeof rec.speed === 'number') {
-          const h = new Date(rec.timestamp).getHours();
+          const h = getBangkokHour(new Date(rec.timestamp));
           speedsByHour[h].push(rec.speed);
         }
       }
@@ -2124,7 +2165,7 @@ app.get('/api/analytics/peak-hours', async (req, res) => {
       const histRaw  = histSnap.val() || {};
       for (const vhist of Object.values(histRaw)) {
         for (const rec of Object.values(vhist)) {
-          if (rec?.timestamp) totals[new Date(rec.timestamp).getHours()]++;
+          if (rec?.timestamp) totals[getBangkokHour(new Date(rec.timestamp))]++;
         }
       }
     }
@@ -2170,11 +2211,18 @@ app.get('/api/history/trail', authMiddleware, async (req, res) => {
       from: req.query.from,
       to: req.query.to,
     });
+    const requestedLimit = Number(req.query.limit || 500);
+    const limit = Number.isInteger(requestedLimit) ? Math.min(Math.max(requestedLimit, 1), 2000) : 500;
+    const cursor = String(req.query.cursor || '');
+    const startAt = cursor ? points.findIndex(point => String(point.timestamp || point.server_received_at || '') > cursor) : 0;
+    const page = points.slice(Math.max(startAt, 0), Math.max(startAt, 0) + limit);
+    const next = startAt + limit < points.length ? page[page.length - 1] : null;
     return res.json({
       vehicleId,
       date,
-      points: points.map(({ vehicleId: _vehicleId, gps_fix, routeId, source, ...point }) => point),
+      points: page.map(({ vehicleId: _vehicleId, gps_fix, routeId, source, ...point }) => point),
       summary: summarizeHistoryPoints(points),
+      nextCursor: next ? String(next.timestamp || next.server_received_at || '') : null,
     });
   } catch (error) {
     console.error('[GET /api/history/trail]', error);
@@ -2636,7 +2684,7 @@ function moveDemoVehicle(vehicleId, timestamp, updates) {
   updates[`fleet/${vehicleId}/plate`] = current.plate;
   updates[`fleet/${vehicleId}/description`] = `Demo vehicle ${index + 1}`;
   updates[`history/${todayStr()}/${vehicleId}/${timestamp}`] = current;
-  updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+  updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${getBangkokHour()}`] = admin.database.ServerValue.increment(1);
   console.log(`[DEMO tick] ${vehicleId} idx:${vehicle.coordIndex} direction:${direction} speed:${current.speed} lat:${Number(lat).toFixed(6)} lng:${Number(lng).toFixed(6)}`);
   const logCount = _demoWriteLogCounts.get(vehicleId) || 0;
   if (logCount < 3) {
@@ -2896,48 +2944,68 @@ app.get('/api/demo/debug', async (_req, res) => {
 // ============================================================
 
 // POST /api/auth/login
+function loginAttemptRef(req, username) {
+  return db.ref(`security/login_attempts/${hashKey(`${req.ip || 'unknown'}:${String(username || '').toLowerCase()}`)}`);
+}
+
+async function loginIsLocked(req, username) {
+  const value = (await loginAttemptRef(req, username).once('value')).val() || {};
+  return Number(value.lockedUntil || 0) > Date.now();
+}
+
+async function recordLoginFailure(req, username) {
+  const ref = loginAttemptRef(req, username);
+  const now = Date.now();
+  await ref.transaction(current => {
+    const recent = current && now - Number(current.startedAt || 0) < LOGIN_LOCK_MS;
+    const failures = recent ? Number(current.failures || 0) + 1 : 1;
+    return { startedAt: recent ? current.startedAt : now, failures, lockedUntil: failures >= LOGIN_MAX_FAILURES ? now + LOGIN_LOCK_MS : 0, updatedAt: now };
+  });
+}
+
 app.post('/api/auth/login', async (req, res) => {
-  const { username, password } = req.body;
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
   
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
   
   try {
-    const adminSnap = await db.ref('system/admin').once('value');
-    const admin = adminSnap.val();
-    
-    if (!admin) {
-      return res.status(500).json({ error: 'Admin not configured' });
-    }
-    
-    // Check username (case-insensitive for username)
-    if (username.toLowerCase() !== admin.username.toLowerCase()) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-    
-    // Check password
-    const valid = bcrypt.compareSync(password, admin.passwordHash);
+    if (!authConfigured()) return res.status(503).json({ error: 'Admin authentication is not configured' });
+    if (await loginIsLocked(req, username)) return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+    const valid = username.toLowerCase() === ADMIN_USERNAME.toLowerCase() && await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
     if (!valid) {
+      await recordLoginFailure(req, username);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     
     // Generate JWT
     const token = jwt.sign(
-      { username: admin.username, role: 'admin' },
+      { username: ADMIN_USERNAME, role: 'admin' },
       JWT_SECRET,
       { expiresIn: JWT_EXPIRES }
     );
     
-    res.json({ ok: true, token, username: admin.username });
+    await loginAttemptRef(req, username).remove();
+    res.set('Set-Cookie', sessionCookie(token));
+    res.set('Cache-Control', 'no-store');
+    res.json({ ok: true, user: { username: ADMIN_USERNAME, role: 'admin' } });
   } catch (e) {
     console.error('[Auth Login Error]', e);
     res.status(500).json({ error: 'Login failed' });
   }
 });
 
+app.post('/api/auth/logout', (_req, res) => {
+  res.set('Set-Cookie', sessionCookie('', 0));
+  res.set('Cache-Control', 'no-store');
+  res.status(204).end();
+});
+
 // GET /api/auth/verify - Check if token is still valid
 app.get('/api/auth/verify', authMiddleware, (req, res) => {
+  res.set('Cache-Control', 'no-store');
   res.json({ ok: true, user: req.user });
 });
 
@@ -3164,7 +3232,7 @@ app.get('/api/routes/:id/vehicles', async (req, res) => {
 //  DELETE /api/fleet/:id        ← ลบรถออกจากระบบ
 //  PATCH /api/fleet/:id         ← แก้ไขรถ (เปลี่ยน routeId)
 // ============================================================
-app.get('/api/fleet', async (req, res) => {
+app.get('/api/fleet', authMiddleware, async (req, res) => {
   try {
     await ensureDemoFleetRunning('fleet');
     const [fleetSnap, demoMode] = await Promise.all([db.ref('fleet').once('value'), getDemoMode()]);
@@ -3309,6 +3377,7 @@ app.post('/api/admin/command', authMiddleware, async (req, res) => {
     }
 
     const command = {
+      commandId: crypto.randomUUID(),
       vehicleId,
       cmd,
       val: cmd === 'reboot' ? 0 : Math.round(val),
@@ -3323,7 +3392,11 @@ app.post('/api/admin/command', authMiddleware, async (req, res) => {
   }
 });
 
-app.get('/api/ground/command', async (_req, res) => {
+app.get('/api/ground/command', async (req, res) => {
+  const groundId = firebaseKeyPart(req.query.ground_id || req.get('X-Ground-Id'));
+  if (!groundId || !await verifyGroundKey(groundId, req.get('X-Ground-Key'))) {
+    return res.status(403).json({ error: 'Ground key is not authorized' });
+  }
   try {
     const ref = db.ref('system/pending_command');
     const snap = await ref.once('value');
@@ -3332,12 +3405,25 @@ app.get('/api/ground/command', async (_req, res) => {
       return res.json({ ok: true, command: null });
     }
 
-    await ref.update({ status: 'sent', sentAt: Date.now() });
-    return res.json({ ok: true, command });
+    return res.json({ ok: true, command: { ...command, commandId: command.commandId || String(command.ts || Date.now()) } });
   } catch (error) {
     console.error('[GET /api/ground/command]', error);
     return res.status(500).json({ error: 'command_poll_failed' });
   }
+});
+
+app.post('/api/ground/command/:commandId/ack', async (req, res) => {
+  const groundId = firebaseKeyPart(req.body?.ground_id || req.get('X-Ground-Id'));
+  if (!groundId || !await verifyGroundKey(groundId, req.get('X-Ground-Key'))) {
+    return res.status(403).json({ error: 'Ground key is not authorized' });
+  }
+  const ref = db.ref('system/pending_command');
+  const snap = await ref.once('value');
+  const command = snap.val();
+  const commandId = String(req.params.commandId || '');
+  if (!command || String(command.commandId || command.ts) !== commandId) return res.status(404).json({ error: 'Command not found' });
+  await ref.update({ status: 'acknowledged', acknowledgedAt: Date.now(), groundId });
+  return res.json({ ok: true });
 });
 
 app.get('/api/v1/network', async (req, res) => {
@@ -3710,17 +3796,15 @@ app.post('/api/diagnostics/pdr-test/:sessionId/stop', authMiddleware, async (req
   }
 });
 
-app.use((req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.use('/api', (_req, res) => res.status(404).json({ error: 'api_not_found' }));
+app.use((_req, res) => res.status(404).send('Not found'));
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, async () => {
-  // Initialize default data
-  await initializeDefaultData();
+if (require.main === module) app.listen(PORT, async () => {
+  // Seeding is intentionally disabled; use an explicit migration instead.
 
   // If demoMode is enabled in config, auto-start the simulator
-  try {
+  if (process.env.ENABLE_LEGACY_DEMO_BOOT === 'true') try {
     const demoMode = await getDemoMode();
     if (demoMode && activeDemoIntervalCount() === 0) {
       console.log('🧬 [Boot] Demo Mode is enabled in Firebase and no demo interval is active. Starting simulator...');
@@ -3740,3 +3824,5 @@ app.listen(PORT, async () => {
   console.log(`    Demo start: POST http://localhost:${PORT}/api/demo/start`);
   console.log(`    Config:     GET  http://localhost:${PORT}/api/config\n`);
 });
+
+module.exports = app;

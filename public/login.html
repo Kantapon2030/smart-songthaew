@@ -79,7 +79,7 @@
   <form id="login-form">
     <div class="form-group">
       <label class="form-label">ชื่อผู้ใช้</label>
-      <input type="text" class="form-input" id="username" placeholder="Admin123" required/>
+      <input type="text" class="form-input" id="username" placeholder="Administrator" autocomplete="username" required/>
     </div>
     
     <div class="form-group">
@@ -99,22 +99,14 @@ const errorMsg = document.getElementById('error-msg');
 const loginBtn = document.getElementById('login-btn');
 
 // Check if already logged in
-const token = localStorage.getItem('adminToken');
-if (token) {
-  // Verify token
-  fetch('/api/auth/verify', {
-    headers: { 'Authorization': 'Bearer ' + token }
-  })
+fetch('/api/auth/verify', { credentials: 'same-origin' })
   .then(r => r.json())
   .then(data => {
     if (data.ok) {
       window.location.href = '/admin.html';
-    } else {
-      localStorage.removeItem('adminToken');
     }
   })
-  .catch(() => localStorage.removeItem('adminToken'));
-}
+  .catch(() => {});
 
 loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -135,9 +127,7 @@ loginForm.addEventListener('submit', async (e) => {
     
     const data = await res.json();
     
-    if (data.ok && data.token) {
-      localStorage.setItem('adminToken', data.token);
-      localStorage.setItem('adminUsername', data.username);
+    if (data.ok) {
       window.location.href = '/admin.html';
     } else {
       errorMsg.textContent = data.error || 'เข้าสู่ระบบไม่สำเร็จ';

@@ -21,12 +21,7 @@ yarn-error.log*
 .pnpm-debug.log*
 *.log
 
-# Arduino build artifacts
-*.hex
-*.elf
-*.bin
-# Firmware binaries in public/firmware are committed for Vercel static serving.
-!public/firmware/*.bin
+# Build artifacts
 build/
 *.cache
 

@@ -102,7 +102,12 @@ async function initOpsMapIfNeeded() {
 async function refreshOperations() {
   try {
     const [fleet, routePayload, peakHours, config, historyAnalytics] = await Promise.all([
-      fetch('/api/fleet').then(r => r.json()),
+      fetch('/api/v1/vehicles').then(r => r.ok ? r.json() : { vehicles: [] }).then(payload => Object.fromEntries((payload.vehicles || []).map(vehicle => [vehicle.vehicle_id, {
+        vehicleId: vehicle.vehicle_id,
+        routeId: vehicle.route_id || 'unassigned',
+        type: vehicle.type || 'real',
+        current: { ...vehicle, timestamp: Number(vehicle.last_seen || 0) * 1000 },
+      }]))),
       fetchPassengerRoutes(),
       fetch('/api/analytics/peak-hours').then(r => r.ok ? r.json() : {}),
       fetch('/api/config').then(r => r.ok ? r.json() : {}),

@@ -383,7 +383,7 @@ async function loadBatteryRecommendations() {
     renderBatteryCurrentReadings(rows, cfg);
 
     if (!rows.length) {
-      box.innerHTML = '<div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถหลังอัป firmware</div>';
+      box.innerHTML = '<div class="battery-recommendation">ยังไม่มี batteryRaw จากรถ ให้รอ packet ใหม่จากรถ</div>';
       return;
     }
 

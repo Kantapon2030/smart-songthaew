@@ -517,7 +517,6 @@ function selectedNodeTelemetryRows(node) {
     ['Packet', [node.seq != null ? `seq ${node.seq}` : null, node.packet_id || null].filter(Boolean).join(' / ') || '--'],
     ['Relay chain', Array.isArray(node.relay_chain) && node.relay_chain.length ? node.relay_chain.join(' -> ') : node.relay_from || 'direct'],
     ['Neighbors', Array.isArray(node.neighbors) && node.neighbors.length ? node.neighbors.length : '--'],
-    ['Firmware', Array.isArray(node.version_summary) && node.version_summary.length ? node.version_summary.join(', ') : '--'],
   ];
 }
 
