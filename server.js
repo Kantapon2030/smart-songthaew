@@ -2986,7 +2986,6 @@ app.get('/api/demo/debug', async (_req, res) => {
 //  AUTHENTICATION APIs
 // ============================================================
 
-// POST /api/auth/login
 function loginAttemptRef(req, username) {
   return db.ref(`security/login_attempts/${hashKey(`${req.ip || 'unknown'}:${String(username || '').toLowerCase()}`)}`);
 }
@@ -3016,9 +3015,9 @@ app.post('/api/auth/login', async (req, res) => {
   
   try {
     if (!authConfigured()) return res.status(503).json({ error: 'Admin authentication is not configured' });
-    if (await loginIsLocked(req, username)) return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
     const valid = username.toLowerCase() === ADMIN_USERNAME.toLowerCase() && await bcrypt.compare(password, ADMIN_PASSWORD_HASH);
     if (!valid) {
+      if (await loginIsLocked(req, username)) return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
       await recordLoginFailure(req, username);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
