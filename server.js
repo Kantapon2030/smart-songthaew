@@ -40,13 +40,17 @@ const packageJson = require('./package.json');
 // [DEPLOY] อ่าน credentials จาก Environment Variable (Railway/Vercel)
 // local dev: fallback อ่านจากไฟล์ firebase-service-account.json
 let serviceAccount;
+let firebaseInitError = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = String(serviceAccount.private_key).replace(/\\n/g, '\n');
+    }
     console.log('[Firebase] Using credentials from ENV');
   } catch (e) {
     console.error('[Firebase] ERROR: FIREBASE_SERVICE_ACCOUNT is not valid JSON');
-    process.exit(1);
+    firebaseInitError = e;
   }
 } else {
   try {
@@ -56,22 +60,28 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     console.error('[Firebase] ERROR: No credentials found.');
     console.error('  - Set FIREBASE_SERVICE_ACCOUNT env var (production)');
     console.error('  - Or place firebase-service-account.json in project root (local)');
-    process.exit(1);
+    firebaseInitError = e;
   }
 }
 
-admin.initializeApp({
-  credential:  admin.credential.cert(serviceAccount),
-  databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://smart-songthaew-50aff-default-rtdb.asia-southeast1.firebasedatabase.app',
-});
-
-const db = admin.database();
+let db = null;
+if (serviceAccount) {
+  try {
+    admin.initializeApp({
+      credential:  admin.credential.cert(serviceAccount),
+      databaseURL: process.env.FIREBASE_DATABASE_URL || 'https://smart-songthaew-50aff-default-rtdb.asia-southeast1.firebasedatabase.app',
+    });
+    db = admin.database();
+  } catch (e) {
+    firebaseInitError = e;
+    console.error('[Firebase] ERROR: Failed to initialize Firebase Admin:', e.message);
+  }
+}
 
 // ── JWT Config ────────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
-  console.error('[FATAL] JWT_SECRET environment variable is not set. Server will not start.');
-  process.exit(1);
+  console.error('[AUTH] JWT_SECRET environment variable is not set. Admin login is disabled.');
 }
 const JWT_EXPIRES = '8h'; // 8 hours
 const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || '').trim();
@@ -305,23 +315,37 @@ app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', async (_req, res) => {
-  let firebase = 'ok';
-  try {
-    await timeoutPromise(db.ref('system/config').once('value'), 3000, 'firebase_health');
-  } catch (error) {
-    firebase = 'error';
-    console.error('[HEALTH] Firebase check failed:', error.message);
+  let firebase = db ? 'ok' : 'error';
+  if (db) {
+    try {
+      await timeoutPromise(db.ref('system/config').once('value'), 3000, 'firebase_health');
+    } catch (error) {
+      firebase = 'error';
+      console.error('[HEALTH] Firebase check failed:', error.message);
+    }
   }
 
   const ready = firebase === 'ok' && authConfigured();
   res.status(ready ? 200 : 503).json({
     status: ready ? 'ok' : 'degraded',
     firebase,
+    firebaseError: firebaseInitError ? firebaseInitError.message : undefined,
     auth: authConfigured() ? 'ok' : 'misconfigured',
     uptime_s: Math.floor(process.uptime()),
     version: packageJson.version || 'unknown',
     ts: Date.now(),
   });
+});
+
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next();
+  if (!db) {
+    return res.status(503).json({
+      error: 'firebase_unavailable',
+      message: 'Firebase is not configured or failed to initialize',
+    });
+  }
+  return next();
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
