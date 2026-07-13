@@ -314,6 +314,10 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: '256kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+app.get('/api/maps/key', (_req, res) => {
+  res.json({ key: GMAPS_KEY || '' });
+});
+
 app.get('/api/health', async (_req, res) => {
   let firebase = db ? 'ok' : 'error';
   if (db) {
@@ -334,6 +338,21 @@ app.get('/api/health', async (_req, res) => {
     uptime_s: Math.floor(process.uptime()),
     version: packageJson.version || 'unknown',
     ts: Date.now(),
+  });
+});
+
+app.get('/api/config', (_req, res, next) => {
+  if (db) return next();
+  return res.json({
+    demoMode: false,
+    demoVehicles: 1,
+    routeName: 'Nakhon Si Thammarat - Phrom Khiri',
+    offlineTimeout: 90,
+    announcement: '',
+    groundStation: { id: 'GROUND_01', label: 'Ground Station', lat: 8.4304, lng: 99.9631 },
+    batteryCalibration: { adcMax: 1023, adcRefV: 3.3, dividerRatio: 6.6508, emptyVoltage: 3.30, fullVoltage: 4.19 },
+    updatedAt: null,
+    degraded: true,
   });
 });
 
