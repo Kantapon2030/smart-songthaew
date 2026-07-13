@@ -956,6 +956,31 @@
         border-radius: 0;
       }
     }
+    /* Shared renovation layer: clear hierarchy without reducing admin density. */
+    #admin-page .card {
+      overflow: hidden;
+      transition: transform var(--motion-base) var(--ease-out), box-shadow var(--motion-base) var(--ease-out), border-color var(--motion-fast);
+    }
+    #admin-page .card:hover {
+      border-color: rgba(37,99,235,.28);
+      box-shadow: 0 12px 28px rgba(15,23,42,.10);
+      transform: translateY(-2px);
+    }
+    .admin-tabs .admin-tab-btn {
+      position: relative;
+      overflow: hidden;
+      transition: transform var(--motion-fast) var(--ease-spring), color var(--motion-fast), background var(--motion-fast), border-color var(--motion-fast);
+    }
+    .admin-tabs .admin-tab-btn:hover { transform: translateY(-1px); }
+    .admin-tabs .admin-tab-btn.active {
+      box-shadow: 0 8px 18px rgba(37,99,235,.22);
+    }
+    .admin-tab-panel.active .card,
+    .admin-grid-panel.active .card { animation: ui-rise-in var(--motion-slow) var(--ease-out) both; }
+    .demo-banner {
+      border-left: 4px solid var(--purple);
+      background: linear-gradient(110deg, var(--purple-50), #fff 62%, var(--blue-50));
+    }
   </style>
 </head>
 <body data-page="admin">

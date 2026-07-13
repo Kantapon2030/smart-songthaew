@@ -35,6 +35,7 @@ async function initPassengerPage() {
   document.getElementById('current-location-icon').innerHTML = pinSvg(14, '#334155');
   document.getElementById('drop-pin-icon').innerHTML = pinSvg(14, '#334155');
   bindPassengerControls();
+  updateHomeLiveStatus('กำลังเชื่อมต่อข้อมูลรถสองแถว', 'stale');
   await initMap();
 }
 
@@ -76,6 +77,7 @@ function bindPassengerControls() {
   plannerToggle?.addEventListener('click', () => {
     const expanded = planner.classList.toggle('is-expanded');
     plannerToggle.setAttribute('aria-expanded', String(expanded));
+    plannerToggle.setAttribute('aria-label', expanded ? 'ย่อแผงวางแผนการเดินทาง' : 'เปิดแผงวางแผนการเดินทาง');
     plannerToggle.querySelector('[aria-hidden="true"]').textContent = expanded ? '⌄' : '⌃';
   });
   document.querySelector('.sidebar-handle')?.addEventListener('click', () => plannerToggle?.click());
@@ -122,6 +124,7 @@ function changeRoute(routeId) {
   const route = routesById[routeId];
   if (!route || !map) return;
   currentRouteId = routeId;
+  updateHomeLiveStatus(`กำลังแสดง ${route.name || routeId}`, 'stale');
   const localSelect = document.getElementById('route-select');
   const sharedSelect = document.getElementById('shared-route-select');
   if (localSelect) localSelect.value = routeId;
@@ -148,8 +151,8 @@ function drawRoute(route) {
     path,
     map,
     strokeColor: routeColor(route),
-    strokeWeight: 5,
-    strokeOpacity: 0.9,
+    strokeWeight: 6,
+    strokeOpacity: 0.92,
   });
   if (path.length) {
     const bounds = new google.maps.LatLngBounds();
@@ -401,8 +404,15 @@ async function fetchVehicles() {
     renderVehicleCard(vehicleData[selectedVehicleId]);
     renderRecommendedStops();
     updateVehicleNotice(selectedVehicleId ? '' : (visibleVehicles.some(vehicle => vehicle.status === 'online') ? 'ไม่มีรถที่กำลังมาถึงจุดนี้' : ''));
+    const onlineCount = visibleVehicles.filter(vehicle => vehicle.status === 'online').length;
+    const route = routesById[currentRouteId];
+    updateHomeLiveStatus(
+      onlineCount ? `${route?.name || 'สายที่เลือก'} · รถออนไลน์ ${onlineCount} คัน` : `${route?.name || 'สายที่เลือก'} · ยังไม่มีรถออนไลน์`,
+      onlineCount ? 'live' : 'offline',
+    );
   } catch (error) {
     console.error('[vehicles]', error);
+    updateHomeLiveStatus('ขณะนี้เชื่อมต่อข้อมูลรถไม่ได้', 'offline');
   }
 }
 
@@ -704,6 +714,7 @@ function renderVehicleCard(vehicle) {
   }
   card.classList.add('show');
   const route = routesById[vehicle.route_id] || routesById[currentRouteId];
+  card.style.setProperty('--active-route-color', routeColor(route));
   const status = vehicle.status === 'online' ? 'ออนไลน์' : 'ออฟไลน์';
   const statusEl = document.getElementById('vehicle-status');
   statusEl.textContent = status;
@@ -726,6 +737,15 @@ function renderVehicleCard(vehicle) {
   }
   const nextStop = findNextStop(vehicle, route);
   document.getElementById('vehicle-next-stop').textContent = nextStop ? `${nextStop.name} • ${formatMinutes(eta?.eta_min)}` : '—';
+}
+
+function updateHomeLiveStatus(message, state = 'live') {
+  const copy = document.getElementById('home-live-copy');
+  const dot = document.getElementById('home-live-dot');
+  if (copy) copy.textContent = message;
+  if (!dot) return;
+  dot.classList.toggle('is-stale', state === 'stale');
+  dot.classList.toggle('is-offline', state === 'offline');
 }
 
 function smoothVehicleSpeed(vehicle) {

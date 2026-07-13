@@ -215,3 +215,15 @@ test('static pages include viewport metadata and responsive styles exist', () =>
   assert.ok(read('public/css/style.css').includes('@media'));
   assert.ok(read('public/admin.html').includes('@media'));
 });
+
+test('passenger home exposes live tracking and accessible planner controls', () => {
+  const home = read('public/index.html');
+  const app = read('public/js/app.js');
+  const css = read('public/css/style.css');
+  ['home-live-status', 'home-live-copy', 'home-live-dot', 'planner-toggle-btn', 'aria-controls="journey-planner"'].forEach(hook => {
+    assert.ok(home.includes(hook), `missing passenger UI hook: ${hook}`);
+  });
+  assert.ok(app.includes('function updateHomeLiveStatus'));
+  assert.ok(css.includes('--motion-base'));
+  assert.ok(css.includes('prefers-reduced-motion'));
+});

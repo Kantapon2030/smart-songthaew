@@ -61,6 +61,18 @@
   --nav-height:          48px;
   --sidebar-width:       220px;
   --tap-target:          44px;
+
+  /* Local transit character + consistent motion */
+  --color-route-blue:    #2563eb;
+  --color-route-coral:   #ef4444;
+  --color-route-gold:    #f59e0b;
+  --color-route-teal:    #0f9f8a;
+  --color-route-violet:  #8b5cf6;
+  --motion-fast:         140ms;
+  --motion-base:         240ms;
+  --motion-slow:         420ms;
+  --ease-out:            cubic-bezier(.22, 1, .36, 1);
+  --ease-spring:         cubic-bezier(.34, 1.56, .64, 1);
 }
 
 /* ─── Reset ─── */
@@ -80,6 +92,45 @@ html, body {
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 a { color: inherit; }
+
+:focus-visible {
+  outline: 3px solid rgba(245, 158, 11, .8);
+  outline-offset: 3px;
+}
+
+@keyframes ui-rise-in {
+  from { opacity: 0; transform: translateY(10px) scale(.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes ui-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(22, 163, 74, .44); }
+  65% { box-shadow: 0 0 0 8px rgba(22, 163, 74, 0); }
+}
+
+@keyframes ui-route-sheen {
+  from { background-position: 180% 0; }
+  to { background-position: -40% 0; }
+}
+
+.ui-surface {
+  border: 1px solid rgba(255,255,255,.72);
+  box-shadow: 0 14px 38px rgba(15,23,42,.14);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.ui-live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex: 0 0 auto;
+  animation: ui-live-pulse 1.8s ease-out infinite;
+}
+
+.ui-live-dot.is-stale { background: var(--color-warning); animation: none; }
+.ui-live-dot.is-offline { background: var(--color-offline); animation: none; }
 
 /* ─────────────────────────────────────────
    Navigation Bar
@@ -228,6 +279,17 @@ a { color: inherit; }
   min-height: 28px;
   transition: background 0.15s, border-color 0.15s;
 }
+.button,
+.icon-button,
+.language-pill,
+.nav-link,
+.card,
+.stat-card,
+.report-card {
+  transition: transform var(--motion-fast) var(--ease-out), box-shadow var(--motion-base) var(--ease-out), background var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast);
+}
+.button:active,
+.icon-button:active { transform: scale(.96); }
 
 .language-pill { padding: 0 8px; font-weight: 700; font-size: 12px; }
 

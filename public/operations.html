@@ -264,6 +264,24 @@
         scroll-snap-align: start;
       }
     }
+    /* Shared renovation layer: operation state is vivid, but scanning stays fast. */
+    .ops-sidebar { background: linear-gradient(180deg, #fff, #f8fbff); }
+    .ops-nav-item { position: relative; transition: transform var(--motion-fast) var(--ease-out), background var(--motion-fast), color var(--motion-fast); }
+    .ops-nav-item:hover { transform: translateX(2px); }
+    .ops-nav-item.active::before {
+      content: '';
+      position: absolute;
+      left: -6px;
+      width: 4px;
+      height: 22px;
+      border-radius: 999px;
+      background: linear-gradient(var(--color-route-gold), var(--color-route-coral));
+    }
+    .stat-card { transition: transform var(--motion-base) var(--ease-out), box-shadow var(--motion-base) var(--ease-out); }
+    .stat-card:hover { transform: translateY(-3px); box-shadow: 0 14px 28px rgba(15,23,42,.12); }
+    .ops-section.active .stat-card,
+    .ops-section.active .card { animation: ui-rise-in var(--motion-slow) var(--ease-out) both; }
+    .report-card:hover { transform: translateY(-3px); box-shadow: 0 14px 28px rgba(15,23,42,.12); }
   </style>
 </head>
 <body data-page="operations">
