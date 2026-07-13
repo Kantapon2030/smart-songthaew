@@ -34,8 +34,8 @@ async function initPassengerPage() {
   });
   document.getElementById('vehicle-image').innerHTML = busSvg(34, '#2563EB');
   document.getElementById('mesh-toggle-icon').innerHTML = antennaSvg(16, '#64748B');
-  document.getElementById('current-location-icon').innerHTML = pinSvg(14, '#334155');
-  document.getElementById('drop-pin-icon').innerHTML = pinSvg(14, '#334155');
+  document.getElementById('current-location-icon').innerHTML = targetSvg(18, '#334155');
+  document.getElementById('drop-pin-icon').innerHTML = pinSvg(18, '#334155');
   syncVehicleCardPlacement();
   setMobileSheetState('collapsed');
   bindPassengerControls();
@@ -102,9 +102,7 @@ function syncVehicleCardPlacement() {
   const mobileSlot = document.getElementById('mobile-vehicle-slot');
   const desktopAnchor = document.getElementById('desktop-vehicle-anchor');
   if (!card || !mobileSlot || !desktopAnchor) return;
-  if (MOBILE_HOME_MEDIA.matches) {
-    if (card.parentElement !== mobileSlot) mobileSlot.appendChild(card);
-  } else if (card.previousElementSibling !== desktopAnchor) {
+  if (card.previousElementSibling !== desktopAnchor) {
     desktopAnchor.insertAdjacentElement('afterend', card);
   }
 }
@@ -826,6 +824,8 @@ function renderVehicleCard(vehicle) {
   const statusEl = document.getElementById('vehicle-status');
   statusEl.textContent = status;
   statusEl.className = `status-badge ${vehicle.status === 'online' ? 'status-online' : 'status-offline'}`;
+  const titleEl = card.querySelector('.card-title');
+  if (titleEl) titleEl.textContent = `รถ ${vehicle.vehicle_id || 'ที่ระบบเลือกให้'}`;
   document.getElementById('vehicle-updated').textContent = `อัปเดต ${vehicleAge(vehicle)} วินาทีที่แล้ว`;
   document.getElementById('vehicle-route').textContent = route?.name || vehicle.route_id || '—';
   document.getElementById('vehicle-plate').textContent = vehicle.plate ? `ทะเบียน ${vehicle.plate}` : vehicle.vehicle_id;
@@ -833,6 +833,8 @@ function renderVehicleCard(vehicle) {
   const eta = etaState.value;
   document.getElementById('vehicle-eta').textContent = formatMinutes(eta?.eta_min);
   document.getElementById('vehicle-distance').textContent = formatDistanceMeters(eta?.distance_m);
+  const arrivalEl = document.getElementById('vehicle-arrival');
+  if (arrivalEl) arrivalEl.textContent = formatArrivalTime(eta?.eta_min);
   const speedEl = document.getElementById('vehicle-speed');
   if (speedEl) speedEl.textContent = formatSpeedKmh(smoothVehicleSpeed(vehicle));
   const seatStat = document.getElementById('vehicle-seat-stat');
@@ -853,6 +855,17 @@ function updateHomeLiveStatus(message, state = 'live') {
   if (!dot) return;
   dot.classList.toggle('is-stale', state === 'stale');
   dot.classList.toggle('is-offline', state === 'offline');
+}
+
+function formatArrivalTime(etaMin) {
+  const minutes = Number(etaMin);
+  if (!Number.isFinite(minutes)) return '—';
+  const arrival = new Date(Date.now() + Math.max(0, Math.round(minutes)) * 60000);
+  return arrival.toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+}
+
+function targetSvg(size = 18, color = 'currentColor') {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M12 3v3M12 18v3M3 12h3M18 12h3" stroke="${color}" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="6" stroke="${color}" stroke-width="2"/><circle cx="12" cy="12" r="2.4" fill="${color}"/></svg>`;
 }
 
 function smoothVehicleSpeed(vehicle) {

@@ -228,7 +228,7 @@ test('passenger home exposes live tracking and accessible planner controls', () 
   assert.ok(css.includes('prefers-reduced-motion'));
 });
 
-test('mobile passenger tools use one stateful sheet without hidden origin controls', () => {
+test('mobile passenger tools expose top route tab, floating location actions, and vehicle summary', () => {
   const home = read('public/index.html');
   const app = read('public/js/app.js');
   [
@@ -238,13 +238,21 @@ test('mobile passenger tools use one stateful sheet without hidden origin contro
     'desktop-vehicle-anchor',
     'pin-picking-banner',
     'cancel-pin-pick-btn',
+    'vehicle-arrival',
   ].forEach(hook => assert.ok(home.includes(hook), `missing unified sheet hook: ${hook}`));
   assert.ok(home.indexOf('location-control-row') < home.indexOf('mobile-sheet-expanded'));
+  assert.ok(home.includes('top: calc(var(--nav-height) + 12px);'));
+  assert.ok(home.includes('right: 86px;'));
+  assert.ok(home.includes('grid-template-columns: 54px;'));
+  assert.ok(home.includes('bottom: calc(64px + env(safe-area-inset-bottom, 0px) + 8px);'));
   [
     "let mobileSheetState = 'collapsed'",
     'function setMobileSheetState',
     'function syncVehicleCardPlacement',
     'function directionDestinationLabel',
+    'function formatArrivalTime',
+    'function targetSvg',
     "setMobileSheetState('pin-picking')",
   ].forEach(hook => assert.ok(app.includes(hook), `missing mobile sheet behavior: ${hook}`));
+  assert.ok(app.includes("desktopAnchor.insertAdjacentElement('afterend', card)"));
 });

@@ -173,11 +173,26 @@
       gap: 6px;
     }
 
+    .map-location-actions {
+      position: fixed;
+      z-index: 630;
+      top: calc(var(--nav-height) + 70px);
+      right: 16px;
+      width: 320px;
+      max-width: calc(100vw - 32px);
+      margin-top: 0;
+      padding: 0;
+    }
+
     .location-control-row .button {
       min-width: 0;
       padding: 0 8px;
       white-space: normal;
       text-align: center;
+    }
+
+    .location-control-row .button svg {
+      flex: 0 0 auto;
     }
 
     .origin-status {
@@ -333,7 +348,7 @@
 
     .vehicle-stats {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 5px;
       margin-top: 8px;
     }
@@ -406,24 +421,23 @@
     @media (max-width: 860px) {
       .journey-sidebar {
         position: fixed;
-        top: auto;
-        left: 8px;
-        right: 8px;
-        bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+        top: calc(var(--nav-height) + 12px);
+        left: 12px;
+        right: 86px;
+        bottom: auto;
         width: auto;
         max-width: none;
-        max-height: min(54dvh, 430px);
-        border-radius: 16px 16px 10px 10px;
-        padding: 26px 12px 12px;
-        box-shadow: 0 -8px 32px rgba(15,23,42,.16);
-        transition: max-height var(--motion-slow) var(--ease-out), transform var(--motion-slow) var(--ease-spring);
-        touch-action: pan-y;
-        overflow-y: auto;
+        max-height: none;
+        overflow: visible;
+        border-radius: 22px;
+        padding: 10px;
+        box-shadow: 0 12px 28px rgba(15,23,42,.18);
+        transition: transform var(--motion-slow) var(--ease-spring), opacity var(--motion-base) var(--ease-out);
+        touch-action: manipulation;
       }
 
       .sidebar-handle {
-        display: block;
-        min-height: 44px !important;
+        display: none;
       }
 
       .journey-title {
@@ -437,13 +451,13 @@
       .route-control-row {
         grid-template-columns: minmax(0, 1fr);
         gap: 6px;
-        margin-bottom: 6px;
+        margin-bottom: 8px;
       }
 
       #swap-route-btn { display: none; }
 
       .direction-label {
-        margin-top: 5px;
+        margin-top: 0;
         font-size: 11px;
       }
 
@@ -468,19 +482,44 @@
       }
 
       .origin-status {
-        min-height: 12px;
-        margin-top: 4px;
-        font-size: 9px;
+        position: fixed;
+        z-index: 628;
+        top: calc(var(--nav-height) + 132px);
+        left: 12px;
+        right: 86px;
+        min-height: 0;
+        margin-top: 0;
+        padding: 7px 10px;
+        border: 1px solid rgba(255,255,255,.82);
+        border-radius: 999px;
+        background: rgba(255,255,255,.92);
+        box-shadow: 0 10px 22px rgba(15,23,42,.14);
+        color: var(--color-ink);
+        font-size: 10px;
+        font-weight: 800;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-6px);
+        transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out);
+      }
+      .origin-status.has-message {
+        opacity: 1;
+        transform: translateY(0);
       }
 
       .mobile-sheet-essential { display: block; }
-      .mobile-sheet-expanded { display: none; }
+      .mobile-sheet-expanded,
+      .mobile-vehicle-slot {
+        display: none;
+      }
       .journey-sidebar.is-expanded {
-        max-height: min(78dvh, 680px);
+        right: 12px;
+        max-height: min(70dvh, 560px);
         overflow-y: auto;
+        border-radius: 18px;
       }
       .journey-sidebar.is-expanded .mobile-sheet-expanded { display: block; }
 
@@ -494,63 +533,79 @@
         font-weight: 800;
       }
       .pin-picking-banner .button { flex: 0 0 auto; }
-      .journey-sidebar.is-pin-picking { max-height: 96px; overflow: hidden; }
+      .journey-sidebar.is-pin-picking {
+        right: 12px;
+        max-height: 74px;
+        overflow: hidden;
+        border-color: rgba(37,99,235,.24);
+      }
       .journey-sidebar.is-pin-picking .mobile-sheet-essential,
       .journey-sidebar.is-pin-picking .mobile-sheet-expanded,
       .journey-sidebar.is-pin-picking .mobile-vehicle-slot { display: none; }
       .journey-sidebar.is-pin-picking .pin-picking-banner { display: flex; }
 
-      .mobile-vehicle-slot { display: block; }
-
       .vehicle-card {
-        position: static;
-        inset: auto;
-        width: 100%;
-        max-width: 100%;
+        position: fixed;
+        left: 10px;
+        right: 10px;
+        bottom: calc(64px + env(safe-area-inset-bottom, 0px) + 8px);
+        z-index: 650;
+        width: auto;
+        max-width: none;
         max-height: none;
-        margin-top: 8px;
+        margin-top: 0;
         overflow: hidden;
-        transform: none;
-        box-shadow: none;
+        transform: translateY(16px);
+        border-radius: 22px 22px 14px 14px;
+        box-shadow: 0 -12px 34px rgba(15,23,42,.2);
         border-color: color-mix(in srgb, var(--active-route-color, var(--color-primary)) 22%, var(--color-border));
       }
 
       .vehicle-card:not(.show) { display: none; }
-      .vehicle-card.show { display: block; transform: none; }
+      .vehicle-card.show { display: block; transform: translateY(0); }
+      .vehicle-card::before {
+        content: '';
+        display: block;
+        width: 48px;
+        height: 5px;
+        margin: 8px auto 0;
+        border-radius: 999px;
+        background: #cbd5e1;
+      }
 
       .vehicle-card .card-header {
-        padding: 7px 9px;
+        padding: 8px 14px 6px;
         align-items: center;
         flex-direction: row;
-        min-height: 38px;
+        min-height: 44px;
       }
 
       .vehicle-card .card-title {
-        font-size: 13px;
+        font-size: 18px;
         line-height: 1.15;
-        max-width: 220px;
+        max-width: calc(100vw - 150px);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
 
       .vehicle-card .card-subtitle {
-        font-size: 9px;
+        font-size: 10px;
         margin-top: 0;
       }
 
       .vehicle-card .card-body {
         display: block;
-        padding: 7px 9px 9px;
+        padding: 4px 14px 14px;
       }
 
       .vehicle-hero {
-        grid-template-columns: 1fr;
-        gap: 2px;
+        grid-template-columns: 74px minmax(0, 1fr);
+        gap: 10px;
       }
 
       #vehicle-route {
-        font-size: 13px;
+        font-size: 14px;
         font-weight: 800;
         line-height: 1.25;
         overflow: hidden;
@@ -559,19 +614,23 @@
       }
 
       #vehicle-plate {
-        font-size: 9px;
+        font-size: 11px;
         margin-top: 1px !important;
       }
 
-      .vehicle-image,
       #vehicle-seat-stat {
         display: none;
+      }
+      .vehicle-image {
+        display: flex;
+        width: 74px;
+        height: 58px;
       }
 
       .next-stop {
         display: block;
-        margin-top: 6px;
-        padding: 6px 8px;
+        margin-top: 8px;
+        padding: 8px 10px;
       }
       .next-stop .item-title {
         overflow: hidden;
@@ -580,23 +639,23 @@
       }
 
       .vehicle-stats {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        margin-top: 5px;
-        gap: 4px;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        margin-top: 8px;
+        gap: 5px;
       }
 
       .vehicle-stat {
-        padding: 3px 3px;
+        padding: 6px 3px;
       }
 
       .vehicle-stat strong {
-        font-size: 14px;
+        font-size: 13px;
       }
 
-      .vehicle-stat:first-child strong { font-size: 20px; color: var(--active-route-color, var(--color-primary)); }
+      .vehicle-stat:first-child strong { font-size: 24px; color: var(--active-route-color, var(--color-primary)); }
 
       .vehicle-stat span {
-        font-size: 8px;
+        font-size: 9px;
       }
 
       #mesh-toggle-wrap {
@@ -608,7 +667,16 @@
       }
 
       .location-control-row {
-        grid-template-columns: repeat(2, 1fr);
+        position: fixed;
+        top: calc(var(--nav-height) + 12px);
+        right: 12px;
+        left: auto;
+        width: 54px;
+        max-width: 54px;
+        display: grid;
+        grid-template-columns: 54px;
+        gap: 10px;
+        margin-top: 0;
       }
 
       .location-control-row .button,
@@ -620,22 +688,45 @@
         font-size: 14px;
       }
 
+      .location-control-row .button {
+        width: 54px;
+        height: 54px;
+        min-height: 54px;
+        padding: 0;
+        border-radius: 18px;
+        justify-content: center;
+        background: rgba(255,255,255,.95);
+        box-shadow: 0 12px 26px rgba(15,23,42,.18);
+      }
+
+      .location-control-row .button svg {
+        width: 22px;
+        height: 22px;
+      }
+
+      .location-control-row .location-button-label {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+
       .route-control-row .select-control {
         min-width: 0;
+        min-height: 46px;
+        border-radius: 16px;
+        font-weight: 850;
+        color: var(--color-ink);
       }
 
       .home-quick-actions {
-        top: calc(var(--nav-height) + 10px);
-        right: 10px;
+        display: none;
       }
 
       .home-live-status {
-        top: calc(var(--nav-height) + 10px);
-        left: 10px;
-        max-width: calc(100vw - 74px);
-        min-height: 38px;
-        padding: 6px 10px;
-        font-size: 11px;
+        display: none;
       }
       .journey-title::after { display: none; }
 
@@ -645,7 +736,7 @@
 
     @media (max-width: 480px) {
       .vehicle-stats {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
       }
       /* keep popular-grid 3-col even on very small screens */
       .popular-grid {
@@ -771,6 +862,17 @@
     </button>
   </div>
 
+  <div class="location-control-row map-location-actions" aria-label="เลือกตำแหน่งของคุณ">
+    <button id="use-current-location-btn" class="button ghost" type="button" title="ใช้ตำแหน่งปัจจุบัน">
+      <span id="current-location-icon" aria-hidden="true"></span>
+      <span class="location-button-label">ตำแหน่งปัจจุบัน</span>
+    </button>
+    <button id="drop-origin-pin-btn" class="button ghost" type="button" title="วางหมุดบนแผนที่">
+      <span id="drop-pin-icon" aria-hidden="true"></span>
+      <span class="location-button-label">วางหมุด</span>
+    </button>
+  </div>
+
   <!-- No vehicles notice -->
   <div id="no-vehicles-notice" aria-live="polite">ยังไม่มีรถออนไลน์ในเส้นทางนี้</div>
 
@@ -792,16 +894,6 @@
         <button id="direction-inbound" type="button" data-direction="inbound">ขากลับ</button>
       </div>
 
-      <div class="location-control-row" aria-label="เลือกตำแหน่งของคุณ">
-        <button id="use-current-location-btn" class="button ghost" type="button">
-          <span id="current-location-icon" aria-hidden="true"></span>
-          <span class="location-button-label">ตำแหน่งปัจจุบัน</span>
-        </button>
-        <button id="drop-origin-pin-btn" class="button ghost" type="button">
-          <span id="drop-pin-icon" aria-hidden="true"></span>
-          <span class="location-button-label">วางหมุด</span>
-        </button>
-      </div>
       <div id="origin-status" class="origin-status" aria-live="polite"></div>
     </div>
 
@@ -881,8 +973,9 @@
       <div class="vehicle-stats">
         <div class="vehicle-stat"><strong id="vehicle-eta">—</strong><span>ETA</span></div>
         <div class="vehicle-stat"><strong id="vehicle-distance">—</strong><span>ระยะทาง</span></div>
-        <div class="vehicle-stat" id="vehicle-seat-stat"><strong id="vehicle-seats">—</strong><span>ที่นั่ง</span></div>
         <div class="vehicle-stat"><strong id="vehicle-speed">--</strong><span>Speed</span></div>
+        <div class="vehicle-stat"><strong id="vehicle-arrival">—</strong><span>ถึงเวลา</span></div>
+        <div class="vehicle-stat" id="vehicle-seat-stat"><strong id="vehicle-seats">—</strong><span>ที่นั่ง</span></div>
       </div>
       <div class="next-stop">
         <div class="item-meta">จุดจอดถัดไป</div>
