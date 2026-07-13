@@ -23,29 +23,36 @@
 #include <LoRa.h>
 #include <SPI.h>
 #include <WiFiClientSecure.h>
-#if __has_include("songthaew_secrets.h")
+#if defined(SONGTHAEW_CI_BUILD)
+#include "songthaew_secrets.example.h"
+#elif __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
 #else
 #error "Create songthaew_secrets.h from songthaew_secrets.example.h before flashing."
 #endif
 #include "mesh_config.h"
 
+#ifndef GROUND_KEY
+#define GROUND_KEY ""
+#endif
+
 struct BufferedPacket {
-  String body;
+  char payload[MAX_LORA_PACKET_BYTES + 1];
+  float rssi;
+  float snr;
   bool used;
+  uint8_t attempts;
   unsigned long timestamp;
 };
 
-#define DEDUP_CACHE_SIZE 30
+#define DEDUP_CACHE_SIZE 12
 #define DEDUP_EXPIRE_MS  30000UL
 #define DEDUP_PACKET_ID_LEN 48
-#define SEEN_VEHICLE_SIZE 20
-#define HEARTBEAT_INTERVAL_MS 30000UL
+#define SEEN_VEHICLE_SIZE VEHICLE_COUNT
 #define SEEN_VEHICLE_EXPIRE_MS 90000UL
-#define GROUND_EXPECTED_VEHICLES 3
-#define GROUND_RX_WINDOW_MS (TX_SYNC_GUARD_MS + (GROUND_EXPECTED_VEHICLES * TX_SLOT_SPACING_MS) + 1200UL)
-#define GROUND_RX_QUIET_MS 1800UL
+#define GROUND_RX_QUIET_MS 500UL
 #define GROUND_HTTP_FLUSH_INTERVAL_MS 500UL
+#define GROUND_METRICS_INTERVAL_MS 30000UL
 
 struct DedupEntry {
   char packetId[DEDUP_PACKET_ID_LEN];
@@ -57,7 +64,7 @@ struct SeenVehicle {
   float rssi;
   float snr;
   unsigned long lastSeenMs;
-  unsigned long lastHeartbeatMs;
+  uint32_t rxCount;
   bool used;
 };
 
@@ -71,14 +78,19 @@ bool loraReady = false;
 unsigned long lastWifiCheckMs = 0;
 unsigned long lastBeaconMs = 0;
 unsigned long lastFlushMs = 0;
+unsigned long lastBatchBeaconMs = 0;
 unsigned long lastLoRaRetryMs = 0;
 unsigned long lastHttpLatencyMs = 0;
 unsigned long ledPulseUntilMs = 0;
 unsigned long lastRxMs = 0;
-String lastHttpResponse = "";
 bool ledPulseActive = false;
 uint8_t consecutiveHttpFailures = 0;
 unsigned long lastForcedWifiReconnectMs = 0;
+unsigned long lastMetricsMs = 0;
+uint32_t packetsQueued = 0;
+uint32_t packetsSent = 0;
+uint32_t packetsRetried = 0;
+uint32_t packetsDropped = 0;
 
 bool isVehiclePacket(JsonDocument& doc) {
   const char* type = doc["type"] | "";
@@ -87,8 +99,11 @@ bool isVehiclePacket(JsonDocument& doc) {
 }
 
 bool isValidThailandCoord(float lat, float lng);
-int postToServer(String body);
-void bufferPacket(String body);
+int postBatchToServer(const String& body);
+void bufferPacket(const char* payload, float rssi, float snr);
+int bufferCount();
+bool decodeCompactPacket(const String& raw, JsonDocument& out);
+String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSnr);
 
 void forceWifiReconnect(const char* reason) {
   unsigned long now = millis();
@@ -384,45 +399,35 @@ void noteVehicleSeen(const char* vehicleId, float rssi, float snr) {
   seenVehicles[index].rssi = rssi;
   seenVehicles[index].snr = snr;
   seenVehicles[index].lastSeenMs = millis();
+  seenVehicles[index].rxCount++;
   seenVehicles[index].used = true;
+}
+
+void serviceMetrics() {
+  unsigned long now = millis();
+  if (now - lastMetricsMs < GROUND_METRICS_INTERVAL_MS) return;
+  lastMetricsMs = now;
+  Serial.printf("[GROUND] up:%lus wifi:%s queue:%d queued:%lu sent:%lu retry:%lu drop:%lu heap:%u\n",
+                now / 1000UL, WiFi.status() == WL_CONNECTED ? "OK" : "DOWN", bufferCount(),
+                (unsigned long)packetsQueued, (unsigned long)packetsSent,
+                (unsigned long)packetsRetried, (unsigned long)packetsDropped, ESP.getFreeHeap());
+  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
+    if (!seenVehicles[i].used) continue;
+    if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) {
+      seenVehicles[i].used = false;
+      continue;
+    }
+    Serial.printf("[GROUND_RX] %s count:%lu age:%lus rssi:%.0f snr:%.1f\n",
+                  seenVehicles[i].vehicleId, (unsigned long)seenVehicles[i].rxCount,
+                  (now - seenVehicles[i].lastSeenMs) / 1000UL,
+                  seenVehicles[i].rssi, seenVehicles[i].snr);
+  }
 }
 
 bool isLoRaRxWindow(unsigned long now = millis()) {
   bool beaconWindow = lastBeaconMs != 0 && now - lastBeaconMs < GROUND_RX_WINDOW_MS;
   bool rxQuietWindow = lastRxMs != 0 && now - lastRxMs < GROUND_RX_QUIET_MS;
   return beaconWindow || rxQuietWindow;
-}
-
-void serviceVehicleHeartbeats() {
-  unsigned long now = millis();
-  for (int i = 0; i < SEEN_VEHICLE_SIZE; i++) {
-    if (!seenVehicles[i].used) continue;
-    if (now - seenVehicles[i].lastSeenMs > SEEN_VEHICLE_EXPIRE_MS) {
-      seenVehicles[i].used = false;
-      seenVehicles[i].vehicleId[0] = '\0';
-      continue;
-    }
-    if (now - seenVehicles[i].lastHeartbeatMs < HEARTBEAT_INTERVAL_MS) continue;
-
-    StaticJsonDocument<256> hb;
-    hb["vehicleId"] = seenVehicles[i].vehicleId;
-    hb["heartbeat"] = true;
-    hb["source"] = "ground_station";
-    hb["relay_via"] = "lora";
-    hb["routeId"] = ROUTE_ID;
-    hb["route_id"] = ROUTE_ID;
-    hb["direction"] = ROUTE_DIR;
-    hb["received_rssi"] = seenVehicles[i].rssi;
-    hb["received_snr"] = seenVehicles[i].snr;
-
-    String body;
-    serializeJson(hb, body);
-    seenVehicles[i].lastHeartbeatMs = now;
-    bufferPacket(body);
-    Serial.printf("[HEARTBEAT] queued %s rssi:%.0f snr:%.1f\n",
-                  seenVehicles[i].vehicleId, seenVehicles[i].rssi, seenVehicles[i].snr);
-    yield();
-  }
 }
 
 int oldestBufferIndex() {
@@ -443,54 +448,78 @@ int firstFreeBufferIndex() {
   return -1;
 }
 
-void bufferPacket(String body) {
+int bufferCount() {
+  int count = 0;
+  for (int i = 0; i < BUFFER_SIZE; i++) if (packetBuffer[i].used) count++;
+  return count;
+}
+
+void bufferPacket(const char* payload, float rssi, float snr) {
+  if (payload == nullptr || payload[0] == '\0') return;
   int slot = firstFreeBufferIndex();
   if (slot < 0) {
     slot = oldestBufferIndex();
     Serial.printf("[BUFFER] full, dropping oldest slot:%d\n", slot);
+    packetsDropped++;
   }
 
   if (slot < 0) return;
-  packetBuffer[slot].body = body;
+  strncpy(packetBuffer[slot].payload, payload, sizeof(packetBuffer[slot].payload) - 1);
+  packetBuffer[slot].payload[sizeof(packetBuffer[slot].payload) - 1] = '\0';
+  packetBuffer[slot].rssi = rssi;
+  packetBuffer[slot].snr = snr;
   packetBuffer[slot].used = true;
+  packetBuffer[slot].attempts = 0;
   packetBuffer[slot].timestamp = millis();
-  Serial.printf("[BUFFER] queued slot:%d\n", slot);
+  packetsQueued++;
+  Serial.printf("[BUFFER] queued slot:%d depth:%d\n", slot, bufferCount());
 }
 
 void freeBufferSlot(int index) {
   if (index < 0 || index >= BUFFER_SIZE) return;
-  packetBuffer[index].body = "";
+  packetBuffer[index].payload[0] = '\0';
   packetBuffer[index].used = false;
+  packetBuffer[index].attempts = 0;
   packetBuffer[index].timestamp = 0;
 }
 
-int postToServer(String body) {
+String groundBatchUrl() {
+  String url = SERVER_URL;
+  int apiIndex = url.indexOf("/api/");
+  if (apiIndex >= 0) url.remove(apiIndex);
+  url += "/api/v1/ground/telemetry-batch";
+  return url;
+}
+
+int postBatchToServer(const String& body) {
   lastHttpLatencyMs = 0;
-  lastHttpResponse = "";
   if (!wifiConnected || WiFi.status() != WL_CONNECTED) return -1;
 
   unsigned long started = millis();
   WiFiClientSecure client;
+  client.setBufferSizes(1024, 512);
   client.setInsecure();
-  client.setTimeout(8000);
+  client.setTimeout(GROUND_HTTP_TIMEOUT_MS);
 
   HTTPClient http;
   int code = -1;
-  if (http.begin(client, SERVER_URL)) {
+  String url = groundBatchUrl();
+  if (http.begin(client, url)) {
     http.addHeader("Content-Type", "application/json");
-    http.setTimeout(8000);
+    if (strlen(GROUND_KEY) > 0) http.addHeader("X-Ground-Key", GROUND_KEY);
+    http.setTimeout(GROUND_HTTP_TIMEOUT_MS);
     http.setReuse(false);
     code = http.POST(body);
-    lastHttpResponse = http.getString();
+    String response = http.getString();
+    if (response.length() > 0) {
+      Serial.print("[HTTP_BODY] ");
+      Serial.println(response.substring(0, 180));
+    }
     http.end();
   }
 
   lastHttpLatencyMs = millis() - started;
   Serial.printf("[HTTP] %d %lums\n", code, lastHttpLatencyMs);
-  if (lastHttpResponse.length() > 0) {
-    Serial.print("[HTTP_BODY] ");
-    Serial.println(lastHttpResponse.substring(0, 180));
-  }
   if (code >= 200 && code < 300) {
     consecutiveHttpFailures = 0;
   } else {
@@ -503,40 +532,100 @@ int postToServer(String body) {
   return code;
 }
 
-void flushBuffer(uint8_t maxPosts = 1) {
-  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+bool bufferedPayloadToServerJson(const BufferedPacket& packet, String& out) {
+  StaticJsonDocument<768> rx;
+  DeserializationError error = deserializeJson(rx, packet.payload);
+  if (error) return false;
 
-  uint8_t posted = 0;
-  while (WiFi.status() == WL_CONNECTED && posted < maxPosts) {
-    int index = oldestBufferIndex();
-    if (index < 0) return;
-
-    int code = postToServer(packetBuffer[index].body);
-    if (code >= 200 && code < 300) {
-      freeBufferSlot(index);
-    } else if (code >= 400 && code < 500) {
-      Serial.printf("[BUFFER] dropping bad packet code:%d slot:%d\n", code, index);
-      freeBufferSlot(index);
-    } else {
-      return;
-    }
-    posted++;
-    yield();
+  if (isCompactVehiclePacket(rx)) {
+    StaticJsonDocument<1536> postDoc;
+    if (!decodeCompactPacket(String(packet.payload), postDoc)) return false;
+    postDoc["received_rssi"] = packet.rssi;
+    postDoc["received_snr"] = packet.snr;
+    serializeJson(postDoc, out);
+    return out.length() > 0;
   }
 
-  wifiConnected = false;
+  if (!isVehiclePacket(rx)) return false;
+  out = buildServerPayload(rx, packet.rssi, packet.snr);
+  return out.length() > 0;
+}
+
+int collectOldestBufferIndexes(int* indexes, int maxItems) {
+  int count = 0;
+  while (count < maxItems) {
+    int oldest = -1;
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+      if (!packetBuffer[i].used) continue;
+      bool selected = false;
+      for (int j = 0; j < count; j++) if (indexes[j] == i) selected = true;
+      if (selected) continue;
+      if (oldest < 0 || (long)(packetBuffer[i].timestamp - packetBuffer[oldest].timestamp) < 0) oldest = i;
+    }
+    if (oldest < 0) break;
+    indexes[count++] = oldest;
+  }
+  return count;
+}
+
+void flushBuffer(uint8_t maxPosts = GROUND_BATCH_SIZE) {
+  if (!wifiConnected || WiFi.status() != WL_CONNECTED) return;
+
+  int indexes[GROUND_BATCH_SIZE];
+  int count = collectOldestBufferIndexes(indexes, min((int)maxPosts, (int)GROUND_BATCH_SIZE));
+  if (count == 0) return;
+
+  String body;
+  body.reserve(4096);
+  body = "{\"ground_id\":\"";
+  body += GROUND_ID;
+  body += "\",\"packets\":[";
+  int includedIndexes[GROUND_BATCH_SIZE];
+  int included = 0;
+  for (int i = 0; i < count; i++) {
+    String packetJson;
+    packetJson.reserve(768);
+    if (!bufferedPayloadToServerJson(packetBuffer[indexes[i]], packetJson)) {
+      Serial.printf("[BUFFER] drop invalid slot:%d\n", indexes[i]);
+      packetsDropped++;
+      freeBufferSlot(indexes[i]);
+      continue;
+    }
+    if (included > 0) body += ',';
+    body += packetJson;
+    includedIndexes[included++] = indexes[i];
+  }
+  body += "]}";
+  if (included == 0) return;
+
+  int code = postBatchToServer(body);
+  if (code >= 200 && code < 300) {
+    for (int i = 0; i < included; i++) freeBufferSlot(includedIndexes[i]);
+    packetsSent += included;
+    Serial.printf("[BATCH] accepted:%d depth:%d\n", included, bufferCount());
+    return;
+  }
+
+  packetsRetried += included;
+  for (int i = 0; i < included; i++) {
+    int index = includedIndexes[i];
+    if (packetBuffer[index].attempts < 255) packetBuffer[index].attempts++;
+  }
 }
 
 void serviceWiFi() {
   unsigned long now = millis();
-  if (now - lastWifiCheckMs < WIFI_RETRY_MS && lastWifiCheckMs != 0) return;
-  lastWifiCheckMs = now;
-
-  wifiConnected = WiFi.status() == WL_CONNECTED;
-  if (wifiConnected) {
+  bool connectedNow = WiFi.status() == WL_CONNECTED;
+  if (connectedNow) {
+    if (!wifiConnected) Serial.printf("[WiFi] restored IP:%s\n", WiFi.localIP().toString().c_str());
+    wifiConnected = true;
     consecutiveHttpFailures = 0;
     return;
   }
+
+  wifiConnected = false;
+  if (now - lastWifiCheckMs < WIFI_RETRY_MS && lastWifiCheckMs != 0) return;
+  lastWifiCheckMs = now;
 
   Serial.println("[WiFi] reconnecting");
   WiFi.disconnect();
@@ -791,7 +880,7 @@ void onLoRaReceive(int packetSize) {
     return;
   }
 
-  bufferPacket(body);
+  bufferPacket(payload, receivedRssi, receivedSnr);
   int code = -2; // queued for HTTP after the LoRa receive window
   beginLedPulse(80UL);
   if (compactPacket) {
@@ -806,17 +895,25 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  if (strlen(GROUND_KEY) < 24) {
+    Serial.println("[CONFIG] GROUND_KEY missing or too short; batch API will reject uploads");
+  }
 
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   waitInitialWiFi();
 
   loraReady = initLoRa();
+  if (loraReady) {
+    sendBeacon();
+    lastBeaconMs = millis();
+  }
 }
 
 void loop() {
   serviceStatusLed();
   serviceWiFi();
+  serviceMetrics();
 
   if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
     lastLoRaRetryMs = millis();
@@ -835,12 +932,12 @@ void loop() {
   }
 
   bool rxWindow = isLoRaRxWindow(now);
-  if (!rxWindow && now - lastFlushMs >= GROUND_HTTP_FLUSH_INTERVAL_MS) {
+  if (!rxWindow && wifiConnected && bufferCount() > 0 &&
+      lastBatchBeaconMs != lastBeaconMs && now - lastFlushMs >= GROUND_HTTP_FLUSH_INTERVAL_MS) {
     lastFlushMs = now;
-    flushBuffer(1);
+    lastBatchBeaconMs = lastBeaconMs;
+    flushBuffer(GROUND_BATCH_SIZE);
   }
-
-  serviceVehicleHeartbeats();
 
   yield();
 }

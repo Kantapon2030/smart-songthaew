@@ -37,7 +37,7 @@ Only the salted hash is stored. Copy `songthaew_secrets.example.h` to the ignore
 | --- | --- |
 | Microcontroller | ESP8266 NodeMCU / LOLIN |
 | GPS | GPS6MV2 / NEO-6M NMEA over SoftwareSerial |
-| GPS timing | PPS / 1PPS connected to D1 (GPIO5) |
+| GPS timing | Ground beacon synchronized TDMA; GPS time remains telemetry data |
 | LoRa | SX1276/SX1278 module |
 | Battery sense | Analog divider to A0 |
 | Power monitor | INA219 optional; not required by V03 firmware |
@@ -66,12 +66,23 @@ Only the salted hash is stored. Copy `songthaew_secrets.example.h` to the ignore
    #define WIFI_SSID  "YOUR_WIFI_SSID"
    #define WIFI_PASS  "YOUR_WIFI_PASSWORD"
    #define SERVER_URL "https://your-project.vercel.app/api/update-location"
+   #define GROUND_KEY "at-least-24-random-characters"
    #define VEHICLE_ID "BUS_01"
    #define ROUTE_ID   "route_001"
    #define ROUTE_DIR  "outbound"
    ```
 
 3. Check `mesh_config.h` for pin mapping, LoRa frequency, timing, and mesh limits. It contains no credentials and is safe to commit.
+
+4. Provision the same ground key before flashing the ground board:
+
+   ```http
+   POST /api/v1/admin/ground-keys/GROUND_01
+   Authorization: Bearer <admin-token>
+   Content-Type: application/json
+
+   {"key":"at-least-24-random-characters"}
+   ```
 
 ### Flash
 
@@ -81,11 +92,19 @@ Only the salted hash is stored. Copy `songthaew_secrets.example.h` to the ignore
 
 Use Serial Monitor at `115200` baud.
 
+For a reproducible compile check of the ground board and all three vehicle IDs:
+
+```sh
+platformio run
+```
+
+The checked-in firmware manifest stays marked `source build required` until deployment-specific binaries are built with real secrets. Never commit a binary containing production WiFi or ground keys to a public repository.
+
 Vehicle log examples:
 
 ```text
-[TX-SLOT] pps_pin:D1 offset:500ms guard:100ms jitter_max:30ms
-[TX] BUS_02 mode:pps hop:0 bytes:178 rssi:-77 sent
+[TX-SLOT] beacon_sync offset:500ms guard:100ms jitter_max:30ms
+[TX] BUS_02 mode:beacon hop:0 bytes:178 rssi:-77 sent
 [RX] from BUS_03 hop:1 rssi:-88
 ```
 
@@ -108,6 +127,10 @@ Ground station log examples:
 | TX Power | 17 dBm |
 | Sync Word | 0x34 |
 | Max Packet | 200 bytes |
+| Active vehicles | 3 |
+| Vehicle update interval | 10 seconds |
+| Direct slot spacing | 500 ms |
+| Maximum relay hops | 2 |
 
 ### VIBE Packet Priority Tiers
 

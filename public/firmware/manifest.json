@@ -1,16 +1,18 @@
 {
-  "version": "V03.1",
-  "buildDate": "2026-06-27",
-  "changelog": "Dedup fix, GPS guard, heartbeat, offline stability",
+  "version": "V03.2-source",
+  "buildDate": "2026-07-13",
+  "changelog": "Fixed 3-vehicle TDMA, delayed relay v2, ground batch queue",
   "boards": {
     "vehicle": {
       "filename": "Songthaew_V03_vehicle.ino.bin",
-      "description": "Vehicle Node — ติดตั้งบนรถ",
+      "description": "Vehicle node - build with per-board VEHICLE_ID and secrets",
+      "available": false,
       "flashOffset": "0x0"
     },
     "ground": {
       "filename": "Songthaew_V03_ground.ino.bin",
-      "description": "Ground Station — สถานีฐาน",
+      "description": "Ground station - build after provisioning GROUND_KEY",
+      "available": false,
       "flashOffset": "0x0"
     }
   }

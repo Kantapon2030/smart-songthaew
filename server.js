@@ -577,6 +577,13 @@ async function verifyVehicleKey(vehicleId, providedKey) {
   const keyHash = typeof credential === 'string' ? credential : credential?.keyHash;
   return !!keyHash && bcrypt.compareSync(providedKey, keyHash);
 }
+async function verifyGroundKey(groundId, providedKey) {
+  if (!groundId || !providedKey) return false;
+  const snap = await db.ref(`system/ground_credentials/${firebaseKeyPart(groundId)}`).once('value');
+  const credential = snap.val();
+  const keyHash = typeof credential === 'string' ? credential : credential?.keyHash;
+  return !!keyHash && bcrypt.compareSync(providedKey, keyHash);
+}
 function telemetryDecision(previous, packet) {
   if (!previous) return { accepted: true };
   if (previous.boot_id === packet.boot_id) {
@@ -1791,6 +1798,139 @@ app.get('/api/v1/eta', async (req, res) => {
   }
 });
 
+async function ingestGroundTelemetryPacket(data, batteryCalibration, receivedAt) {
+  const vehicleId = String(data.vehicleId || data.vehicle_id || '');
+  const bootId = String(data.boot_id || '');
+  const seq = Number(data.seq);
+  const packetId = String(data.packet_id || data.packetId || '');
+  if (!/^BUS_0[1-3]$/.test(vehicleId) || !bootId || !Number.isInteger(seq) || seq < 0 || !packetId) {
+    return { packet_id: packetId || null, vehicle_id: vehicleId || null, status: 'rejected', reason: 'invalid_identity' };
+  }
+
+  const currentRef = db.ref(`fleet/${vehicleId}/current`);
+  const previous = (await currentRef.once('value')).val() || null;
+  const gpsTimeValue = Number(data.gps_time ?? data.gps_timestamp);
+  const gpsTime = validGpsTime(gpsTimeValue, receivedAt) ? gpsTimeValue : null;
+  const lat = Number(data.lat);
+  const lng = Number(data.lng);
+  const gpsFix = data.gps_fix === true && validLatLng(lat, lng);
+  const decision = telemetryDecision(previous, { boot_id: bootId, seq, gps_time: gpsTime, gps_fix: gpsFix });
+  if (!decision.accepted) {
+    return { packet_id: packetId, vehicle_id: vehicleId, status: 'duplicate', reason: decision.reason };
+  }
+
+  const batteryCalc = calculateBatteryFromRaw(
+    data.batteryRaw ?? data.a0Raw ?? data.rawA0 ?? data.a0,
+    batteryCalibration
+  );
+  const routeId = canonicalRouteId(data.routeId || data.route_id || previous?.routeId || previous?.route_id || 'unassigned');
+  const heading = Number(data.heading ?? data.bearing ?? previous?.heading ?? 0);
+  const current = {
+    ...(previous || {}),
+    vehicle_id: vehicleId,
+    ...(gpsFix ? { lat, lng, heading, bearing: heading, speed: Number(data.speed || 0) } : {}),
+    ...(batteryCalc ? {
+      batteryRaw: batteryCalc.raw,
+      a0Voltage: batteryCalc.a0Voltage,
+      battVoltage: batteryCalc.battVoltage,
+      battery: batteryCalc.battery,
+    } : {}),
+    gps_time: gpsTime,
+    gps_timestamp: gpsTime,
+    server_received_at: receivedAt,
+    last_seen: receivedAt,
+    timestamp: receivedAt * 1000,
+    status: vehicleStatus(receivedAt, receivedAt),
+    gps_fix: gpsFix,
+    boot_id: bootId,
+    seq,
+    packet_id: packetId,
+    route_id: routeId,
+    routeId,
+    direction: data.direction || previous?.direction || 'unknown',
+    hop: Number.isFinite(Number(data.hop)) ? Number(data.hop) : 0,
+    ttl: Number.isFinite(Number(data.ttl)) ? Number(data.ttl) : null,
+    source: 'ground_station',
+    relay_via: 'lora',
+    relay_from: data.relay_from || null,
+    relay_chain: Array.isArray(data.relay_chain) ? data.relay_chain : [],
+    neighbors: Array.isArray(data.neighbors) ? data.neighbors : [],
+    store_forward: data.store_forward === true,
+    rssi: Number.isFinite(Number(data.received_rssi ?? data.rssi)) ? Number(data.received_rssi ?? data.rssi) : null,
+    snr: Number.isFinite(Number(data.received_snr ?? data.snr)) ? Number(data.received_snr ?? data.snr) : null,
+    received_rssi: Number.isFinite(Number(data.received_rssi)) ? Number(data.received_rssi) : null,
+    received_snr: Number.isFinite(Number(data.received_snr)) ? Number(data.received_snr) : null,
+  };
+
+  const updates = {
+    [`fleet/${vehicleId}/current`]: current,
+    [`fleet/${vehicleId}/routeId`]: routeId,
+    [`dedup/${firebaseKeyPart(vehicleId)}/${firebaseKeyPart(packetId)}`]: {
+      packet_id: packetId,
+      seq,
+      boot_id: bootId,
+      receivedAt: receivedAt * 1000,
+    },
+  };
+  if (gpsFix) {
+    const historyKey = `${receivedAt * 1000}_${firebaseKeyPart(bootId)}_${seq}`;
+    updates[`history/${todayStr()}/${vehicleId}/${historyKey}`] = current;
+    updates[`routes_active/${todayStr()}/${routeId}/${vehicleId}`] = { lastActive: receivedAt * 1000, lat, lng };
+    updates[`analytics/peak_hours/${todayStr()}/${vehicleId}/${new Date().getHours()}`] = admin.database.ServerValue.increment(1);
+  }
+  await db.ref().update(updates);
+  await recordPdrPacketSafely(vehicleId, {
+    ...current,
+    packet_id: packetId,
+    receivedAtMs: receivedAt * 1000,
+  });
+  return { packet_id: packetId, vehicle_id: vehicleId, status: 'accepted' };
+}
+
+app.post('/api/v1/ground/telemetry-batch', rateLimitMiddleware, async (req, res) => {
+  const groundId = String(req.body?.ground_id || '');
+  const packets = Array.isArray(req.body?.packets) ? req.body.packets : [];
+  if (!groundId || packets.length < 1 || packets.length > 6) {
+    return res.status(400).json({ error: 'ground_id and 1..6 packets are required' });
+  }
+  try {
+    if (!await verifyGroundKey(groundId, req.get('X-Ground-Key'))) {
+      return res.status(403).json({ error: 'Ground key is not authorized for this ground_id' });
+    }
+    const calibrationSnap = await db.ref('system/config/batteryCalibration').once('value');
+    const calibration = calibrationSnap.val() || {};
+    const receivedAt = unixNow();
+    const seen = new Set();
+    const results = new Array(packets.length);
+    const groups = new Map();
+    packets.forEach((packet, index) => {
+      const packetId = String(packet?.packet_id || packet?.packetId || '');
+      if (packetId && seen.has(packetId)) {
+        results[index] = { packet_id: packetId, vehicle_id: packet?.vehicleId || packet?.vehicle_id || null, status: 'duplicate', reason: 'duplicate_batch' };
+        return;
+      }
+      if (packetId) seen.add(packetId);
+      const vehicleId = String(packet?.vehicleId || packet?.vehicle_id || `invalid_${index}`);
+      if (!groups.has(vehicleId)) groups.set(vehicleId, []);
+      groups.get(vehicleId).push({ packet: packet || {}, index });
+    });
+    await Promise.all([...groups.values()].map(async entries => {
+      for (const entry of entries) {
+        results[entry.index] = await ingestGroundTelemetryPacket(entry.packet, calibration, receivedAt);
+      }
+    }));
+    const counts = results.reduce((out, result) => {
+      out[result.status] = (out[result.status] || 0) + 1;
+      return out;
+    }, { accepted: 0, duplicate: 0, rejected: 0 });
+    clearLocationsCache();
+    return res.json({ ok: true, ground_id: groundId, ...counts, results, server_received_at: receivedAt });
+  } catch (error) {
+    console.error('[POST /api/v1/ground/telemetry-batch]', error);
+    return res.status(500).json({ error: 'Failed to ingest ground telemetry batch' });
+  }
+});
+
 app.post('/api/v1/telemetry', rateLimitMiddleware, async (req, res) => {
   const vehicleId = String(req.body.vehicle_id || '');
   const bootId = String(req.body.boot_id || '');
@@ -1893,6 +2033,15 @@ app.post('/api/v1/admin/vehicle-keys/:vehicleId', authMiddleware, async (req, re
   const vehicleId = req.params.vehicleId;
   await db.ref(`system/device_credentials/${vehicleId}`).set({ keyHash: bcrypt.hashSync(key, 12), updatedAt: Date.now() });
   return res.json({ ok: true, vehicle_id: vehicleId });
+});
+
+app.post('/api/v1/admin/ground-keys/:groundId', authMiddleware, async (req, res) => {
+  const key = String(req.body.key || '');
+  if (key.length < 24) return res.status(400).json({ error: 'Ground key must be at least 24 characters' });
+  const groundId = firebaseKeyPart(req.params.groundId);
+  if (!/^GROUND_\d{2}$/.test(groundId)) return res.status(400).json({ error: 'Ground id must match GROUND_01 format' });
+  await db.ref(`system/ground_credentials/${groundId}`).set({ keyHash: bcrypt.hashSync(key, 12), updatedAt: Date.now() });
+  return res.json({ ok: true, ground_id: groundId });
 });
 
 // ============================================================

@@ -246,6 +246,9 @@
 
     async flashBoard(board) {
       const firmware = this.getFirmwareForBoard(board);
+      if (firmware.available === false) {
+        throw new Error('Firmware binary is not published. Build it with deployment secrets first.');
+      }
       const offset = Number.parseInt(firmware.flashOffset || '0x0', 16) || 0;
       const { ESPLoader, Transport } = getEsptoolConstructors();
       const transport = new Transport(board.port, true);
@@ -353,6 +356,7 @@
 
     const rows = BOARD_TYPES.map(type => {
       const board = manifest.boards?.[type] || {};
+      const available = board.available !== false;
       return `
         <div class="fw-row">
           <div>
@@ -360,7 +364,7 @@
             <span>${htmlEscape(board.description || '')}</span>
           </div>
           <code>${htmlEscape(board.filename || '-')}</code>
-          <div><span class="fw-file-ok">repo static</span></div>
+          <div><span class="${available ? 'fw-file-ok' : 'fw-file-missing'}">${available ? 'ready' : 'source build required'}</span></div>
         </div>`;
     }).join('');
 

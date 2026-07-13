@@ -14,10 +14,9 @@
 
   ESP8266 NodeMCU -> NEO-6M GPS
   D4 (GPIO2)  -> GPS TX (we receive)
-  D1 (GPIO5)  -> GPS PPS / 1PPS
   3V3         -> VCC
   GND         -> GND
-  GPS RX is not connected
+  GPS RX and PPS are not connected
 
   Battery sense voltage divider:
   BAT+ -> 330k ohm -> A0 -> 82k ohm -> GND
@@ -32,7 +31,9 @@
 #include <TinyGPS++.h>
 #include <ESP8266WiFi.h>
 #include <math.h>
-#if __has_include("songthaew_secrets.h")
+#if defined(SONGTHAEW_CI_BUILD)
+#include "songthaew_secrets.example.h"
+#elif __has_include("songthaew_secrets.h")
 #include "songthaew_secrets.h"
 #else
 #error "Create songthaew_secrets.h from songthaew_secrets.example.h before flashing."
@@ -66,13 +67,11 @@ struct VehicleState {
   unsigned long lastSeen;
 };
 
-struct CarryPacket {
-  char packetId[40];
+struct PendingRelay {
+  char packetId[64];
   char payload[MAX_LORA_PACKET_BYTES + 1];
+  unsigned long dueAt;
   bool used;
-  uint8_t attempts;
-  unsigned long queuedAt;
-  unsigned long lastAttempt;
 };
 
 TinyGPSPlus gps;
@@ -82,7 +81,7 @@ Neighbor neighbors[MAX_NEIGHBORS];
 int neighborCount = 0;
 
 VehicleState sharedStates[SHARED_STATE_SIZE];
-CarryPacket carryBuffer[CARRY_BUFFER_SIZE];
+PendingRelay pendingRelays[RELAY_QUEUE_SIZE];
 
 char seenPackets[DEDUP_BUFFER][40];
 int seenIdx = 0;
@@ -94,35 +93,17 @@ float gpsLat = 0.0f;
 float gpsLng = 0.0f;
 float gpsSpeed = 0.0f;
 float gpsHeading = 0.0f;
-uint32_t gpsSats = 0;
-float gpsHdop = 99.9f;
 bool gpsValid = false;
 bool gpsTimeValid = false;
-bool gpsTimestampValid = false;
 uint32_t gpsTimestamp = 0;
-uint8_t lastGpsSlotSecond = 255;
-uint8_t lastPpsSlotSecond = 255;
 
 unsigned long nextTxMs = 0;
 unsigned long lastExpireMs = 0;
 unsigned long lastLoRaRetryMs = 0;
-unsigned long lastCarryFlushMs = 0;
 unsigned long lastBatteryPrintMs = 0;
-unsigned long ppsLastSeenMs = 0;
 const char* nextTxMode = "fallback";
 bool loraReady = false;
 
-// Power Management State
-bool peripheralPower = false;
-unsigned long currentTxInterval = TX_INTERVAL_NORMAL;
-int stationaryCount = 0;
-float lastLat = 0.0f;
-float lastLng = 0.0f;
-unsigned long lastSleepCheck = 0;
-bool isStationary = false;
-
-volatile bool ppsFlag = false;
-volatile unsigned long ppsTickMs = 0;
 
 float toRadians(float degrees) {
   return degrees * PI / 180.0f;
@@ -177,14 +158,19 @@ bool sameId(const char* a, const char* b) {
   return strncmp(a, b, 15) == 0;
 }
 
+int vehicleNumberFromId(const char* id) {
+  if (id == nullptr || strncmp(id, "BUS_", 4) != 0) return 0;
+  int number = atoi(id + 4);
+  return number >= 1 && number <= VEHICLE_COUNT ? number : 0;
+}
+
 int vehicleNumber() {
-  if (strncmp(VEHICLE_ID, "BUS_", 4) != 0) return 1;
-  int number = atoi(VEHICLE_ID + 4);
-  return number > 0 ? number : 1;
+  return vehicleNumberFromId(VEHICLE_ID);
 }
 
 unsigned long vehicleTxOffsetMs() {
-  int slot = (vehicleNumber() - 1) % TX_SLOT_COUNT;
+  int number = vehicleNumber();
+  int slot = number > 0 ? number - 1 : 0;
   return (unsigned long)slot * TX_SLOT_SPACING_MS;
 }
 
@@ -193,68 +179,13 @@ unsigned long txJitterMs() {
 }
 
 void scheduleNextTx(unsigned long baseMs, const char* mode = "fallback") {
-  nextTxMs = baseMs + currentTxInterval + txJitterMs();
+  nextTxMs = baseMs + TX_INTERVAL_MS + txJitterMs();
   nextTxMode = mode;
 }
 
-bool ppsRecentlySeen() {
-  return ppsLastSeenMs > 0 && millis() - ppsLastSeenMs < 2500UL;
-}
-
 void syncTxSlotFromBeacon(unsigned long beaconRxMs) {
-  if (gpsTimeValid || ppsRecentlySeen()) return;
   nextTxMs = beaconRxMs + TX_SYNC_GUARD_MS + vehicleTxOffsetMs() + txJitterMs();
   nextTxMode = "beacon";
-}
-
-uint16_t gpsMsIntoMinute() {
-  return ((uint16_t)gps.time.second() * 1000U) + ((uint16_t)gps.time.centisecond() * 10U);
-}
-
-bool gpsTxSlotDue() {
-  if (!gpsTimeValid || ppsRecentlySeen()) return false;
-
-  const uint16_t periodMs = (uint16_t)currentTxInterval;
-  const uint16_t slotStart = (uint16_t)(vehicleTxOffsetMs() % periodMs);
-  const uint16_t elapsed = gpsMsIntoMinute() % periodMs;
-  const uint16_t delta = elapsed >= slotStart ? elapsed - slotStart : (periodMs - slotStart) + elapsed;
-  const uint8_t second = gps.time.second();
-
-  if (delta > GPS_TX_WINDOW_MS || second == lastGpsSlotSecond) return false;
-  lastGpsSlotSecond = second;
-  return true;
-}
-
-void ICACHE_RAM_ATTR onGpsPps() {
-  unsigned long now = millis();
-  static unsigned long lastIsrMs = 0;
-  if (now - lastIsrMs < 500UL) return;
-  lastIsrMs = now;
-  ppsTickMs = now;
-  ppsFlag = true;
-}
-
-void processPpsSync() {
-  if (!ppsFlag) return;
-
-  noInterrupts();
-  bool hadPps = ppsFlag;
-  unsigned long tickMs = ppsTickMs;
-  ppsFlag = false;
-  interrupts();
-
-  if (!hadPps) return;
-  ppsLastSeenMs = millis();
-  if (!gpsTimeValid) return;
-
-  const uint8_t periodSec = (uint8_t)(currentTxInterval / 1000UL);
-  const uint8_t second = gps.time.second();
-  if (periodSec == 0 || (second % periodSec) != 0 || second == lastPpsSlotSecond) return;
-
-  lastPpsSlotSecond = second;
-  nextTxMs = tickMs + TX_SYNC_GUARD_MS + vehicleTxOffsetMs() + txJitterMs();
-  nextTxMode = "pps";
-  Serial.printf("[PPS] sec:%u tx_in:%lums\n", second, nextTxMs - millis());
 }
 
 bool neighborExpired(const Neighbor& neighbor, unsigned long now) {
@@ -682,12 +613,14 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
                        float lat, float lng, float speed, int heading, int batteryRaw,
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
-                       const char* relayChain, bool gpsFix, char* payload, size_t payloadSize) {
+                       const char* relayChain, bool gpsFix, const char* originalPacketHash,
+                       char* payload, size_t payloadSize) {
   StaticJsonDocument<256> doc;
 
   char shortId[8];
   shortVehicleIdToBuffer(vehicleId, shortId, sizeof(shortId));
   doc["id"] = shortId;
+  doc["pv"] = 2;
   doc["sq"] = packetSeq;
   doc["bi"] = packetBootId;
   doc["ts"] = packetGpsTs;
@@ -704,9 +637,15 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   doc["ar"] = batteryRaw;
   doc["hp"] = hop;
   char packetHash[7];
-  packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
+  if (originalPacketHash != nullptr && originalPacketHash[0] != '\0') {
+    strncpy(packetHash, originalPacketHash, sizeof(packetHash) - 1);
+    packetHash[sizeof(packetHash) - 1] = '\0';
+  } else {
+    packetHash6ToBuffer(packetId, packetHash, sizeof(packetHash));
+  }
   doc["pk"] = packetHash;
   doc["tt"] = ttl;
+  doc["sf"] = storeForward ? 1 : 0;
 
   if (measureJson(doc) < 140) {
     doc["hd"] = heading;
@@ -720,7 +659,6 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
       doc["rf"] = relayShort;
     }
     doc["lq"] = linkQualityValue;
-    if (storeForward) doc["sf"] = 1;
   }
 
   if (measureJson(doc) < 180) {
@@ -754,134 +692,6 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   return len > 0 && len <= MAX_LORA_PACKET_BYTES;
 }
 
-void addNeighborArray(JsonDocument& doc) {
-  if (neighborCount == 0) return;
-
-  JsonArray nb = doc.createNestedArray("nb");
-  unsigned long now = millis();
-  int added = 0;
-  for (int i = 0; i < neighborCount && added < 2; i++) {
-    if (neighborExpired(neighbors[i], now)) continue;
-    JsonObject item = nb.createNestedObject();
-    item["id"] = neighbors[i].vehicleId;
-    item["rs"] = (int)neighbors[i].rssi;
-    item["sn"] = neighbors[i].snr;
-    added++;
-  }
-  if (added == 0) doc.remove("nb");
-}
-
-bool packetFits(JsonDocument& doc) {
-  if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-
-  if (doc.containsKey("nb")) {
-    doc.remove("nb");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("vs")) {
-    doc.remove("vs");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("sats")) {
-    doc.remove("sats");
-    doc.remove("hdop");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("src")) {
-    doc.remove("src");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("type")) {
-    doc.remove("type");
-    doc["t"] = "vd";
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("rssi")) {
-    doc.remove("rssi");
-    doc.remove("snr");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("rid")) {
-    doc.remove("rid");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("dir")) {
-    doc.remove("dir");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("fix")) {
-    doc.remove("fix");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("lq")) {
-    doc.remove("lq");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("ttl")) {
-    doc.remove("ttl");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("rc")) {
-    doc.remove("rc");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  if (doc.containsKey("sf")) {
-    doc.remove("sf");
-    if (measureJson(doc) <= MAX_LORA_PACKET_BYTES) return true;
-  }
-  return measureJson(doc) <= MAX_LORA_PACKET_BYTES;
-}
-
-bool serializeMeshPacket(JsonDocument& doc, char* out, size_t outSize) {
-  if (!packetFits(doc)) return false;
-  size_t len = serializeJson(doc, out, outSize);
-  return len > 0 && len <= MAX_LORA_PACKET_BYTES;
-}
-
-int findCarryIndex(const char* packetId) {
-  if (packetId == nullptr || packetId[0] == '\0') return -1;
-  for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
-    if (carryBuffer[i].used && strncmp(carryBuffer[i].packetId, packetId, sizeof(carryBuffer[i].packetId)) == 0) return i;
-  }
-  return -1;
-}
-
-int firstFreeCarryIndex() {
-  for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
-    if (!carryBuffer[i].used) return i;
-  }
-  return -1;
-}
-
-int oldestCarryIndex() {
-  int oldest = -1;
-  for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
-    if (!carryBuffer[i].used) continue;
-    if (oldest < 0 || carryBuffer[i].queuedAt < carryBuffer[oldest].queuedAt) oldest = i;
-  }
-  return oldest;
-}
-
-void clearCarrySlot(int index) {
-  if (index < 0 || index >= CARRY_BUFFER_SIZE) return;
-  carryBuffer[index].packetId[0] = '\0';
-  carryBuffer[index].payload[0] = '\0';
-  carryBuffer[index].used = false;
-  carryBuffer[index].attempts = 0;
-  carryBuffer[index].queuedAt = 0;
-  carryBuffer[index].lastAttempt = 0;
-}
-
-void expireCarryBuffer() {
-  unsigned long now = millis();
-  for (int i = 0; i < CARRY_BUFFER_SIZE; i++) {
-    if (carryBuffer[i].used && now - carryBuffer[i].queuedAt > CARRY_PACKET_TTL_MS) {
-      Serial.printf("[CARRY] expire %s\n", carryBuffer[i].packetId);
-      clearCarrySlot(i);
-    }
-  }
-}
-
 bool sendRawPayload(const char* payload) {
   if (!loraReady || payload == nullptr || payload[0] == '\0') return false;
 
@@ -893,120 +703,13 @@ bool sendRawPayload(const char* payload) {
   return result == 1;
 }
 
-void queueCarryPacket(JsonDocument& doc, const char* reason) {
-  const char* packetId = doc["pid"] | "";
-  if (packetId[0] == '\0' || findCarryIndex(packetId) >= 0) return;
-
-  doc["sf"] = 1;
-  char payload[MAX_LORA_PACKET_BYTES + 1];
-  if (!serializeMeshPacket(doc, payload, sizeof(payload))) {
-    Serial.printf("[CARRY] drop oversized %s\n", packetId);
-    return;
-  }
-
-  int slot = firstFreeCarryIndex();
-  if (slot < 0) {
-    slot = oldestCarryIndex();
-    Serial.printf("[CARRY] full, dropping oldest slot:%d\n", slot);
-  }
-  if (slot < 0) return;
-
-  strncpy(carryBuffer[slot].packetId, packetId, sizeof(carryBuffer[slot].packetId) - 1);
-  carryBuffer[slot].packetId[sizeof(carryBuffer[slot].packetId) - 1] = '\0';
-  strncpy(carryBuffer[slot].payload, payload, sizeof(carryBuffer[slot].payload) - 1);
-  carryBuffer[slot].payload[sizeof(carryBuffer[slot].payload) - 1] = '\0';
-  carryBuffer[slot].used = true;
-  carryBuffer[slot].attempts = 0;
-  carryBuffer[slot].queuedAt = millis();
-  carryBuffer[slot].lastAttempt = 0;
-  Serial.printf("[CARRY] queued %s reason:%s\n", packetId, reason);
-}
-
-void queueCarryPayload(const char* packetId, const char* payload, const char* reason) {
-  if (packetId == nullptr || packetId[0] == '\0' || payload == nullptr || payload[0] == '\0' || findCarryIndex(packetId) >= 0) return;
-
-  int slot = firstFreeCarryIndex();
-  if (slot < 0) {
-    slot = oldestCarryIndex();
-    Serial.printf("[CARRY] full, dropping oldest slot:%d\n", slot);
-  }
-  if (slot < 0) return;
-
-  strncpy(carryBuffer[slot].packetId, packetId, sizeof(carryBuffer[slot].packetId) - 1);
-  carryBuffer[slot].packetId[sizeof(carryBuffer[slot].packetId) - 1] = '\0';
-  strncpy(carryBuffer[slot].payload, payload, sizeof(carryBuffer[slot].payload) - 1);
-  carryBuffer[slot].payload[sizeof(carryBuffer[slot].payload) - 1] = '\0';
-  carryBuffer[slot].used = true;
-  carryBuffer[slot].attempts = 0;
-  carryBuffer[slot].queuedAt = millis();
-  carryBuffer[slot].lastAttempt = 0;
-  Serial.printf("[CARRY] queued %s reason:%s\n", packetId, reason);
-}
-
 bool hasForwardPath() {
   return findGroundStation() != nullptr || findBestRelay() != nullptr;
 }
 
-void flushCarryBuffer() {
-  unsigned long now = millis();
-  if (now - lastCarryFlushMs < CARRY_RETRY_MS) return;
-  lastCarryFlushMs = now;
-
-  expireCarryBuffer();
-  if (!hasForwardPath()) return;
-
-  int index = oldestCarryIndex();
-  if (index < 0) return;
-
-  if (sendRawPayload(carryBuffer[index].payload)) {
-    Serial.printf("[CARRY] sent %s\n", carryBuffer[index].packetId);
-    clearCarrySlot(index);
-    return;
-  }
-
-  carryBuffer[index].attempts++;
-  carryBuffer[index].lastAttempt = now;
-  Serial.printf("[CARRY] retry %s attempt:%u\n", carryBuffer[index].packetId, carryBuffer[index].attempts);
-  if (carryBuffer[index].attempts >= CARRY_MAX_ATTEMPTS) clearCarrySlot(index);
-}
-
-bool sendJson(JsonDocument& doc) {
-  if (!loraReady) return false;
-
-  char payload[MAX_LORA_PACKET_BYTES + 1];
-  if (!serializeMeshPacket(doc, payload, sizeof(payload))) {
-    Serial.println("[TX] drop oversized packet");
-    return false;
-  }
-
-  return sendRawPayload(payload);
-}
-
-float batteryVoltageFromRaw(int raw) {
-  float vOut = (raw / 1023.0f) * BAT_ADC_REF_V;
-  return vOut * BAT_DIVIDER_RATIO;
-}
-
-float readBatteryVoltage() {
-  return batteryVoltageFromRaw(analogRead(BAT_PIN));
-}
-
-float batteryPercentFromVoltage(float vBat) {
-  float percent = (vBat - BAT_EMPTY_V) * 100.0f / (BAT_FULL_V - BAT_EMPTY_V);
-  return constrain(percent, 0.0f, 100.0f);
-}
-
-float readBattery() {
-  return batteryPercentFromVoltage(readBatteryVoltage());
-}
-
 void printBatteryStatus() {
   int raw = analogRead(BAT_PIN);
-  float vOut = (raw / 1023.0f) * BAT_ADC_REF_V;
-  float vBat = batteryVoltageFromRaw(raw);
-  float percent = batteryPercentFromVoltage(vBat);
-  Serial.printf("[BAT] raw:%d vout:%.2fV vbat:%.2fV percent:%.0f%%\n",
-                raw, vOut, vBat, percent);
+  Serial.printf("[BAT] raw_a0:%d (server-calibrated)\n", raw);
 }
 
 void readGPS() {
@@ -1017,15 +720,12 @@ void readGPS() {
   gpsValid = gps.location.isValid() && gps.location.age() < 2000;
   gpsTimeValid = gps.time.isValid() && gps.time.age() < 2000;
   gpsTimestamp = gpsUnixTimestamp();
-  gpsTimestampValid = gpsTimestamp > 0;
   if (gpsValid) {
     gpsLat = gps.location.lat();
     gpsLng = gps.location.lng();
   }
   gpsSpeed = gps.speed.isValid() ? gps.speed.kmph() : 0.0f;
   gpsHeading = gps.course.isValid() ? gps.course.deg() : 0.0f;
-  gpsSats = gps.satellites.isValid() ? gps.satellites.value() : 0;
-  gpsHdop = gps.hdop.isValid() ? gps.hdop.hdop() : 99.9f;
 }
 
 void transmitPacket(const char* txMode = "auto") {
@@ -1050,11 +750,9 @@ void transmitPacket(const char* txMode = "auto") {
                                gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
                                gpsSpeed, (int)gpsHeading, batteryRaw, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
-                               !hasRoute, "", gpsValid, payload, sizeof(payload));
+                               !hasRoute, "", gpsValid, nullptr, payload, sizeof(payload));
 
   bool sent = built && sendRawPayload(payload);
-  if (!hasRoute || !sent) queueCarryPayload(packetId, payload, sent ? "no_route" : "tx_fail");
-  if (hasRoute) flushCarryBuffer();
   Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f a0:%d %s\n",
                 VEHICLE_ID, txMode, hop, strlen(payload), bestRssi,
                 batteryRaw, sent ? "sent" : "failed");
@@ -1117,6 +815,9 @@ bool shouldRelay(JsonDocument& doc, int hop) {
   if (sameId(sourceVid, VEHICLE_ID)) return false;
   if (sameId(relayFrom, VEHICLE_ID)) return false;
   if (relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) return false;
+  bool explicitlyAddressed = relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID);
+  bool storeForwardRequested = (doc["sf"] | 0) == 1;
+  if (!explicitlyAddressed && !storeForwardRequested) return false;
   if (wouldCreateLoop(doc["rc"], VEHICLE_ID)) {
     Serial.printf("[RELAY] skip loop: packet from %s already passed through me\n", sourceVid[0] ? sourceVid : "?");
     return false;
@@ -1140,6 +841,72 @@ bool shouldRelay(JsonDocument& doc, int hop) {
   }
 
   return findBestRelay() != nullptr;
+}
+
+int findPendingRelay(const char* packetId) {
+  if (packetId == nullptr || packetId[0] == '\0') return -1;
+  for (int i = 0; i < RELAY_QUEUE_SIZE; i++) {
+    if (pendingRelays[i].used && strcmp(pendingRelays[i].packetId, packetId) == 0) return i;
+  }
+  return -1;
+}
+
+void cancelPendingRelay(const char* packetId) {
+  int index = findPendingRelay(packetId);
+  if (index < 0) return;
+  pendingRelays[index].used = false;
+  pendingRelays[index].packetId[0] = '\0';
+  pendingRelays[index].payload[0] = '\0';
+  Serial.printf("[RELAY] cancelled duplicate %s\n", packetId);
+}
+
+unsigned long relayDueAt(const char* sourceId, const char* packetHash) {
+  unsigned long now = millis();
+  int sourceNumber = vehicleNumberFromId(sourceId);
+  unsigned long sourceOffset = sourceNumber > 0 ? (unsigned long)(sourceNumber - 1) * TX_SLOT_SPACING_MS : 0;
+  unsigned long cycleStart = now - sourceOffset;
+  uint32_t hash = packetHash != nullptr && packetHash[0] != '\0' ? strtoul(packetHash, nullptr, 16) : 0;
+  int number = vehicleNumber();
+  unsigned long slot = (hash + (uint32_t)(number > 0 ? number - 1 : 0)) % RELAY_SLOT_COUNT;
+  unsigned long dueAt = cycleStart + RELAY_WINDOW_START_MS + slot * RELAY_SLOT_SPACING_MS;
+  if ((long)(dueAt - now) < 80L) dueAt = now + 80UL;
+  return dueAt;
+}
+
+void queuePendingRelay(const char* packetId, const char* payload, unsigned long dueAt) {
+  if (packetId == nullptr || packetId[0] == '\0' || payload == nullptr || payload[0] == '\0') return;
+  if (findPendingRelay(packetId) >= 0) return;
+
+  int slot = -1;
+  for (int i = 0; i < RELAY_QUEUE_SIZE; i++) {
+    if (!pendingRelays[i].used) { slot = i; break; }
+  }
+  if (slot < 0) {
+    Serial.printf("[RELAY] queue full, drop %s\n", packetId);
+    return;
+  }
+
+  strncpy(pendingRelays[slot].packetId, packetId, sizeof(pendingRelays[slot].packetId) - 1);
+  pendingRelays[slot].packetId[sizeof(pendingRelays[slot].packetId) - 1] = '\0';
+  strncpy(pendingRelays[slot].payload, payload, sizeof(pendingRelays[slot].payload) - 1);
+  pendingRelays[slot].payload[sizeof(pendingRelays[slot].payload) - 1] = '\0';
+  pendingRelays[slot].dueAt = dueAt;
+  pendingRelays[slot].used = true;
+  Serial.printf("[RELAY] queued %s due_in:%lums\n", packetId, dueAt - millis());
+}
+
+void servicePendingRelays() {
+  unsigned long now = millis();
+  for (int i = 0; i < RELAY_QUEUE_SIZE; i++) {
+    if (!pendingRelays[i].used || (long)(now - pendingRelays[i].dueAt) < 0) continue;
+    bool sent = sendRawPayload(pendingRelays[i].payload);
+    Serial.printf("[RELAY] send %s bytes:%u %s\n", pendingRelays[i].packetId,
+                  (unsigned int)strlen(pendingRelays[i].payload), sent ? "sent" : "failed");
+    pendingRelays[i].used = false;
+    pendingRelays[i].packetId[0] = '\0';
+    pendingRelays[i].payload[0] = '\0';
+    return;
+  }
 }
 
 void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
@@ -1171,12 +938,13 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
                                doc["spd"] | 0.0f, doc["hdg"] | 0, doc["ar"] | -1,
                                hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
                                VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
-                               doc["fix"] | false, payload, sizeof(payload));
+                               doc["fix"] | false, doc["ph"] | "", payload, sizeof(payload));
 
-  bool sent = built && sendRawPayload(payload);
-  if (!hasForwardPath() || !sent) queueCarryPayload(packetId, payload, sent ? "relay_wait" : "relay_tx_fail");
-  Serial.printf("[RELAY] %s hop:%d bytes:%d rssi:%.0f %s\n",
-                vehicleId[0] ? vehicleId : "?", hop + 1, strlen(payload), rssi, sent ? "sent" : "failed");
+  if (!built) {
+    Serial.printf("[RELAY] build failed for %s\n", vehicleId[0] ? vehicleId : "?");
+    return;
+  }
+  queuePendingRelay(packetId, payload, relayDueAt(vehicleId, doc["ph"] | ""));
 }
 
 void handleBeacon(JsonDocument& doc, float rssi, float snr) {
@@ -1199,6 +967,7 @@ void handleVehicleData(JsonDocument& doc, float rssi, float snr) {
   updateNeighborWithHop(vid, rssi, snr, lat, lng, hop);
   Serial.printf("[RX] from %s hop:%d rssi:%.0f\n", vid[0] ? vid : "?", hop, rssi);
 
+  cancelPendingRelay(pid);
   if (alreadySeen(pid)) return;
   markSeen(pid);
   if (!updateSharedStateFromDoc(doc)) return;
@@ -1224,6 +993,7 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
            fullId, (unsigned long)packetSeq, boot, (unsigned long)packetTs, packetHash);
 
   expanded["type"] = "vehicle_data";
+  expanded["pv"] = compact["pv"] | 1;
   expanded["vid"] = fullId;
   expanded["pid"] = packetId;
   expanded["seq"] = packetSeq;
@@ -1238,6 +1008,8 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["ar"] = compact["ar"] | -1;
   expanded["hop"] = compact["hp"] | 0;
   expanded["ttl"] = compact["tt"] | (MAX_HOPS - (int)(compact["hp"] | 0));
+  expanded["sf"] = compact["sf"] | 0;
+  expanded["ph"] = packetHash;
   expanded["lq"] = compact["lq"] | 0;
   float lat = expanded["lat"] | 0.0f;
   float lng = expanded["lng"] | 0.0f;
@@ -1331,13 +1103,6 @@ bool initLoRa() {
   return true;
 }
 
-void setPower(bool on) {
-  if (on == peripheralPower) return;
-  digitalWrite(PWR_EN_PIN, on ? PWR_ON : PWR_OFF);
-  peripheralPower = on;
-  Serial.println(on ? F("[PWR] Peripherals ON") : F("[PWR] Peripherals OFF"));
-}
-
 /*
  * IRF9540N High-side Power Switch
  * --------------------------------
@@ -1356,59 +1121,12 @@ void setPower(bool on) {
  *   D3 = LOW  -> MOSFET conducts -> GPS + LoRa powered ON
  *   D3 = HIGH -> MOSFET off      -> GPS + LoRa powered OFF
  *
- * Deep sleep note:
- *   For ESP.deepSleep() to work, GPIO16 must be connected to RST.
- *   Otherwise deep sleep wakes up only on external reset.
+ * Firmware V03 keeps this rail on continuously.
  */
 void initPowerPin() {
   digitalWrite(PWR_EN_PIN, PWR_ON);
   pinMode(PWR_EN_PIN, OUTPUT);
-  setPower(true);
-}
-
-void updateStationaryStatus() {
-  if (!gpsValid) {
-    stationaryCount = 0;
-    isStationary = false;
-    return;
-  }
-
-  float dist = 0.0f;
-  if (lastLat != 0.0f && lastLng != 0.0f) {
-    dist = haversineDistance(lastLat, lastLng, gpsLat, gpsLng);
-  }
-
-  if (dist < STATIONARY_DIST_M) {
-    stationaryCount++;
-  } else {
-    stationaryCount = 0;
-    isStationary = false;
-  }
-
-  if (stationaryCount >= STATIONARY_COUNT && !isStationary) {
-    isStationary = true;
-    Serial.println(F("[PWR] Vehicle stationary detected"));
-  }
-
-  lastLat = gpsLat;
-  lastLng = gpsLng;
-}
-
-void updateTxInterval() {
-  float bat = readBattery();
-  unsigned long newInterval = TX_INTERVAL_NORMAL;
-
-  if (isStationary) {
-    newInterval = TX_INTERVAL_STATIONARY;
-  } else if (bat <= BAT_LOW_PCT) {
-    newInterval = TX_INTERVAL_LOW_BAT;
-  }
-
-  if (newInterval != currentTxInterval) {
-    currentTxInterval = newInterval;
-    Serial.printf("[PWR] TX interval -> %lums (bat:%.0f%% stationary:%d)\n",
-                  currentTxInterval, bat, isStationary);
-  }
+  Serial.println(F("[PWR] Peripherals locked ON"));
 }
 
 void enableModemSleep() {
@@ -1417,49 +1135,16 @@ void enableModemSleep() {
   Serial.println(F("[PWR] WiFi modem sleep ON"));
 }
 
-void checkCriticalBattery() {
-  if (millis() - lastSleepCheck < SLEEP_CHECK_MS) return;
-  lastSleepCheck = millis();
-
-  float bat = readBattery();
-  if (bat <= 0.0f || bat > BAT_CRITICAL_PCT) return;
-
-  Serial.printf("[PWR] CRITICAL battery %.0f%% - sending alert\n", bat);
-
-  StaticJsonDocument<128> alertDoc;
-  alertDoc["vid"] = VEHICLE_ID;
-  alertDoc["bat"] = (int)bat;
-  alertDoc["alert"] = "critical_battery";
-  alertDoc["ts"] = millis();
-
-  char alertBuf[128];
-  serializeJson(alertDoc, alertBuf, sizeof(alertBuf));
-
-  if (loraReady) {
-    LoRa.beginPacket();
-    LoRa.print(alertBuf);
-    LoRa.endPacket();
-  }
-
-  Serial.println(F("[PWR] Critical battery alert sent - staying awake"));
-}
-
-void printPowerStatus() {
-  Serial.printf("[PWR] bat:%.0f%% interval:%lums stationary:%d mosfet:%s\n",
-                readBattery(),
-                currentTxInterval,
-                isStationary,
-                peripheralPower ? "ON" : "OFF");
-}
-
 void setup() {
   Serial.begin(115200);
   ESP.wdtEnable(8000);
   initPowerPin();
   enableModemSleep();
+  if (vehicleNumber() == 0) {
+    Serial.printf("[FATAL] invalid VEHICLE_ID:%s expected BUS_01..BUS_03\n", VEHICLE_ID);
+    while (true) { ESP.wdtFeed(); delay(1000); }
+  }
   gpsSerial.begin(GPS_BAUD);
-  pinMode(GPS_PPS_PIN, INPUT);
-  attachInterrupt(digitalPinToInterrupt(GPS_PPS_PIN), onGpsPps, RISING);
 
   randomSeed(analogRead(BAT_PIN) ^ micros() ^ ESP.getChipId());
   snprintf(bootId, sizeof(bootId), "%04X", (unsigned int)random(0, 0x10000));
@@ -1468,13 +1153,12 @@ void setup() {
   Serial.printf("\nSmart Songthaew Vehicle V03 | %s | boot:%s\n", VEHICLE_ID, bootId);
   loraReady = initLoRa();
   nextTxMs = millis() + vehicleTxOffsetMs() + txJitterMs();
-  Serial.printf("[TX-SLOT] pps_pin:D1 offset:%lums guard:%lums jitter_max:%lums\n",
+  Serial.printf("[TX-SLOT] beacon_sync offset:%lums guard:%lums jitter_max:%lums\n",
                 vehicleTxOffsetMs(), (unsigned long)TX_SYNC_GUARD_MS, (unsigned long)TX_JITTER_MS);
 }
 
 void loop() {
   readGPS();
-  processPpsSync();
 
   if (!loraReady && millis() - lastLoRaRetryMs >= 5000UL) {
     lastLoRaRetryMs = millis();
@@ -1497,29 +1181,10 @@ void loop() {
     printBatteryStatus();
   }
 
-  static unsigned long lastPwrUpdate = 0;
-  static bool lastStationary = false;
-  if (now - lastPwrUpdate >= currentTxInterval) {
-    lastPwrUpdate = now;
-    updateStationaryStatus();
-    updateTxInterval();
-    if (isStationary != lastStationary) {
-      lastStationary = isStationary;
-      if (isStationary) {
-        Serial.println(F("[PWR] Stationary - peripherals stay ON"));
-      } else {
-        Serial.println(F("[PWR] Moving - peripherals stay ON"));
-      }
-    }
-    if (!peripheralPower) setPower(true);
-    checkCriticalBattery();
-  }
+  servicePendingRelays();
 
   if ((long)(now - nextTxMs) >= 0) {
     transmitPacket(nextTxMode);
-    scheduleNextTx(now);
-  } else if (gpsTxSlotDue()) {
-    transmitPacket("gps");
     scheduleNextTx(now);
   }
 
