@@ -227,3 +227,24 @@ test('passenger home exposes live tracking and accessible planner controls', () 
   assert.ok(css.includes('--motion-base'));
   assert.ok(css.includes('prefers-reduced-motion'));
 });
+
+test('mobile passenger tools use one stateful sheet without hidden origin controls', () => {
+  const home = read('public/index.html');
+  const app = read('public/js/app.js');
+  [
+    'mobile-sheet-essential',
+    'mobile-sheet-expanded',
+    'mobile-vehicle-slot',
+    'desktop-vehicle-anchor',
+    'pin-picking-banner',
+    'cancel-pin-pick-btn',
+  ].forEach(hook => assert.ok(home.includes(hook), `missing unified sheet hook: ${hook}`));
+  assert.ok(home.indexOf('location-control-row') < home.indexOf('mobile-sheet-expanded'));
+  [
+    "let mobileSheetState = 'collapsed'",
+    'function setMobileSheetState',
+    'function syncVehicleCardPlacement',
+    'function directionDestinationLabel',
+    "setMobileSheetState('pin-picking')",
+  ].forEach(hook => assert.ok(app.includes(hook), `missing mobile sheet behavior: ${hook}`));
+});

@@ -17,8 +17,10 @@ let vehicleSpeedDisplay = {};
 let stopMarkers = [];
 let etaState = { key: null, value: null, fetchedAt: 0 };
 let serverClock = { serverTime: 0, perfAt: 0 };
+let mobileSheetState = 'collapsed';
 const VEHICLE_POLL_INTERVAL_MS = 3500;
 const VEHICLE_ANIMATION_DURATION_MS = VEHICLE_POLL_INTERVAL_MS - 200;
+const MOBILE_HOME_MEDIA = window.matchMedia('(max-width: 860px)');
 
 document.addEventListener('DOMContentLoaded', initPassengerPage);
 
@@ -34,6 +36,8 @@ async function initPassengerPage() {
   document.getElementById('mesh-toggle-icon').innerHTML = antennaSvg(16, '#64748B');
   document.getElementById('current-location-icon').innerHTML = pinSvg(14, '#334155');
   document.getElementById('drop-pin-icon').innerHTML = pinSvg(14, '#334155');
+  syncVehicleCardPlacement();
+  setMobileSheetState('collapsed');
   bindPassengerControls();
   updateHomeLiveStatus('กำลังเชื่อมต่อข้อมูลรถสองแถว', 'stale');
   await initMap();
@@ -49,11 +53,14 @@ function bindPassengerControls() {
         drawRoute(route);
         drawStops(route);
         selectedDestination = directionStops(route)[0] || null;
+        const showRouteButton = document.getElementById('show-route-btn');
+        if (showRouteButton) showRouteButton.disabled = !selectedDestination;
         if (selectedDestination) setDestination(selectedDestination, false);
         renderPopularDestinations();
       }
       renderRecommendedStops();
       requestSelectedEta(true);
+      if (MOBILE_HOME_MEDIA.matches) setMobileSheetState('collapsed');
     });
   });
 
@@ -75,12 +82,48 @@ function bindPassengerControls() {
   const planner = document.getElementById('journey-planner');
   const plannerToggle = document.getElementById('planner-toggle-btn');
   plannerToggle?.addEventListener('click', () => {
-    const expanded = planner.classList.toggle('is-expanded');
-    plannerToggle.setAttribute('aria-expanded', String(expanded));
-    plannerToggle.setAttribute('aria-label', expanded ? 'ย่อแผงวางแผนการเดินทาง' : 'เปิดแผงวางแผนการเดินทาง');
-    plannerToggle.querySelector('[aria-hidden="true"]').textContent = expanded ? '⌄' : '⌃';
+    if (mobileSheetState === 'pin-picking') {
+      setOriginPickMode(false);
+      return;
+    }
+    setMobileSheetState(mobileSheetState === 'expanded' ? 'collapsed' : 'expanded');
   });
   document.querySelector('.sidebar-handle')?.addEventListener('click', () => plannerToggle?.click());
+  document.getElementById('cancel-pin-pick-btn')?.addEventListener('click', () => setOriginPickMode(false));
+  if (typeof MOBILE_HOME_MEDIA.addEventListener === 'function') {
+    MOBILE_HOME_MEDIA.addEventListener('change', syncVehicleCardPlacement);
+  } else if (typeof MOBILE_HOME_MEDIA.addListener === 'function') {
+    MOBILE_HOME_MEDIA.addListener(syncVehicleCardPlacement);
+  }
+}
+
+function syncVehicleCardPlacement() {
+  const card = document.getElementById('vehicle-card');
+  const mobileSlot = document.getElementById('mobile-vehicle-slot');
+  const desktopAnchor = document.getElementById('desktop-vehicle-anchor');
+  if (!card || !mobileSlot || !desktopAnchor) return;
+  if (MOBILE_HOME_MEDIA.matches) {
+    if (card.parentElement !== mobileSlot) mobileSlot.appendChild(card);
+  } else if (card.previousElementSibling !== desktopAnchor) {
+    desktopAnchor.insertAdjacentElement('afterend', card);
+  }
+}
+
+function setMobileSheetState(state) {
+  const planner = document.getElementById('journey-planner');
+  const toggle = document.getElementById('planner-toggle-btn');
+  if (!planner || !['collapsed', 'expanded', 'pin-picking'].includes(state)) return;
+  mobileSheetState = state;
+  planner.dataset.sheetState = state;
+  planner.classList.toggle('is-expanded', state === 'expanded');
+  planner.classList.toggle('is-pin-picking', state === 'pin-picking');
+  const expanded = state === 'expanded';
+  if (toggle) {
+    toggle.setAttribute('aria-expanded', String(expanded));
+    toggle.setAttribute('aria-label', expanded ? 'ย่อแผงวางแผนการเดินทาง' : 'เปิดแผงวางแผนการเดินทาง');
+    const icon = toggle.querySelector('[aria-hidden="true"]');
+    if (icon) icon.textContent = expanded ? '⌄' : '⌃';
+  }
 }
 
 async function initMap() {
@@ -125,6 +168,7 @@ function changeRoute(routeId) {
   if (!route || !map) return;
   currentRouteId = routeId;
   updateHomeLiveStatus(`กำลังแสดง ${route.name || routeId}`, 'stale');
+  document.getElementById('journey-planner')?.style.setProperty('--active-route-color', routeColor(route));
   const localSelect = document.getElementById('route-select');
   const sharedSelect = document.getElementById('shared-route-select');
   if (localSelect) localSelect.value = routeId;
@@ -138,6 +182,8 @@ function changeRoute(routeId) {
   drawRoute(route);
   drawStops(route);
   selectedDestination = directionStops(route)[0] || routeStops(route)[0] || null;
+  const showRouteButton = document.getElementById('show-route-btn');
+  if (showRouteButton) showRouteButton.disabled = !selectedDestination;
   if (selectedDestination) setDestination(selectedDestination, false);
   renderPopularDestinations();
   renderRecommendedStops();
@@ -183,11 +229,13 @@ function renderPopularDestinations() {
   const query = document.getElementById('destination-search').value.trim().toLowerCase();
   const stops = directionStops(route).filter(stop => !query || String(stop.name).toLowerCase().includes(query)).slice(0, 8);
   const root = document.getElementById('popular-destinations');
+  const section = document.getElementById('popular-section');
+  if (section) section.hidden = stops.length === 0;
   root.innerHTML = stops.length ? stops.map((stop, index) => `
     <button class="destination-button ${selectedDestination?.name === stop.name ? 'active' : ''}" type="button" data-index="${index}">
       <span class="item-icon" aria-hidden="true">${pinSvg(17, '#2563EB')}</span>
       <span>${stop.name}</span>
-    </button>`).join('') : '<div class="empty-state" style="grid-column:1/-1;">ไม่พบจุดหมาย</div>';
+    </button>`).join('') : '';
   [...root.querySelectorAll('button')].forEach((button, index) => {
     button.addEventListener('click', () => setDestination(stops[index]));
   });
@@ -197,10 +245,14 @@ async function renderRecommendedStops() {
   const route = routesById[currentRouteId];
   const stops = recommendedStops(route);
   const root = document.getElementById('recommended-stops');
+  const section = document.getElementById('recommended-section');
   if (!stops.length) {
-    root.innerHTML = '<div class="empty-state">ยังไม่มีจุดจอดในเส้นทางนี้</div>';
+    if (section) section.hidden = true;
+    root.innerHTML = '';
     return;
   }
+
+  if (section) section.hidden = false;
 
   root.innerHTML = stops.map(stop => `
     <button class="recommended-item" type="button" data-name="${stop.name}">
@@ -240,10 +292,35 @@ function renderDirectionButtons(route) {
     const dir = button.dataset.direction;
     const direction = routeDirection(route, dir);
     const hasData = directionCoords(route, dir).length || directionStopsForRoute(route, dir).length;
-    button.textContent = direction?.label || (dir === 'inbound' ? 'ขากลับ' : 'ขาไป');
+    const label = directionDestinationLabel(route, dir, direction);
+    button.textContent = label.short;
+    button.setAttribute('aria-label', label.full);
+    button.title = label.full;
     button.disabled = !hasData;
     button.classList.toggle('active', dir === currentDirection);
   });
+}
+
+function directionDestinationLabel(route, dir, direction = routeDirection(route, dir)) {
+  const stops = directionStopsForRoute(route, dir);
+  const endpoint = stops.length ? stops[stops.length - 1]?.name : '';
+  const raw = String(direction?.label || '').trim();
+  const arrowParts = raw.match(/[（(]?([^()（）]+?)\s*[→➜>-]\s*([^()（）]+?)[)）]?$/);
+  const destination = String(endpoint || arrowParts?.[2] || '').trim();
+  const fallback = dir === 'inbound' ? 'ขากลับ' : 'ขาไป';
+  if (!destination) return { short: fallback, full: raw || fallback };
+  return {
+    short: `ไป ${compactDirectionName(destination)}`,
+    full: `มุ่งหน้าไป ${destination}`,
+  };
+}
+
+function compactDirectionName(name) {
+  const value = String(name || '')
+    .replace(/^จุดจอด\s*/i, '')
+    .replace(/^สถานี\s*/i, '')
+    .trim();
+  return value.length > 24 ? `${value.slice(0, 23)}…` : value;
 }
 
 async function updateStopEtas(stops) {
@@ -272,6 +349,8 @@ async function updateStopEtas(stops) {
 function setDestination(stop, refresh = true) {
   if (!stop) return;
   selectedDestination = stop;
+  const showRouteButton = document.getElementById('show-route-btn');
+  if (showRouteButton) showRouteButton.disabled = false;
   const position = { lat: Number(stop.lat), lng: Number(stop.lng) };
   if (!destinationMarker) {
     destinationMarker = new google.maps.marker.AdvancedMarkerElement({
@@ -302,11 +381,14 @@ function destinationMarkerContent() {
 }
 
 function useCurrentLocationAsOrigin() {
+  const button = document.getElementById('use-current-location-btn');
   if (!navigator.geolocation) {
     updateOriginStatus('เบราว์เซอร์นี้ไม่รองรับการอ่านตำแหน่ง');
+    setLocationButtonState(button, 'error', 'ไม่รองรับ GPS');
     return;
   }
   setOriginPickMode(false);
+  setLocationButtonState(button, 'loading', 'กำลังหาตำแหน่ง');
   updateOriginStatus('กำลังขอตำแหน่งปัจจุบัน...');
   navigator.geolocation.getCurrentPosition(position => {
     setOrigin({
@@ -314,9 +396,21 @@ function useCurrentLocationAsOrigin() {
       lng: position.coords.longitude,
       name: 'ตำแหน่งปัจจุบัน',
     }, { pan: true });
+    setLocationButtonState(button, 'success', 'ใช้ตำแหน่งนี้แล้ว');
   }, () => {
     updateOriginStatus('ไม่สามารถอ่านตำแหน่งได้ กรุณาอนุญาตตำแหน่งหรือใช้วางหมุด');
+    setLocationButtonState(button, 'error', 'ลองตำแหน่งอีกครั้ง');
   }, { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 });
+}
+
+function setLocationButtonState(button, state, label) {
+  if (!button) return;
+  button.disabled = state === 'loading';
+  button.classList.toggle('is-loading', state === 'loading');
+  button.classList.toggle('is-success', state === 'success');
+  button.classList.toggle('is-error', state === 'error');
+  const labelEl = button.querySelector('.location-button-label');
+  if (labelEl && label) labelEl.textContent = label;
 }
 
 function toggleOriginPinMode() {
@@ -336,13 +430,23 @@ function setOriginPickMode(enabled) {
       originClickListener = null;
     }
     document.body.classList.remove('origin-pick-mode');
-    if (button) button.className = 'button ghost';
+    if (button) {
+      button.className = 'button ghost';
+      const label = button.querySelector('.location-button-label');
+      if (label) label.textContent = 'วางหมุด';
+    }
+    if (mobileSheetState === 'pin-picking') setMobileSheetState('collapsed');
     return;
   }
   if (originClickListener) return;
   document.body.classList.add('origin-pick-mode');
-  if (button) button.className = 'button primary';
-  updateOriginStatus('คลิกบนแผนที่เพื่อวางหมุดตำแหน่งของคุณ');
+  if (button) {
+    button.className = 'button primary';
+    const label = button.querySelector('.location-button-label');
+    if (label) label.textContent = 'กำลังวางหมุด';
+  }
+  if (MOBILE_HOME_MEDIA.matches) setMobileSheetState('pin-picking');
+  updateOriginStatus('แตะแผนที่เพื่อเลือกจุดเริ่มต้น');
   originClickListener = map.addListener('click', event => {
     setOrigin({
       lat: event.latLng.lat(),
@@ -372,7 +476,7 @@ function setOrigin(point, options = {}) {
     originMarker.title = selectedOrigin.name;
   }
   if (options.pan) map.panTo(position);
-  updateOriginStatus(`${selectedOrigin.name}: ${lat.toFixed(5)}, ${lng.toFixed(5)}`);
+  updateOriginStatus(`จุดเริ่มต้น: ${selectedOrigin.name}`, `${lat.toFixed(5)}, ${lng.toFixed(5)}`);
   chooseNearestVehicle();
   requestSelectedEta(true);
   renderVehicleCard(vehicleData[selectedVehicleId]);
@@ -386,9 +490,12 @@ function originMarkerContent() {
   return el;
 }
 
-function updateOriginStatus(message) {
+function updateOriginStatus(message, detail = '') {
   const el = document.getElementById('origin-status');
-  if (el) el.textContent = message || '';
+  if (!el) return;
+  el.textContent = message || '';
+  el.title = detail || message || '';
+  el.classList.toggle('has-message', Boolean(message));
 }
 
 async function fetchVehicles() {
@@ -620,7 +727,7 @@ function selectNearestVehicleFallback(target, onlineVehicles) {
     fetchedAt: Date.now(),
   };
   updateVehicleNotice();
-  if (selectedOrigin) updateOriginStatus(`${selectedOrigin.name}: ${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
+  if (selectedOrigin) updateOriginStatus(`จุดเริ่มต้น: ${selectedOrigin.name}`, `${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
   return vehicle;
 }
 
@@ -678,7 +785,7 @@ function selectApproachingVehicle(target) {
     fetchedAt: Date.now(),
   };
   updateVehicleNotice();
-  if (selectedOrigin) updateOriginStatus(`${selectedOrigin.name}: ${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
+  if (selectedOrigin) updateOriginStatus(`จุดเริ่มต้น: ${selectedOrigin.name}`, `${Number(selectedOrigin.lat).toFixed(5)}, ${Number(selectedOrigin.lng).toFixed(5)}`);
   return best.vehicle;
 }
 
