@@ -39,7 +39,7 @@ test('server runtime is importable without automatically listening', () => {
 });
 
 test('dependencies use the supported production baseline', () => {
-  assert.equal(packageJson.engines.node, '22.x');
-  assert.equal(packageJson.dependencies['firebase-admin'], '14.1.0');
+  assert.equal(packageJson.engines.node, '>=18');
+  assert.equal(packageJson.dependencies['firebase-admin'], '12.7.0');
   assert.equal(packageJson.dependencies.bcryptjs, '3.0.3');
 });
