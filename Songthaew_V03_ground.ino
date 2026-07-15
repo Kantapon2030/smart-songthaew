@@ -103,7 +103,20 @@ bool isValidForcedHopCompletion(JsonDocument& doc, bool compactPacket) {
   // For compact-decoded packets the relay_from field holds the full ID;
   // for raw (non-compact) expanded packets it is stored under "rf".
   const char* relayFrom = compactPacket ? (doc["relay_from"] | "") : (doc["rf"] | "");
-  if (hop != FORCED_HOP_TEST_EXPECTED_HOPS || strcmp(relayFrom, FORCED_HOP_TEST_RELAY_2) != 0) return false;
+  const char* vehicleId = compactPacket ? (doc["vehicleId"] | "") : (doc["vid"] | "");
+
+  // All forced-hop completions must arrive via RELAY_2 (BUS_01).
+  if (strcmp(relayFrom, FORCED_HOP_TEST_RELAY_2) != 0) return false;
+
+  // Case A: RELAY_1 (BUS_02) packet — 1-hop path: BUS_02 -> BUS_01 -> Ground.
+  //         hop == 1, source is RELAY_1, relay chain need only contain RELAY_2.
+  if (strcmp(vehicleId, FORCED_HOP_TEST_RELAY_1) == 0) {
+    return hop == 1;
+  }
+
+  // Case B: SOURCE (BUS_03) packet — 2-hop path: BUS_03 -> BUS_02 -> BUS_01 -> Ground.
+  //         hop == EXPECTED_HOPS, relay chain must contain both RELAY_1 and RELAY_2.
+  if (hop != FORCED_HOP_TEST_EXPECTED_HOPS) return false;
 
   // relay_chain (compact-decoded) is a proper JsonArray.
   // rc (raw vehicle packet) may be stored as a compact string ("B2,B1") since

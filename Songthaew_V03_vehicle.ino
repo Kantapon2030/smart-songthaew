@@ -158,14 +158,27 @@ bool sameId(const char* a, const char* b) {
   return strncmp(a, b, 15) == 0;
 }
 
+// Returns true if this vehicle is a forced-hop origin (source or any relay that
+// must forward its own telemetry through the chain rather than directly to Ground).
 bool isForcedHopTestSource() {
-  return FORCED_HOP_TEST_ENABLED && sameId(VEHICLE_ID, FORCED_HOP_TEST_SOURCE);
+  if (!FORCED_HOP_TEST_ENABLED) return false;
+  // SOURCE (BUS_03) and RELAY_1 (BUS_02) both transmit with forced-hop enabled;
+  // RELAY_2 (BUS_01) sends its own telemetry directly.
+  return sameId(VEHICLE_ID, FORCED_HOP_TEST_SOURCE) ||
+         sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1);
 }
 
+// For a given relay node, returns its next hop target in the forced chain.
+// SOURCE -> RELAY_1, RELAY_1 -> RELAY_2, RELAY_2 -> Ground (out="", returns true).
 bool forcedHopNextTargetFor(const char* relayId, char* out, size_t outSize) {
   if (outSize == 0) return false;
   out[0] = '\0';
   if (!FORCED_HOP_TEST_ENABLED || relayId == nullptr) return false;
+  if (sameId(relayId, FORCED_HOP_TEST_SOURCE)) {
+    strncpy(out, FORCED_HOP_TEST_RELAY_1, outSize - 1);
+    out[outSize - 1] = '\0';
+    return true;
+  }
   if (sameId(relayId, FORCED_HOP_TEST_RELAY_1)) {
     strncpy(out, FORCED_HOP_TEST_RELAY_2, outSize - 1);
     out[outSize - 1] = '\0';
@@ -794,19 +807,26 @@ void transmitPacket(const char* txMode = "auto") {
 
   updateOwnSharedState(packetId, -1, hop);
 
+  // Determine forced-hop next target for this vehicle's own packet.
+  // SOURCE(BUS_03) -> RELAY_1(BUS_02), RELAY_1(BUS_02) -> RELAY_2(BUS_01).
+  char forcedRelayTo[16] = "";
+  if (forcedHopTest) {
+    forcedHopNextTargetFor(VEHICLE_ID, forcedRelayTo, sizeof(forcedRelayTo));
+  }
+
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
   bool built = buildLoRaPacket(VEHICLE_ID, packetId, seq, bootId, gpsTimestamp,
                                gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
                                gpsSpeed, (int)gpsHeading, batteryRaw, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
                                forcedHopTest ? true : !hasRoute, "", gpsValid, nullptr,
-                               forcedHopTest, forcedHopTest ? FORCED_HOP_TEST_RELAY_1 : "", false,
+                               forcedHopTest, forcedRelayTo, false,
                                payload, sizeof(payload));
 
   bool sent = built && sendRawPayload(payload);
   if (forcedHopTest) {
     Serial.printf("[HOP_TEST] source:%s target:%s hop:0 %s\n", VEHICLE_ID,
-                  FORCED_HOP_TEST_RELAY_1, sent ? "sent" : "failed");
+                  forcedRelayTo[0] ? forcedRelayTo : "Ground", sent ? "sent" : "failed");
   }
   Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f a0:%d %s\n",
                 VEHICLE_ID, txMode, hop, strlen(payload), bestRssi,
@@ -870,18 +890,28 @@ bool shouldRelay(JsonDocument& doc, int hop) {
 
   if (forcedHopTest) {
     char ignoredTarget[16];
-    bool validForcedRelay = FORCED_HOP_TEST_ENABLED &&
-      sameId(sourceVid, FORCED_HOP_TEST_SOURCE) &&
-      relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID) &&
-      forcedHopNextTargetFor(VEHICLE_ID, ignoredTarget, sizeof(ignoredTarget));
+    bool validForcedRelay = false;
+
     if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1)) {
-      validForcedRelay = validForcedRelay && hop == 0 && relayFrom[0] == '\0';
+      // RELAY_1 (BUS_02): accepts packets from SOURCE (BUS_03) at hop=0 with no rf.
+      validForcedRelay = FORCED_HOP_TEST_ENABLED &&
+        sameId(sourceVid, FORCED_HOP_TEST_SOURCE) &&
+        relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID) &&
+        forcedHopNextTargetFor(VEHICLE_ID, ignoredTarget, sizeof(ignoredTarget)) &&
+        hop == 0 && relayFrom[0] == '\0';
     } else if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_2)) {
-      validForcedRelay = validForcedRelay && hop == 1 &&
-        sameId(relayFrom, FORCED_HOP_TEST_RELAY_1);
-    } else {
-      validForcedRelay = false;
+      // RELAY_2 (BUS_01): accepts two cases:
+      //   a) BUS_03's packet relayed by BUS_02: source=BUS_03, hop=1, rf=BUS_02
+      //   b) BUS_02's own packet: source=BUS_02, hop=0, no rf
+      bool fromSource = sameId(sourceVid, FORCED_HOP_TEST_SOURCE) &&
+                        hop == 1 && sameId(relayFrom, FORCED_HOP_TEST_RELAY_1);
+      bool fromRelay1  = sameId(sourceVid, FORCED_HOP_TEST_RELAY_1) &&
+                         hop == 0 && relayFrom[0] == '\0';
+      validForcedRelay = FORCED_HOP_TEST_ENABLED &&
+        relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID) &&
+        (fromSource || fromRelay1);
     }
+
     if (validForcedRelay && hop < MAX_HOPS && ttl > 0) return true;
     Serial.printf("[HOP_TEST] reject relay source:%s from:%s to:%s hop:%d ttl:%d\n",
                   sourceVid, relayFrom, relayTo, hop, ttl);

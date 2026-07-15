@@ -78,13 +78,23 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.ok(vehicle.includes('if (!stateUpdated && !forcedHopTest) return'));
   assert.ok(vehicle.includes('[HOP_TEST] reject relay source:%s from:%s to:%s hop:%d ttl:%d'));
   assert.ok(vehicle.includes('if (validForcedRelay && hop < MAX_HOPS && ttl > 0) return true;'));
+  // BUS_02 (RELAY_1) must also be treated as a forced-hop source so its own
+  // telemetry is routed BUS_02 -> BUS_01 -> Ground instead of going direct.
+  assert.ok(vehicle.includes('sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1)'));
+  // RELAY_2 (BUS_01) must accept packets from both BUS_03 (relayed via BUS_02)
+  // and BUS_02's own packets (hop=0 direct from BUS_02).
+  assert.ok(vehicle.includes('fromSource || fromRelay1'));
   assert.ok(ground.includes('ignore intermediate'));
   assert.ok(ground.includes('isValidForcedHopCompletion'));
   assert.ok(ground.includes('FORCED_HOP_TEST_RX_EXTRA_MS'));
   assert.ok(ground.includes('[HOP_TEST] RX window:%lums'));
   assert.ok(ground.includes('reject invalid completion'));
   assert.ok(ground.includes('[HOP_TEST] PASS'));
+  // Ground must handle both 1-hop (BUS_02) and 2-hop (BUS_03) completions.
+  assert.ok(ground.includes('Case A'));
+  assert.ok(ground.includes('Case B'));
 });
+
 
 test('vehicle transmission epoch follows the ground beacon only', () => {
   const vehicle = read('Songthaew_V03_vehicle.ino');
