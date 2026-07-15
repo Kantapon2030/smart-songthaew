@@ -357,7 +357,7 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   out["vehicleId"] = vehicleId;
   out["vehicle_id"] = vehicleId;
   out["seq"] = packetSeq;
-  out["boot_id"] = bootId;
+  out["boot_id"] = String(bootId);
   out["gps_timestamp"] = compact["ts"] | 0UL;
   float lat = compact["la"].is<const char*>() ? atof(compact["la"] | "0") : (compact["la"] | 0.0f);
   float lng = compact["ln"].is<const char*>() ? atof(compact["ln"] | "0") : (compact["ln"] | 0.0f);
@@ -373,7 +373,7 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   out["batteryRaw"] = compact["ar"] | -1;
   out["hop"] = compact["hp"] | 0;
   out["packet_id"] = packetId;
-  out["packet_hash"] = packetHash;
+  out["packet_hash"] = String(packetHash);
   out["ttl"] = compact["tt"] | 0;
 
   if (compact.containsKey("hd")) out["heading"] = compact["hd"].as<int>();
