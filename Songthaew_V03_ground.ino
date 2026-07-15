@@ -441,7 +441,9 @@ void serviceMetrics() {
 }
 
 bool isLoRaRxWindow(unsigned long now = millis()) {
-  bool beaconWindow = lastBeaconMs != 0 && now - lastBeaconMs < GROUND_RX_WINDOW_MS;
+  unsigned long activeWindowMs = GROUND_RX_WINDOW_MS +
+    (FORCED_HOP_TEST_ENABLED ? FORCED_HOP_TEST_RX_EXTRA_MS : 0UL);
+  bool beaconWindow = lastBeaconMs != 0 && now - lastBeaconMs < activeWindowMs;
   bool rxQuietWindow = lastRxMs != 0 && now - lastRxMs < GROUND_RX_QUIET_MS;
   return beaconWindow || rxQuietWindow;
 }
