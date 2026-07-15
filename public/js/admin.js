@@ -472,9 +472,11 @@ function setGroundStationLatLng(latlng, options = {}) {
   if (latEl) latEl.value = lat.toFixed(6);
   if (lngEl) lngEl.value = lng.toFixed(6);
 
-  if (groundStationMarker) groundStationMarker.setLatLng([lat, lng]);
+  if (groundStationMarker) {
+    groundStationMarker.position = { lat, lng };
+  }
   if (groundStationMap && options.pan !== false) {
-    groundStationMap.setView([lat, lng], Math.max(groundStationMap.getZoom(), 15));
+    groundStationMap.setCenter({ lat, lng });
   }
   renderGroundStationStatus();
 }
@@ -487,19 +489,22 @@ function syncGroundStationMapFromInputs(options = {}) {
     renderGroundStationStatus();
     return;
   }
-  if (groundStationMarker) groundStationMarker.setLatLng([groundStation.lat, groundStation.lng]);
+  if (groundStationMarker) {
+    groundStationMarker.position = { lat: groundStation.lat, lng: groundStation.lng };
+  }
   if (groundStationMap && options.pan !== false) {
-    groundStationMap.setView([groundStation.lat, groundStation.lng], groundStationMap.getZoom() || 15);
+    groundStationMap.setCenter({ lat: groundStation.lat, lng: groundStation.lng });
   }
   renderGroundStationStatus(groundStation);
 }
 
-function initGroundStationMap() {
+async function initGroundStationMap() {
   const mapEl = document.getElementById('ground-station-map');
-  if (!mapEl || typeof L === 'undefined') return;
-  if (groundStationMap) {
-    setTimeout(() => groundStationMap.invalidateSize(), 50);
-    syncGroundStationMapFromInputs({ pan: false });
+  if (!mapEl) return;
+
+  await loadGoogleMapsAPI();
+  if (!window.google?.maps) {
+    mapEl.textContent = 'Google Maps is not available.';
     return;
   }
 
@@ -508,32 +513,44 @@ function initGroundStationMap() {
     groundStation = readGroundStationForm();
   } catch (_) {}
 
-  groundStationMap = L.map(mapEl, {
+  if (groundStationMap) {
+    syncGroundStationMapFromInputs({ pan: false });
+    return;
+  }
+
+  groundStationMap = new google.maps.Map(mapEl, {
+    center: { lat: groundStation.lat, lng: groundStation.lng },
+    zoom: 16,
+    mapTypeId: 'hybrid',
     zoomControl: true,
-    attributionControl: true,
-  }).setView([groundStation.lat, groundStation.lng], 15);
+    streetViewControl: false,
+    fullscreenControl: true,
+    gestureHandling: 'greedy'
+  });
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors',
-  }).addTo(groundStationMap);
-
-  groundStationMarker = L.marker([groundStation.lat, groundStation.lng], {
-    draggable: true,
+  groundStationMarker = new google.maps.marker.AdvancedMarkerElement({
+    map: groundStationMap,
+    position: { lat: groundStation.lat, lng: groundStation.lng },
     title: 'Ground Station',
-  }).addTo(groundStationMap);
-  groundStationMarker.bindPopup('Ground Station').openPopup();
-
-  groundStationMap.on('click', event => {
-    setGroundStationLatLng(event.latlng);
-    saveGroundStationConfig();
-  });
-  groundStationMarker.on('dragend', event => {
-    setGroundStationLatLng(event.target.getLatLng());
-    saveGroundStationConfig();
+    gmpDraggable: true
   });
 
-  setTimeout(() => groundStationMap.invalidateSize(), 80);
+  groundStationMap.addListener('click', event => {
+    const latLng = event.latLng;
+    if (latLng) {
+      setGroundStationLatLng({ lat: latLng.lat(), lng: latLng.lng() });
+      saveGroundStationConfig();
+    }
+  });
+
+  groundStationMarker.addListener('dragend', event => {
+    const latLng = event.latLng;
+    if (latLng) {
+      setGroundStationLatLng({ lat: latLng.lat(), lng: latLng.lng() });
+      saveGroundStationConfig();
+    }
+  });
+
   renderGroundStationStatus(groundStation);
 }
 
