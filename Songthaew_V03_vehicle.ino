@@ -534,6 +534,20 @@ void appendCompactToken(char* out, size_t outSize, const char* token) {
   snprintf(out + used, outSize - used, "%s%s", used > 0 ? "," : "", token);
 }
 
+bool compactListContains(const char* list, const char* token) {
+  if (list == nullptr || token == nullptr || token[0] == '\0') return false;
+  const char* start = list;
+  size_t tokenLength = strlen(token);
+  while (*start != '\0') {
+    const char* comma = strchr(start, ',');
+    size_t length = comma ? (size_t)(comma - start) : strlen(start);
+    if (length == tokenLength && strncmp(start, token, length) == 0) return true;
+    if (comma == nullptr) break;
+    start = comma + 1;
+  }
+  return false;
+}
+
 void trimCompactListTo(char* out, size_t maxLen) {
   while (strlen(out) > maxLen) {
     char* comma = strchr(out, ',');
@@ -579,14 +593,12 @@ void buildNeighborCompact(char* out, size_t outSize, Neighbor* table, int count)
 void buildRelayChainCompactFromDoc(JsonDocument& doc, char* out, size_t outSize) {
   if (outSize == 0) return;
   out[0] = '\0';
-  char ownShort[8];
-  shortVehicleIdToBuffer(VEHICLE_ID, ownShort, sizeof(ownShort));
 
   if (doc["rc"].is<JsonArray>()) {
     for (JsonVariant item : doc["rc"].as<JsonArray>()) {
       char shortId[8];
       shortVehicleIdToBuffer(item.as<const char*>(), shortId, sizeof(shortId));
-      if (shortId[0] == '\0' || strcmp(shortId, ownShort) == 0) continue;
+      if (shortId[0] == '\0' || compactListContains(out, shortId)) continue;
       appendCompactToken(out, outSize, shortId);
     }
   }
@@ -595,7 +607,7 @@ void buildRelayChainCompactFromDoc(JsonDocument& doc, char* out, size_t outSize)
   if (relayFrom[0] != '\0') {
     char shortId[8];
     shortVehicleIdToBuffer(relayFrom, shortId, sizeof(shortId));
-    if (shortId[0] != '\0' && strcmp(shortId, ownShort) != 0) appendCompactToken(out, outSize, shortId);
+    if (shortId[0] != '\0' && !compactListContains(out, shortId)) appendCompactToken(out, outSize, shortId);
   }
   trimCompactListTo(out, 30);
 }
