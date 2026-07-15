@@ -63,10 +63,11 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.match(config, /#define FORCED_HOP_TEST_SOURCE\s+"BUS_03"/);
   assert.match(config, /#define FORCED_HOP_TEST_RELAY_1\s+"BUS_02"/);
   assert.match(config, /#define FORCED_HOP_TEST_RELAY_2\s+"BUS_01"/);
-  assert.match(config, /#define FORCED_HOP_TEST_RX_EXTRA_MS\s+1000UL/);
+  assert.match(config, /#define FORCED_HOP_TEST_RX_EXTRA_MS\s+1500UL/);
   assert.ok(vehicle.includes('doc["ft"] = 1'));
   assert.ok(vehicle.includes('doc["fc"] = 1'));
   assert.ok(vehicle.includes('doc["to"] = relayToShort'));
+  assert.ok(vehicle.includes('if (!forcedHopTest && measureJson(doc) < 140)'));
   assert.ok(vehicle.includes('ignore non-target'));
   assert.ok(vehicle.includes('bool compactListContains'));
   assert.ok(vehicle.includes('compactListContains(out, shortId)'));
@@ -74,6 +75,7 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.ok(ground.includes('ignore intermediate'));
   assert.ok(ground.includes('isValidForcedHopCompletion'));
   assert.ok(ground.includes('FORCED_HOP_TEST_RX_EXTRA_MS'));
+  assert.ok(ground.includes('[HOP_TEST] RX window:%lums'));
   assert.ok(ground.includes('reject invalid completion'));
   assert.ok(ground.includes('[HOP_TEST] PASS'));
 });

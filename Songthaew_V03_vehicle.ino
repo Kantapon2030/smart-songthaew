@@ -686,7 +686,9 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
     if (forcedHopComplete) doc["fc"] = 1;
   }
 
-  if (measureJson(doc) < 140) {
+  // Keep forced-hop packets short so the final relay has the best chance of
+  // reaching Ground; route, neighbor, and version data are not test inputs.
+  if (!forcedHopTest && measureJson(doc) < 140) {
     doc["hd"] = heading;
     char route[10];
     shortRouteIdToBuffer(routeId, route, sizeof(route));
@@ -700,14 +702,14 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
     doc["lq"] = linkQualityValue;
   }
 
-  if (measureJson(doc) < 180) {
+  if (!forcedHopTest && measureJson(doc) < 180) {
     if (relayChain != nullptr && relayChain[0] != '\0') doc["rc"] = relayChain;
     char compactNeighbors[80];
     buildNeighborCompact(compactNeighbors, sizeof(compactNeighbors), neighbors, neighborCount);
     if (compactNeighbors[0] != '\0') doc["nb"] = compactNeighbors;
   }
 
-  if (measureJson(doc) < 195) {
+  if (!forcedHopTest && measureJson(doc) < 195) {
     char versionSummary[96];
     buildVersionSummaryCompact(versionSummary, sizeof(versionSummary));
     if (versionSummary[0] != '\0') doc["vs"] = versionSummary;

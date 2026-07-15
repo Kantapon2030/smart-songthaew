@@ -938,6 +938,10 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  if (FORCED_HOP_TEST_ENABLED) {
+    Serial.printf("[HOP_TEST] RX window:%lums\n",
+                  GROUND_RX_WINDOW_MS + FORCED_HOP_TEST_RX_EXTRA_MS);
+  }
   if (strlen(GROUND_KEY) < 24) {
     Serial.println("[CONFIG] GROUND_KEY missing or too short; batch API will reject uploads");
   }

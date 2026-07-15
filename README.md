@@ -44,7 +44,7 @@ Set `FORCED_HOP_TEST_ENABLED` to `1`, flash the same firmware to all three vehic
 BUS_03 -> BUS_02 -> BUS_01 -> GROUND_01
 ```
 
-Ground ignores the direct and intermediate copies of a forced-hop packet and keeps its LoRa receive window open for five seconds while the test is enabled. A successful packet reaches the server with `hop: 2`, `relay_from: BUS_01`, `relay_chain: [BUS_02, BUS_01]`, `forced_hop_test: true`, and `forced_hop_complete: true`. Set the option back to `0` and flash all three vehicle boards and Ground again before normal operation.
+Ground ignores the direct and intermediate copies of a forced-hop packet and keeps its LoRa receive window open for 5.5 seconds while the test is enabled. Forced-hop packets omit non-test fields to keep the final relay short. A successful packet reaches the server with `hop: 2`, `relay_from: BUS_01`, `relay_chain: [BUS_02, BUS_01]`, `forced_hop_test: true`, and `forced_hop_complete: true`. Set the option back to `0` and flash all three vehicle boards and Ground again before normal operation.
 
 For a 100 metre test, place Ground, BUS_01, BUS_02, and BUS_03 at roughly 0 m, 20-30 m, 50-70 m, and 80-100 m. Run at least 30 cycles and record the packet ID/hash, RSSI, SNR, hop, relay chain, Ground receive count, server accept count, and any relay queue drops. The expected success rate is at least 29 accepted final packets from 30 cycles.
 
