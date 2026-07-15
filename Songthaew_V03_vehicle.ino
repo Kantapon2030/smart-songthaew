@@ -1018,7 +1018,10 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
                   forcedHopComplete ? GROUND_ID : nextRelayTarget, hop + 1,
                   forcedHopComplete ? "yes" : "no");
   }
-  queuePendingRelay(packetId, payload, relayDueAt(vehicleId, doc["ph"] | ""));
+  unsigned long dueAt = forcedHopTest
+    ? millis() + FORCED_HOP_TEST_RELAY_DELAY_MS
+    : relayDueAt(vehicleId, doc["ph"] | "");
+  queuePendingRelay(packetId, payload, dueAt);
 }
 
 void handleBeacon(JsonDocument& doc, float rssi, float snr) {

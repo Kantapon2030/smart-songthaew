@@ -85,6 +85,7 @@
 #define FORCED_HOP_TEST_RELAY_2       "BUS_01"
 #define FORCED_HOP_TEST_EXPECTED_HOPS 2
 #define FORCED_HOP_TEST_RX_EXTRA_MS   1500UL
+#define FORCED_HOP_TEST_RELAY_DELAY_MS 400UL
 
 // Power Management
 #define PWR_EN_PIN              0     // D3 / GPIO0 - IRF9540N Gate
