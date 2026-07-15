@@ -1324,6 +1324,28 @@ function buildRealTelemetryLinks(nodes, groundStation) {
     links.push(link);
   };
 
+  // Pass 1: direct links (hop === 0) — must be registered first so that relay-chain
+  // processing for multi-hop vehicles cannot accidentally overwrite a node's own
+  // direct Ground connection with a "relay" typed link.
+  nodes.forEach(node => {
+    if (node.status !== 'online') return;
+    if (Number(node.hop) !== 0) return;
+    const hasPosition = Number.isFinite(node.lat) && Number.isFinite(node.lng);
+    const distToGround = hasPosition ? haversineDistanceMeters(node, groundStation) : null;
+    addLink({
+      from: node.id,
+      to: groundStation.id,
+      type: 'direct',
+      distance_m: distToGround === null ? null : Math.round(distToGround),
+      hop: 0,
+      status: 'good',
+      source: 'telemetry',
+      rssi: node.rssi, snr: node.snr, latency_ms: null,
+      last_seen: node.last_seen
+    });
+  });
+
+  // Pass 2: relay chains and remaining nodes.
   nodes.forEach(node => {
     if (node.status !== 'online') return;
     const chain = sanitizeRelayChain(node.relay_chain, node.id, nodeIds);
@@ -1347,6 +1369,7 @@ function buildRealTelemetryLinks(nodes, groundStation) {
         });
       }
       const lastRelay = relayPath[relayPath.length - 1];
+      // Only add lastRelay → Ground as relay if it hasn't been registered as direct already.
       addLink({
         from: lastRelay,
         to: groundStation.id,
