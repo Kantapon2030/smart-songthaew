@@ -473,7 +473,7 @@ function setGroundStationLatLng(latlng, options = {}) {
   if (lngEl) lngEl.value = lng.toFixed(6);
 
   if (groundStationMarker) {
-    groundStationMarker.position = { lat, lng };
+    groundStationMarker.setPosition({ lat, lng });
   }
   if (groundStationMap && options.pan !== false) {
     groundStationMap.setCenter({ lat, lng });
@@ -490,7 +490,7 @@ function syncGroundStationMapFromInputs(options = {}) {
     return;
   }
   if (groundStationMarker) {
-    groundStationMarker.position = { lat: groundStation.lat, lng: groundStation.lng };
+    groundStationMarker.setPosition({ lat: groundStation.lat, lng: groundStation.lng });
   }
   if (groundStationMap && options.pan !== false) {
     groundStationMap.setCenter({ lat: groundStation.lat, lng: groundStation.lng });
@@ -528,11 +528,11 @@ async function initGroundStationMap() {
     gestureHandling: 'greedy'
   });
 
-  groundStationMarker = new google.maps.marker.AdvancedMarkerElement({
+  groundStationMarker = new google.maps.Marker({
     map: groundStationMap,
     position: { lat: groundStation.lat, lng: groundStation.lng },
     title: 'Ground Station',
-    gmpDraggable: true
+    draggable: true
   });
 
   groundStationMap.addListener('click', event => {
