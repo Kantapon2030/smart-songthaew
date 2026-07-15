@@ -581,7 +581,13 @@ int postBatchToServer(const String& body) {
     if (strlen(GROUND_KEY) > 0) http.addHeader("X-Ground-Key", GROUND_KEY);
     http.setTimeout(GROUND_HTTP_TIMEOUT_MS);
     http.setReuse(false);
+
+    // Disable software watchdog during the blocking HTTP POST, as the server
+    // response can take up to 5 seconds due to Firebase network latency.
+    ESP.wdtDisable();
     code = http.POST(body);
+    ESP.wdtEnable(8000);
+
     String response = http.getString();
     if (response.length() > 0) {
       Serial.print("[HTTP_BODY] ");
