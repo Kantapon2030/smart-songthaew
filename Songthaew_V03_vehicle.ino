@@ -1134,8 +1134,8 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
 
   expanded["type"] = "vehicle_data";
   expanded["pv"] = compact["pv"] | 1;
-  expanded["vid"] = fullId;
-  expanded["pid"] = packetId;
+  expanded["vid"] = String(fullId);
+  expanded["pid"] = String(packetId);
   expanded["seq"] = packetSeq;
   expanded["bid"] = boot;
   expanded["gt"] = packetTs;
@@ -1163,12 +1163,12 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   if (compact["rf"].is<const char*>()) {
     char relayFrom[16];
     fullVehicleIdFromShortToBuffer(compact["rf"] | "", relayFrom, sizeof(relayFrom));
-    expanded["rf"] = relayFrom;
+    expanded["rf"] = String(relayFrom);
   }
   if (compact["to"].is<const char*>()) {
     char relayTo[16];
     fullVehicleIdFromShortToBuffer(compact["to"] | "", relayTo, sizeof(relayTo));
-    expanded["to"] = relayTo;
+    expanded["to"] = String(relayTo);
   }
 
   if (compact["rc"].is<const char*>()) {
@@ -1191,7 +1191,7 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
         memcpy(item, start, copyLen);
         item[copyLen] = '\0';
         fullVehicleIdFromShortToBuffer(item, expandedId, sizeof(expandedId));
-        chain.add(expandedId);
+        chain.add(String(expandedId));
       }
       if (comma == nullptr) break;
       start = comma + 1;
