@@ -76,6 +76,15 @@
 #define RELAY_DISTANCE_MARGIN_M 20.0f
 #define MIN_RELAY_LINK_QUALITY  20
 
+// Forced-hop test (disabled in normal operation).
+// When enabled, telemetry from FORCED_HOP_TEST_SOURCE must travel through
+// FORCED_HOP_TEST_RELAY_1 and FORCED_HOP_TEST_RELAY_2 before Ground accepts it.
+#define FORCED_HOP_TEST_ENABLED       0
+#define FORCED_HOP_TEST_SOURCE        "BUS_03"
+#define FORCED_HOP_TEST_RELAY_1       "BUS_02"
+#define FORCED_HOP_TEST_RELAY_2       "BUS_01"
+#define FORCED_HOP_TEST_EXPECTED_HOPS 2
+
 // Power Management
 #define PWR_EN_PIN              0     // D3 / GPIO0 - IRF9540N Gate
 #define PWR_ON                  LOW   // LOW = MOSFET conducts = power ON

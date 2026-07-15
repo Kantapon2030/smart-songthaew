@@ -574,8 +574,8 @@ function normalizeTelemetryFields(current = {}, entry = {}) {
     'rssi', 'snr', 'link_quality', 'seq', 'ttl', 'received_rssi',
     'received_snr', 'heading', 'bearing'
   ];
-  const textFields = ['boot_id', 'packet_id', 'relay_from', 'source', 'telemetry_status', 'gps_status'];
-  const boolFields = ['store_forward', 'gps_fix', 'sleepMode', 'demo'];
+  const textFields = ['boot_id', 'packet_id', 'relay_from', 'relay_target', 'source', 'telemetry_status', 'gps_status'];
+  const boolFields = ['store_forward', 'forced_hop_test', 'forced_hop_complete', 'gps_fix', 'sleepMode', 'demo'];
   const arrayFields = ['relay_chain', 'neighbors', 'version_summary'];
 
   numericFields.forEach(field => {
@@ -1937,9 +1937,12 @@ async function ingestGroundTelemetryPacket(data, batteryCalibration, receivedAt)
     source: 'ground_station',
     relay_via: 'lora',
     relay_from: data.relay_from || null,
+    relay_target: data.relay_target || null,
     relay_chain: Array.isArray(data.relay_chain) ? data.relay_chain : [],
     neighbors: Array.isArray(data.neighbors) ? data.neighbors : [],
     store_forward: data.store_forward === true,
+    forced_hop_test: data.forced_hop_test === true,
+    forced_hop_complete: data.forced_hop_complete === true,
     rssi: Number.isFinite(Number(data.received_rssi ?? data.rssi)) ? Number(data.received_rssi ?? data.rssi) : null,
     snr: Number.isFinite(Number(data.received_snr ?? data.snr)) ? Number(data.received_snr ?? data.snr) : null,
     received_rssi: Number.isFinite(Number(data.received_rssi)) ? Number(data.received_rssi) : null,

@@ -98,6 +98,19 @@ bool isVehiclePacket(JsonDocument& doc) {
   return strcmp(type, "vehicle_data") == 0 || strcmp(compactType, "vd") == 0;
 }
 
+bool isValidForcedHopCompletion(JsonDocument& doc, bool compactPacket) {
+  int hop = compactPacket ? (doc["hop"] | -1) : (doc["hop"] | -1);
+  const char* relayFrom = compactPacket ? (doc["relay_from"] | "") : (doc["rf"] | "");
+  if (hop != FORCED_HOP_TEST_EXPECTED_HOPS || strcmp(relayFrom, FORCED_HOP_TEST_RELAY_2) != 0) return false;
+
+  JsonArray chain = compactPacket ? doc["relay_chain"].as<JsonArray>() : doc["rc"].as<JsonArray>();
+  if (chain.isNull() || chain.size() != 2) return false;
+  const char* firstRelay = chain[0] | "";
+  const char* secondRelay = chain[1] | "";
+  return strcmp(firstRelay, FORCED_HOP_TEST_RELAY_1) == 0 &&
+         strcmp(secondRelay, FORCED_HOP_TEST_RELAY_2) == 0;
+}
+
 bool isValidThailandCoord(float lat, float lng);
 int postBatchToServer(const String& body);
 void bufferPacket(const char* payload, float rssi, float snr);
@@ -316,6 +329,9 @@ bool decodeCompactPacket(const String& raw, JsonDocument& out) {
   if (compact.containsKey("rf")) out["relay_from"] = expandVehicleId(compact["rf"].as<const char*>());
   if (compact.containsKey("lq")) out["link_quality"] = compact["lq"].as<int>();
   if (compact.containsKey("sf")) out["store_forward"] = compact["sf"].as<int>() == 1;
+  if (compact.containsKey("ft")) out["forced_hop_test"] = compact["ft"].as<int>() == 1;
+  if (compact.containsKey("fc")) out["forced_hop_complete"] = compact["fc"].as<int>() == 1;
+  if (compact.containsKey("to")) out["relay_target"] = expandVehicleId(compact["to"].as<const char*>());
 
   if (!out.containsKey("routeId")) {
     out["routeId"] = ROUTE_ID;
@@ -762,6 +778,8 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
   out["gps_timestamp"] = rx["gt"] | 0UL;
   out["ttl"] = rx["ttl"] | -1;
   out["store_forward"] = (rx["sf"] | 0) == 1;
+  out["forced_hop_test"] = (rx["ft"] | 0) == 1;
+  out["forced_hop_complete"] = (rx["fc"] | 0) == 1;
   out["source"] = "vehicle";
   out["gps_fix"] = gpsFix;
   out["received_rssi"] = receivedRssi;
@@ -770,6 +788,7 @@ String buildServerPayload(JsonDocument& rx, float receivedRssi, float receivedSn
 
   if (rx["hdg"].is<int>()) out["heading"] = rx["hdg"];
   if (rx["rf"].is<const char*>()) out["relay_from"] = rx["rf"];
+  if (rx["to"].is<const char*>()) out["relay_target"] = rx["to"];
   if (rx["sats"].is<int>()) out["sats"] = rx["sats"];
   if (rx["hdop"].is<float>()) out["hdop"] = rx["hdop"];
 
@@ -874,6 +893,23 @@ void onLoRaReceive(int packetSize) {
 
   const char* packetId = compactPacket ? (postDoc["packet_id"] | "") : (rx["pid"] | "");
   const char* seenVehicleId = compactPacket ? (postDoc["vehicleId"] | "") : (rx["vid"] | "");
+  bool forcedHopTest = compactPacket ? (postDoc["forced_hop_test"] | false) : ((rx["ft"] | 0) == 1);
+  bool forcedHopComplete = compactPacket ? (postDoc["forced_hop_complete"] | false) : ((rx["fc"] | 0) == 1);
+  if (forcedHopTest && !forcedHopComplete) {
+    Serial.printf("[HOP_TEST] ignore intermediate %s hop:%d target:%s\n", seenVehicleId,
+                  compactPacket ? (postDoc["hop"] | 0) : (rx["hop"] | 0),
+                  compactPacket ? (postDoc["relay_target"] | "?") : (rx["to"] | "?"));
+    return;
+  }
+  if (forcedHopTest) {
+    bool validCompletion = compactPacket
+      ? isValidForcedHopCompletion(postDoc, true)
+      : isValidForcedHopCompletion(rx, false);
+    if (!validCompletion) {
+      Serial.printf("[HOP_TEST] reject invalid completion %s\n", seenVehicleId[0] ? seenVehicleId : "?");
+      return;
+    }
+  }
   noteVehicleSeen(seenVehicleId, receivedRssi, receivedSnr);
   if (isDuplicate(packetId)) {
     Serial.printf("[DEDUP] skip duplicate: %s\n", packetId[0] ? packetId : "?");
@@ -887,6 +923,11 @@ void onLoRaReceive(int packetSize) {
     printPostLog(postDoc, code);
   } else {
     printReceiveLog(rx, receivedRssi, receivedSnr, code);
+  }
+  if (forcedHopTest) {
+    Serial.printf("[HOP_TEST] PASS %s hop:%d via:%s\n", seenVehicleId,
+                  compactPacket ? (postDoc["hop"] | 0) : (rx["hop"] | 0),
+                  compactPacket ? (postDoc["relay_from"] | "?") : (rx["rf"] | "?"));
   }
 }
 

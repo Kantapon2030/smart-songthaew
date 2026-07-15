@@ -158,6 +158,23 @@ bool sameId(const char* a, const char* b) {
   return strncmp(a, b, 15) == 0;
 }
 
+bool isForcedHopTestSource() {
+  return FORCED_HOP_TEST_ENABLED && sameId(VEHICLE_ID, FORCED_HOP_TEST_SOURCE);
+}
+
+bool forcedHopNextTargetFor(const char* relayId, char* out, size_t outSize) {
+  if (outSize == 0) return false;
+  out[0] = '\0';
+  if (!FORCED_HOP_TEST_ENABLED || relayId == nullptr) return false;
+  if (sameId(relayId, FORCED_HOP_TEST_RELAY_1)) {
+    strncpy(out, FORCED_HOP_TEST_RELAY_2, outSize - 1);
+    out[outSize - 1] = '\0';
+    return true;
+  }
+  if (sameId(relayId, FORCED_HOP_TEST_RELAY_2)) return true;
+  return false;
+}
+
 int vehicleNumberFromId(const char* id) {
   if (id == nullptr || strncmp(id, "BUS_", 4) != 0) return 0;
   int number = atoi(id + 4);
@@ -614,6 +631,7 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
                        int hop, int ttl, const char* routeId, const char* direction,
                        const char* relayFrom, int linkQualityValue, bool storeForward,
                        const char* relayChain, bool gpsFix, const char* originalPacketHash,
+                       bool forcedHopTest, const char* relayTo, bool forcedHopComplete,
                        char* payload, size_t payloadSize) {
   StaticJsonDocument<256> doc;
 
@@ -646,6 +664,15 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   doc["pk"] = packetHash;
   doc["tt"] = ttl;
   doc["sf"] = storeForward ? 1 : 0;
+  if (forcedHopTest) {
+    doc["ft"] = 1;
+    if (relayTo != nullptr && relayTo[0] != '\0') {
+      char relayToShort[8];
+      shortVehicleIdToBuffer(relayTo, relayToShort, sizeof(relayToShort));
+      doc["to"] = relayToShort;
+    }
+    if (forcedHopComplete) doc["fc"] = 1;
+  }
 
   if (measureJson(doc) < 140) {
     doc["hd"] = heading;
@@ -685,7 +712,7 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
     }
     if (measureJson(doc) > MAX_LORA_PACKET_BYTES) doc.remove("nb");
   }
-  while (measureJson(doc) > MAX_LORA_PACKET_BYTES && doc.containsKey("rc")) doc.remove("rc");
+  while (measureJson(doc) > MAX_LORA_PACKET_BYTES && doc.containsKey("rc") && !forcedHopTest) doc.remove("rc");
 
   if (payloadSize == 0 || measureJson(doc) > MAX_LORA_PACKET_BYTES) return false;
   size_t len = serializeJson(doc, payload, payloadSize);
@@ -729,9 +756,10 @@ void readGPS() {
 }
 
 void transmitPacket(const char* txMode = "auto") {
+  bool forcedHopTest = isForcedHopTestSource();
   Neighbor* ground = findGroundStation();
-  Neighbor* relay = ground == nullptr ? findBestRelay() : nullptr;
-  bool direct = ground != nullptr;
+  Neighbor* relay = !forcedHopTest && ground == nullptr ? findBestRelay() : nullptr;
+  bool direct = !forcedHopTest && ground != nullptr;
   bool hasRoute = direct || relay != nullptr;
   int hop = direct ? 0 : (relay ? constrain(relay->hop + 1, 1, MAX_HOPS) : 0);
   float bestRssi = direct ? ground->rssi : (relay ? relay->rssi : 0.0f);
@@ -750,9 +778,15 @@ void transmitPacket(const char* txMode = "auto") {
                                gpsValid ? gpsLat : 0.0f, gpsValid ? gpsLng : 0.0f,
                                gpsSpeed, (int)gpsHeading, batteryRaw, hop, MAX_HOPS - hop,
                                ROUTE_ID, ROUTE_DIR, "", linkQuality(bestRssi, bestSnr),
-                               !hasRoute, "", gpsValid, nullptr, payload, sizeof(payload));
+                               forcedHopTest ? true : !hasRoute, "", gpsValid, nullptr,
+                               forcedHopTest, forcedHopTest ? FORCED_HOP_TEST_RELAY_1 : "", false,
+                               payload, sizeof(payload));
 
   bool sent = built && sendRawPayload(payload);
+  if (forcedHopTest) {
+    Serial.printf("[HOP_TEST] source:%s target:%s hop:0 %s\n", VEHICLE_ID,
+                  FORCED_HOP_TEST_RELAY_1, sent ? "sent" : "failed");
+  }
   Serial.printf("[TX] %s mode:%s hop:%d bytes:%d rssi:%.0f a0:%d %s\n",
                 VEHICLE_ID, txMode, hop, strlen(payload), bestRssi,
                 batteryRaw, sent ? "sent" : "failed");
@@ -811,12 +845,22 @@ bool shouldRelay(JsonDocument& doc, int hop) {
   const char* relayFrom = doc["rf"] | "";
   const char* relayTo = doc["to"] | "";
   int ttl = doc["ttl"] | (MAX_HOPS - hop);
+  bool forcedHopTest = (doc["ft"] | 0) == 1;
 
   if (sameId(sourceVid, VEHICLE_ID)) return false;
   if (sameId(relayFrom, VEHICLE_ID)) return false;
   if (relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) return false;
   bool explicitlyAddressed = relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID);
   bool storeForwardRequested = (doc["sf"] | 0) == 1;
+  if (forcedHopTest) {
+    if (!FORCED_HOP_TEST_ENABLED || !sameId(sourceVid, FORCED_HOP_TEST_SOURCE)) return false;
+    if (!explicitlyAddressed) return false;
+    char ignoredTarget[16];
+    if (!forcedHopNextTargetFor(VEHICLE_ID, ignoredTarget, sizeof(ignoredTarget))) return false;
+    if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1) && (hop != 0 || relayFrom[0] != '\0')) return false;
+    if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_2) &&
+        (hop != 1 || !sameId(relayFrom, FORCED_HOP_TEST_RELAY_1))) return false;
+  }
   if (!explicitlyAddressed && !storeForwardRequested) return false;
   if (wouldCreateLoop(doc["rc"], VEHICLE_ID)) {
     Serial.printf("[RELAY] skip loop: packet from %s already passed through me\n", sourceVid[0] ? sourceVid : "?");
@@ -830,6 +874,7 @@ bool shouldRelay(JsonDocument& doc, int hop) {
     Serial.println("[RELAY] skip: TTL expired");
     return false;
   }
+  if (forcedHopTest) return true;
   if (isGroundStationNearby()) return true;
 
   float sourceLat = doc["lat"] | 0.0f;
@@ -930,6 +975,14 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
   const char* vehicleId = doc["vid"] | "";
   const char* packetId = doc["pid"] | "";
   const char* packetBootId = doc["bid"] | "";
+  bool forcedHopTest = (doc["ft"] | 0) == 1;
+  char nextRelayTarget[16];
+  bool forcedHopRelay = forcedHopTest && forcedHopNextTargetFor(VEHICLE_ID, nextRelayTarget, sizeof(nextRelayTarget));
+  bool forcedHopComplete = forcedHopRelay && nextRelayTarget[0] == '\0';
+  if (forcedHopTest && !forcedHopRelay) {
+    Serial.printf("[HOP_TEST] skip unexpected relay:%s\n", VEHICLE_ID);
+    return;
+  }
   char relayChain[40];
   char payload[MAX_LORA_PACKET_BYTES + 1] = "";
   buildRelayChainCompactFromDoc(doc, relayChain, sizeof(relayChain));
@@ -937,12 +990,19 @@ void relayVehiclePacket(JsonDocument& doc, int hop, float rssi, float snr) {
                                doc["gt"] | 0UL, doc["lat"] | 0.0f, doc["lng"] | 0.0f,
                                doc["spd"] | 0.0f, doc["hdg"] | 0, doc["ar"] | -1,
                                hop + 1, ttl - 1, doc["rid"] | ROUTE_ID, doc["dir"] | ROUTE_DIR,
-                               VEHICLE_ID, linkQuality(rssi, snr), !hasForwardPath(), relayChain,
-                               doc["fix"] | false, doc["ph"] | "", payload, sizeof(payload));
+                               VEHICLE_ID, linkQuality(rssi, snr),
+                               forcedHopTest ? !forcedHopComplete : !hasForwardPath(), relayChain,
+                               doc["fix"] | false, doc["ph"] | "", forcedHopTest,
+                               nextRelayTarget, forcedHopComplete, payload, sizeof(payload));
 
   if (!built) {
     Serial.printf("[RELAY] build failed for %s\n", vehicleId[0] ? vehicleId : "?");
     return;
+  }
+  if (forcedHopTest) {
+    Serial.printf("[HOP_TEST] relay:%s next:%s hop:%d complete:%s\n", VEHICLE_ID,
+                  forcedHopComplete ? GROUND_ID : nextRelayTarget, hop + 1,
+                  forcedHopComplete ? "yes" : "no");
   }
   queuePendingRelay(packetId, payload, relayDueAt(vehicleId, doc["ph"] | ""));
 }
@@ -963,6 +1023,15 @@ void handleVehicleData(JsonDocument& doc, float rssi, float snr) {
   float lat = doc["lat"] | 0.0f;
   float lng = doc["lng"] | 0.0f;
   int hop = doc["hop"] | 0;
+  bool forcedHopTest = (doc["ft"] | 0) == 1;
+  const char* relayTo = doc["to"] | "";
+
+  // A non-target relay must not consume the packet ID. It needs to receive the
+  // same ID later from its assigned predecessor in the forced-hop route.
+  if (forcedHopTest && relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) {
+    Serial.printf("[HOP_TEST] ignore non-target %s target:%s\n", vid[0] ? vid : "?", relayTo);
+    return;
+  }
 
   updateNeighborWithHop(vid, rssi, snr, lat, lng, hop);
   Serial.printf("[RX] from %s hop:%d rssi:%.0f\n", vid[0] ? vid : "?", hop, rssi);
@@ -1011,6 +1080,8 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
   expanded["sf"] = compact["sf"] | 0;
   expanded["ph"] = packetHash;
   expanded["lq"] = compact["lq"] | 0;
+  expanded["ft"] = compact["ft"] | 0;
+  expanded["fc"] = compact["fc"] | 0;
   float lat = expanded["lat"] | 0.0f;
   float lng = expanded["lng"] | 0.0f;
   bool gpsFix = compact.containsKey("fx")
@@ -1022,6 +1093,11 @@ bool decodeCompactVehiclePacket(JsonDocument& compact, JsonDocument& expanded) {
     char relayFrom[16];
     fullVehicleIdFromShortToBuffer(compact["rf"] | "", relayFrom, sizeof(relayFrom));
     expanded["rf"] = relayFrom;
+  }
+  if (compact["to"].is<const char*>()) {
+    char relayTo[16];
+    fullVehicleIdFromShortToBuffer(compact["to"] | "", relayTo, sizeof(relayTo));
+    expanded["to"] = relayTo;
   }
 
   if (compact["rc"].is<const char*>()) {

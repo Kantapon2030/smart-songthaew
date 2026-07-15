@@ -55,6 +55,25 @@ test('vehicle relay is queued and restricted to store-forward requests', () => {
   assert.ok(!vehicle.includes('bool sent = built && sendRawPayload(payload);\n  if (!hasForwardPath() || !sent)'));
 });
 
+test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 route', () => {
+  const config = read('mesh_config.h');
+  const vehicle = read('Songthaew_V03_vehicle.ino');
+  const ground = read('Songthaew_V03_ground.ino');
+  assert.match(config, /#define FORCED_HOP_TEST_ENABLED\s+0\b/);
+  assert.match(config, /#define FORCED_HOP_TEST_SOURCE\s+"BUS_03"/);
+  assert.match(config, /#define FORCED_HOP_TEST_RELAY_1\s+"BUS_02"/);
+  assert.match(config, /#define FORCED_HOP_TEST_RELAY_2\s+"BUS_01"/);
+  assert.ok(vehicle.includes('doc["ft"] = 1'));
+  assert.ok(vehicle.includes('doc["fc"] = 1'));
+  assert.ok(vehicle.includes('doc["to"] = relayToShort'));
+  assert.ok(vehicle.includes('ignore non-target'));
+  assert.ok(vehicle.includes('hop != 1 || !sameId(relayFrom, FORCED_HOP_TEST_RELAY_1)'));
+  assert.ok(ground.includes('ignore intermediate'));
+  assert.ok(ground.includes('isValidForcedHopCompletion'));
+  assert.ok(ground.includes('reject invalid completion'));
+  assert.ok(ground.includes('[HOP_TEST] PASS'));
+});
+
 test('vehicle transmission epoch follows the ground beacon only', () => {
   const vehicle = read('Songthaew_V03_vehicle.ino');
   assert.ok(vehicle.includes('syncTxSlotFromBeacon(millis())'));
