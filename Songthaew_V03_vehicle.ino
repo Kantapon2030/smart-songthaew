@@ -689,6 +689,8 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
       doc["to"] = relayToShort;
     }
     if (forcedHopComplete) doc["fc"] = 1;
+    // Include relay chain so Ground can validate the full hop path.
+    if (relayChain != nullptr && relayChain[0] != '\0') doc["rc"] = relayChain;
   }
 
   // Keep forced-hop packets short so the final relay has the best chance of

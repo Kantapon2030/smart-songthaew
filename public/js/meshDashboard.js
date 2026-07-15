@@ -570,6 +570,7 @@ function renderMeshTable() {
       <td>${row.linkType}</td>
       <td>${statusBadge(row.status, row.gps_fix)}</td>
       <td>${formatTime(row.last_seen)}</td>
+      <td>${formatTime(row.last_seen)}</td>
     </tr>`).join('') : '<tr><td colspan="8" class="empty-state">ยังไม่มีข้อมูลรถ</td></tr>';
   const totalPages = Math.max(1, Math.ceil(rows.length / MESH_PAGE_SIZE));
   document.getElementById('mesh-page-label').textContent = `หน้า ${Math.min(meshPage + 1, totalPages)} / ${totalPages}`;
@@ -578,13 +579,32 @@ function renderMeshTable() {
 function connectivityRows() {
   const links = meshLinks();
   return vehicleNodes().map(node => {
-    const link = links.find(item => item.from === node.id || item.to === node.id);
-    const connectedTo = link ? (link.from === node.id ? link.to : link.from) : '—';
+    // Find the first outgoing relay link from this node (the direct upstream neighbor).
+    // For multi-hop vehicles the chain may be longer, but the first link shows who
+    // this vehicle actually transmits to.
+    const outLink = links.find(item => item.from === node.id);
+    const inLink  = !outLink ? links.find(item => item.to === node.id) : null;
+    const link    = outLink || inLink;
+
+    // Build a human-readable relay path from relay_chain + relay_from stored on the node.
+    // relay_chain holds intermediate relays in order; relay_from is the last relay before Ground.
+    let connectedTo = '—';
+    const chain = Array.isArray(node.relay_chain) && node.relay_chain.length ? node.relay_chain : [];
+    if (chain.length) {
+      // chain = [BUS_02, BUS_01] means: node -> BUS_02 -> BUS_01 -> Ground
+      connectedTo = chain.join(' → ');
+    } else if (node.relay_from) {
+      connectedTo = node.relay_from;
+    } else if (link) {
+      connectedTo = link.from === node.id ? link.to : link.from;
+    }
+
     return {
       vehicle: node.vehicle_id || node.id,
       connectedTo,
       distance_m: link?.distance_m ?? null,
-      hop: link?.hop ?? node.hop ?? '—',
+      // Use node.hop for the total hop count reported by the vehicle itself.
+      hop: node.hop !== null && node.hop !== undefined ? node.hop : (link?.hop ?? '—'),
       linkType: link?.type || (node.status === 'offline' ? 'offline' : 'none'),
       status: node.status || link?.status || 'offline',
       gps_fix: node.gps_fix,

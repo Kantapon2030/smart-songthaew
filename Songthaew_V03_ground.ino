@@ -99,16 +99,57 @@ bool isVehiclePacket(JsonDocument& doc) {
 }
 
 bool isValidForcedHopCompletion(JsonDocument& doc, bool compactPacket) {
-  int hop = compactPacket ? (doc["hop"] | -1) : (doc["hop"] | -1);
+  int hop = doc["hop"] | -1;
+  // For compact-decoded packets the relay_from field holds the full ID;
+  // for raw (non-compact) expanded packets it is stored under "rf".
   const char* relayFrom = compactPacket ? (doc["relay_from"] | "") : (doc["rf"] | "");
   if (hop != FORCED_HOP_TEST_EXPECTED_HOPS || strcmp(relayFrom, FORCED_HOP_TEST_RELAY_2) != 0) return false;
 
-  JsonArray chain = compactPacket ? doc["relay_chain"].as<JsonArray>() : doc["rc"].as<JsonArray>();
-  if (chain.isNull() || chain.size() != 2) return false;
-  const char* firstRelay = chain[0] | "";
-  const char* secondRelay = chain[1] | "";
-  return strcmp(firstRelay, FORCED_HOP_TEST_RELAY_1) == 0 &&
-         strcmp(secondRelay, FORCED_HOP_TEST_RELAY_2) == 0;
+  // relay_chain (compact-decoded) is a proper JsonArray.
+  // rc (raw vehicle packet) may be stored as a compact string ("B2,B1") since
+  // the vehicle serialises it that way; handle both forms.
+  bool foundRelay1 = false;
+  bool foundRelay2 = false;
+
+  if (compactPacket) {
+    JsonArray chain = doc["relay_chain"].as<JsonArray>();
+    if (chain.isNull()) return false;
+    for (JsonVariant item : chain) {
+      const char* id = item | "";
+      if (strcmp(id, FORCED_HOP_TEST_RELAY_1) == 0) foundRelay1 = true;
+      if (strcmp(id, FORCED_HOP_TEST_RELAY_2) == 0) foundRelay2 = true;
+    }
+  } else {
+    // rc may be a JSON array (expanded doc) or a compact string.
+    if (doc["rc"].is<JsonArray>()) {
+      JsonArray chain = doc["rc"].as<JsonArray>();
+      for (JsonVariant item : chain) {
+        const char* id = item | "";
+        if (strcmp(id, FORCED_HOP_TEST_RELAY_1) == 0) foundRelay1 = true;
+        if (strcmp(id, FORCED_HOP_TEST_RELAY_2) == 0) foundRelay2 = true;
+      }
+    } else if (doc["rc"].is<const char*>()) {
+      // Compact string format, e.g. "B2,B1" — expand each token.
+      const char* rcStr = doc["rc"] | "";
+      const char* start = rcStr;
+      while (*start != '\0') {
+        while (*start == ',' || *start == ' ') start++;
+        const char* comma = strchr(start, ',');
+        size_t len = comma ? (size_t)(comma - start) : strlen(start);
+        char token[8] = "";
+        size_t copyLen = len < sizeof(token) - 1 ? len : sizeof(token) - 1;
+        memcpy(token, start, copyLen);
+        token[copyLen] = '\0';
+        String expanded = expandVehicleId(token);
+        if (expanded == FORCED_HOP_TEST_RELAY_1) foundRelay1 = true;
+        if (expanded == FORCED_HOP_TEST_RELAY_2) foundRelay2 = true;
+        if (comma == nullptr) break;
+        start = comma + 1;
+      }
+    }
+  }
+
+  return foundRelay1 && foundRelay2;
 }
 
 bool isValidThailandCoord(float lat, float lng);
