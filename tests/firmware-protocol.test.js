@@ -66,6 +66,7 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.match(config, /#define FORCED_HOP_TEST_RX_EXTRA_MS\s+1500UL/);
   assert.match(config, /#define FORCED_HOP_TEST_RELAY_DELAY_MS\s+400UL/);
   assert.ok(vehicle.includes('doc["ft"] = 1'));
+  assert.ok(vehicle.includes('doc["rf"] = relayFromShort'));
   assert.ok(vehicle.includes('doc["fc"] = 1'));
   assert.ok(vehicle.includes('doc["to"] = relayToShort'));
   assert.ok(vehicle.includes('if (!forcedHopTest && measureJson(doc) < 140)'));

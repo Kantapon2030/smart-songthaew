@@ -678,6 +678,11 @@ bool buildLoRaPacket(const char* vehicleId, const char* packetId, uint32_t packe
   doc["sf"] = storeForward ? 1 : 0;
   if (forcedHopTest) {
     doc["ft"] = 1;
+    if (relayFrom != nullptr && relayFrom[0] != '\0') {
+      char relayFromShort[8];
+      shortVehicleIdToBuffer(relayFrom, relayFromShort, sizeof(relayFromShort));
+      doc["rf"] = relayFromShort;
+    }
     if (relayTo != nullptr && relayTo[0] != '\0') {
       char relayToShort[8];
       shortVehicleIdToBuffer(relayTo, relayToShort, sizeof(relayToShort));
