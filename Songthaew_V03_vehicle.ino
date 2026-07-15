@@ -861,20 +861,31 @@ bool shouldRelay(JsonDocument& doc, int hop) {
   int ttl = doc["ttl"] | (MAX_HOPS - hop);
   bool forcedHopTest = (doc["ft"] | 0) == 1;
 
+  if (forcedHopTest) {
+    char ignoredTarget[16];
+    bool validForcedRelay = FORCED_HOP_TEST_ENABLED &&
+      sameId(sourceVid, FORCED_HOP_TEST_SOURCE) &&
+      relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID) &&
+      forcedHopNextTargetFor(VEHICLE_ID, ignoredTarget, sizeof(ignoredTarget));
+    if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1)) {
+      validForcedRelay = validForcedRelay && hop == 0 && relayFrom[0] == '\0';
+    } else if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_2)) {
+      validForcedRelay = validForcedRelay && hop == 1 &&
+        sameId(relayFrom, FORCED_HOP_TEST_RELAY_1);
+    } else {
+      validForcedRelay = false;
+    }
+    if (validForcedRelay && hop < MAX_HOPS && ttl > 0) return true;
+    Serial.printf("[HOP_TEST] reject relay source:%s from:%s to:%s hop:%d ttl:%d\n",
+                  sourceVid, relayFrom, relayTo, hop, ttl);
+    return false;
+  }
+
   if (sameId(sourceVid, VEHICLE_ID)) return false;
   if (sameId(relayFrom, VEHICLE_ID)) return false;
   if (relayTo[0] != '\0' && !sameId(relayTo, VEHICLE_ID)) return false;
   bool explicitlyAddressed = relayTo[0] != '\0' && sameId(relayTo, VEHICLE_ID);
   bool storeForwardRequested = (doc["sf"] | 0) == 1;
-  if (forcedHopTest) {
-    if (!FORCED_HOP_TEST_ENABLED || !sameId(sourceVid, FORCED_HOP_TEST_SOURCE)) return false;
-    if (!explicitlyAddressed) return false;
-    char ignoredTarget[16];
-    if (!forcedHopNextTargetFor(VEHICLE_ID, ignoredTarget, sizeof(ignoredTarget))) return false;
-    if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_1) && (hop != 0 || relayFrom[0] != '\0')) return false;
-    if (sameId(VEHICLE_ID, FORCED_HOP_TEST_RELAY_2) &&
-        (hop != 1 || !sameId(relayFrom, FORCED_HOP_TEST_RELAY_1))) return false;
-  }
   if (!explicitlyAddressed && !storeForwardRequested) return false;
   if (wouldCreateLoop(doc["rc"], VEHICLE_ID)) {
     Serial.printf("[RELAY] skip loop: packet from %s already passed through me\n", sourceVid[0] ? sourceVid : "?");
@@ -888,7 +899,6 @@ bool shouldRelay(JsonDocument& doc, int hop) {
     Serial.println("[RELAY] skip: TTL expired");
     return false;
   }
-  if (forcedHopTest) return true;
   if (isGroundStationNearby()) return true;
 
   float sourceLat = doc["lat"] | 0.0f;

@@ -75,7 +75,8 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.ok(vehicle.includes('millis() + FORCED_HOP_TEST_RELAY_DELAY_MS'));
   assert.ok(vehicle.includes('stale state; forwarding assigned packet'));
   assert.ok(vehicle.includes('if (!stateUpdated && !forcedHopTest) return'));
-  assert.ok(vehicle.includes('hop != 1 || !sameId(relayFrom, FORCED_HOP_TEST_RELAY_1)'));
+  assert.ok(vehicle.includes('[HOP_TEST] reject relay source:%s from:%s to:%s hop:%d ttl:%d'));
+  assert.ok(vehicle.includes('if (validForcedRelay && hop < MAX_HOPS && ttl > 0) return true;'));
   assert.ok(ground.includes('ignore intermediate'));
   assert.ok(ground.includes('isValidForcedHopCompletion'));
   assert.ok(ground.includes('FORCED_HOP_TEST_RX_EXTRA_MS'));
