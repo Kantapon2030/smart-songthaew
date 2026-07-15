@@ -82,21 +82,25 @@ function applyConfigToUI(cfg) {
   if (toggle) toggle.checked = cfg.demoMode === true;
 
   if (cfg.demoMode) {
-    light.classList.add('on');
-    title.textContent     = 'Digital Twin กำลังทำงาน';
-    sub.textContent       = `DEMO_1, DEMO_2, DEMO_3 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
-    badge.textContent     = 'DEMO';
-    badge.className       = 'nav-badge';
+    if (light) light.classList.add('on');
+    if (title) title.textContent     = 'Digital Twin กำลังทำงาน';
+    if (sub) sub.textContent       = `DEMO_1, DEMO_2, DEMO_3 วิ่งอยู่ (ความเร็ว ${cfg.demoSpeed || 1.0}x)`;
+    if (badge) {
+      badge.textContent     = 'DEMO';
+      badge.className       = 'nav-badge';
+    }
     if (modeBadge) { modeBadge.textContent = 'DEMO ACTIVE — simulated data'; modeBadge.classList.add('active'); }
-    statusSub.textContent = 'DEMO_1–3 กำลังวิ่ง';
+    if (statusSub) statusSub.textContent = 'DEMO_1–3 กำลังวิ่ง';
   } else {
-    light.classList.remove('on');
-    title.textContent     = 'Digital Twin ปิดอยู่';
-    sub.textContent       = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
-    badge.textContent     = 'REAL';
-    badge.className       = 'nav-badge safe';
+    if (light) light.classList.remove('on');
+    if (title) title.textContent     = 'Digital Twin ปิดอยู่';
+    if (sub) sub.textContent       = 'ระบบแสดงข้อมูลจาก ESP8266 จริง';
+    if (badge) {
+      badge.textContent     = 'REAL';
+      badge.className       = 'nav-badge safe';
+    }
     if (modeBadge) { modeBadge.textContent = 'LIVE — real data only'; modeBadge.classList.remove('active'); }
-    statusSub.textContent = 'ปิดอยู่';
+    if (statusSub) statusSub.textContent = 'ปิดอยู่';
   }
 
   renderAnnouncement(cfg.announcement);
@@ -522,9 +526,11 @@ function initGroundStationMap() {
 
   groundStationMap.on('click', event => {
     setGroundStationLatLng(event.latlng);
+    saveGroundStationConfig();
   });
   groundStationMarker.on('dragend', event => {
     setGroundStationLatLng(event.target.getLatLng());
+    saveGroundStationConfig();
   });
 
   setTimeout(() => groundStationMap.invalidateSize(), 80);
@@ -544,6 +550,7 @@ function useCurrentLocationForGroundStation() {
         lng: position.coords.longitude,
       });
       addLog('ok', 'ตั้งตำแหน่งสถานีฐานจากตำแหน่งปัจจุบันแล้ว');
+      saveGroundStationConfig();
     },
     error => {
       const message = error.message || 'ไม่สามารถอ่านตำแหน่งปัจจุบันได้';
@@ -557,6 +564,7 @@ function useCurrentLocationForGroundStation() {
 function resetGroundStationToDefault() {
   setGroundStationForm(DEFAULT_GROUND_STATION_CONFIG);
   addLog('info', 'คืนค่าตำแหน่งสถานีฐานเป็นค่าเริ่มต้นแล้ว');
+  saveGroundStationConfig();
 }
 
 async function saveGroundStationConfig() {

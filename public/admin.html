@@ -1348,6 +1348,9 @@
       loadBatteryRecommendations();
       updateBatteryPreview();
     }
+    if (tab === 'overview' && typeof initGroundStationMap === 'function') {
+      initGroundStationMap();
+    }
   }
 
   document.addEventListener('DOMContentLoaded', () => {
