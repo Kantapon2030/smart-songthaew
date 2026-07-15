@@ -1056,8 +1056,15 @@ void handleVehicleData(JsonDocument& doc, float rssi, float snr) {
   cancelPendingRelay(pid);
   if (alreadySeen(pid)) return;
   markSeen(pid);
-  if (!updateSharedStateFromDoc(doc)) return;
-  updateKnownVehicle(vid, "", doc["seq"] | 0UL, doc["bid"] | "");
+  bool stateUpdated = updateSharedStateFromDoc(doc);
+  if (!stateUpdated && !forcedHopTest) return;
+  if (stateUpdated) {
+    updateKnownVehicle(vid, "", doc["seq"] | 0UL, doc["bid"] | "");
+  } else {
+    // Test routing must not be blocked by an older cached telemetry sequence.
+    Serial.printf("[HOP_TEST] stale state; forwarding assigned packet from %s\n",
+                  vid[0] ? vid : "?");
+  }
 
   if (shouldRelay(doc, hop)) {
     relayVehiclePacket(doc, hop, rssi, snr);

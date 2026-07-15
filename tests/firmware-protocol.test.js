@@ -73,6 +73,8 @@ test('forced-hop test is opt-in and preserves the BUS_03 to BUS_02 to BUS_01 rou
   assert.ok(vehicle.includes('bool compactListContains'));
   assert.ok(vehicle.includes('compactListContains(out, shortId)'));
   assert.ok(vehicle.includes('millis() + FORCED_HOP_TEST_RELAY_DELAY_MS'));
+  assert.ok(vehicle.includes('stale state; forwarding assigned packet'));
+  assert.ok(vehicle.includes('if (!stateUpdated && !forcedHopTest) return'));
   assert.ok(vehicle.includes('hop != 1 || !sameId(relayFrom, FORCED_HOP_TEST_RELAY_1)'));
   assert.ok(ground.includes('ignore intermediate'));
   assert.ok(ground.includes('isValidForcedHopCompletion'));
