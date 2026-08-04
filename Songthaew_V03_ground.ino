@@ -20,6 +20,7 @@
 #include <ArduinoJson.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
+#include <ESP8266WiFiMulti.h>
 #include <LoRa.h>
 #include <SPI.h>
 #include <WiFiClientSecure.h>
@@ -73,6 +74,7 @@ DedupEntry dedupCache[DEDUP_CACHE_SIZE];
 SeenVehicle seenVehicles[SEEN_VEHICLE_SIZE];
 int dedupHead = 0;
 
+ESP8266WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool loraReady = false;
 unsigned long lastWifiCheckMs = 0;
@@ -181,7 +183,7 @@ void forceWifiReconnect(const char* reason) {
                 reason ? reason : "unknown", WiFi.status(), consecutiveHttpFailures);
   WiFi.disconnect();
   delay(100);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  wifiMulti.run();
 }
 
 void beginLedPulse(unsigned long durationMs) {
@@ -693,9 +695,9 @@ void flushBuffer(uint8_t maxPosts = GROUND_BATCH_SIZE) {
 
 void serviceWiFi() {
   unsigned long now = millis();
-  bool connectedNow = WiFi.status() == WL_CONNECTED;
+  bool connectedNow = (wifiMulti.run() == WL_CONNECTED);
   if (connectedNow) {
-    if (!wifiConnected) Serial.printf("[WiFi] restored IP:%s\n", WiFi.localIP().toString().c_str());
+    if (!wifiConnected) Serial.printf("[WiFi] restored IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
     wifiConnected = true;
     consecutiveHttpFailures = 0;
     return;
@@ -707,17 +709,18 @@ void serviceWiFi() {
 
   Serial.println("[WiFi] reconnecting");
   WiFi.disconnect();
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  wifiMulti.run();
 }
 
 void waitInitialWiFi() {
   unsigned long started = millis();
   while (millis() - started < WIFI_SETUP_TIMEOUT_MS) {
-    wifiConnected = WiFi.status() == WL_CONNECTED;
+    wifiConnected = (wifiMulti.run() == WL_CONNECTED);
     if (wifiConnected) {
-      Serial.printf("[WiFi] connected IP:%s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("[WiFi] connected IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
       return;
     }
+    delay(100);
     yield();
   }
   wifiConnected = false;
@@ -1007,7 +1010,15 @@ void setup() {
   }
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
+#ifdef WIFI_SSID
+  wifiMulti.addAP(WIFI_SSID, WIFI_PASS);
+#endif
+#ifdef WIFI_SSID_2
+  wifiMulti.addAP(WIFI_SSID_2, WIFI_PASS_2);
+#endif
+#ifdef WIFI_SSID_3
+  wifiMulti.addAP(WIFI_SSID_3, WIFI_PASS_3);
+#endif
   waitInitialWiFi();
 
   loraReady = initLoRa();

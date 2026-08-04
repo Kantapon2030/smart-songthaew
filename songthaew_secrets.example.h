@@ -6,12 +6,19 @@
 #ifndef SONGTHAEW_SECRETS_H
 #define SONGTHAEW_SECRETS_H
 
-// WiFi: ground station only
+// WiFi: ground station only (Multi-WiFi support)
 #ifndef WIFI_SSID
-#define WIFI_SSID "YOUR_WIFI_SSID"
+#define WIFI_SSID "Saowapha"
 #endif
 #ifndef WIFI_PASS
-#define WIFI_PASS "YOUR_WIFI_PASSWORD"
+#define WIFI_PASS "0887692695"
+#endif
+
+#ifndef WIFI_SSID_2
+#define WIFI_SSID_2 "Kantapon"
+#endif
+#ifndef WIFI_PASS_2
+#define WIFI_PASS_2 "Kantapon@2551"
 #endif
 
 // Server endpoint: keep /api/update-location for backward compatibility
