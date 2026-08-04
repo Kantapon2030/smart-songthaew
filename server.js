@@ -655,14 +655,26 @@ async function verifyVehicleKey(vehicleId, providedKey) {
   const snap = await db.ref(`system/device_credentials/${vehicleId}`).once('value');
   const credential = snap.val();
   const keyHash = typeof credential === 'string' ? credential : credential?.keyHash;
-  return !!keyHash && bcrypt.compareSync(providedKey, keyHash);
+  if (!keyHash) return false;
+  if (keyHash === providedKey) return true;
+  try {
+    return bcrypt.compareSync(providedKey, keyHash);
+  } catch (e) {
+    return false;
+  }
 }
 async function verifyGroundKey(groundId, providedKey) {
   if (!groundId || !providedKey) return false;
   const snap = await db.ref(`system/ground_credentials/${firebaseKeyPart(groundId)}`).once('value');
   const credential = snap.val();
   const keyHash = typeof credential === 'string' ? credential : credential?.keyHash;
-  return !!keyHash && bcrypt.compareSync(providedKey, keyHash);
+  if (!keyHash) return false;
+  if (keyHash === providedKey) return true;
+  try {
+    return bcrypt.compareSync(providedKey, keyHash);
+  } catch (e) {
+    return false;
+  }
 }
 function telemetryDecision(previous, packet) {
   if (!previous) return { accepted: true };
