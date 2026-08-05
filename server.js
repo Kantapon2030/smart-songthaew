@@ -998,6 +998,25 @@ function pdrSampleValues(samples = {}) {
 function summarizePdrSamples(samples = [], session = {}, endTime = Date.now()) {
   const targetPackets = Number(session.targetPackets || 100);
   const startTime = Number(session.startTime || session.startedAt || endTime);
+
+  if (!samples.length && (session.received !== undefined || session.rssiCount !== undefined)) {
+    const received = Number(session.received || 0);
+    const rssiCount = Number(session.rssiCount || 0);
+    const rssiSum = Number(session.rssiSum || 0);
+    const snrCount = Number(session.snrCount || 0);
+    const snrSum = Number(session.snrSum || 0);
+    return {
+      received,
+      targetPackets,
+      pdr: targetPackets > 0 ? Number(Math.min(100, (received / targetPackets) * 100).toFixed(1)) : 0,
+      avgRSSI: rssiCount > 0 ? Number((rssiSum / rssiCount).toFixed(1)) : null,
+      avgSNR: snrCount > 0 ? Number((snrSum / snrCount).toFixed(1)) : null,
+      elapsed_s: Math.max(0, Math.round((endTime - startTime) / 1000)),
+      lastPacketAt: session.lastPacketAt || null,
+      pdrSource: 'live_packets',
+    };
+  }
+
   const scoped = samples.filter(sample => {
     const receivedAt = Number(sample.receivedAt || 0);
     return receivedAt >= startTime && receivedAt <= endTime;
@@ -1055,13 +1074,37 @@ function pdrPacketKey(packet = {}) {
 
 async function getRunningPdrSessionsForVehicle(vehicleId) {
   const cleanVehicleId = sanitizeHistoryVehicleId(vehicleId);
+  if (!cleanVehicleId) return [];
   const now = Date.now();
   const cached = pdrSessionCache.get(cleanVehicleId);
   if (cached && cached.expiresAt > now) return cached.sessions;
 
-  const snap = await db.ref('diagnostics/pdrTests').orderByChild('vehicleId').equalTo(cleanVehicleId).once('value');
-  const sessions = Object.entries(snap.val() || {})
-    .filter(([, session]) => session?.status === 'running');
+  let sessions = [];
+  try {
+    const snap = await db.ref(`diagnostics/activePdrSessions/${cleanVehicleId}`).once('value');
+    const val = snap.val();
+
+    if (val && typeof val === 'object') {
+      sessions = Object.entries(val).filter(([, session]) => session?.status === 'running');
+    } else {
+      const legacySnap = await db.ref('diagnostics/pdrTests')
+        .orderByChild('vehicleId')
+        .equalTo(cleanVehicleId)
+        .limitToLast(10)
+        .once('value');
+      const legacyVal = legacySnap.val() || {};
+      sessions = Object.entries(legacyVal).filter(([, session]) => session?.status === 'running');
+      for (const [sessionId, session] of sessions) {
+        if (session) {
+          await db.ref(`diagnostics/activePdrSessions/${cleanVehicleId}/${sessionId}`).set(session);
+        }
+      }
+    }
+  } catch (error) {
+    console.warn('[PDR] Failed to fetch running sessions:', error.message);
+    sessions = [];
+  }
+
   pdrSessionCache.set(cleanVehicleId, {
     expiresAt: now + PDR_SESSION_CACHE_MS,
     sessions,
@@ -1100,6 +1143,7 @@ async function recordPdrPacketForVehicle(vehicleId, packet = {}) {
     const sampleResult = await sampleRef.transaction(current => current ? undefined : sample);
     if (!sampleResult.committed) continue;
 
+    const newReceived = (session.received || 0) + 1;
     const update = {
       received: admin.database.ServerValue.increment(1),
       updatedAt: receivedAt,
@@ -1115,6 +1159,21 @@ async function recordPdrPacketForVehicle(vehicleId, packet = {}) {
       update.snrCount = admin.database.ServerValue.increment(1);
     }
     await db.ref(`diagnostics/pdrTests/${sessionId}`).update(update);
+
+    if (session.targetPackets && newReceived >= session.targetPackets) {
+      await Promise.all([
+        db.ref(`diagnostics/pdrTests/${sessionId}`).update({ status: 'completed', endTime: receivedAt }),
+        db.ref(`diagnostics/activePdrSessions/${cleanVehicleId}/${sessionId}`).remove(),
+      ]);
+      clearPdrSessionCache(cleanVehicleId);
+    } else {
+      db.ref(`diagnostics/activePdrSessions/${cleanVehicleId}/${sessionId}`).update({
+        received: admin.database.ServerValue.increment(1),
+        updatedAt: receivedAt,
+        lastPacketAt: receivedAt,
+      }).catch(() => {});
+    }
+
     counted += 1;
   }
 
@@ -2821,15 +2880,20 @@ function scheduleDemoFleetTick() {
 }
 
 async function ensureDemoFleetRunning(reason = 'watchdog') {
-  const demoMode = await getDemoMode();
-  if (!demoMode) return { demoMode, running: false, started: false, reason };
-  const stale = !_demoLastTickAt || Date.now() - _demoLastTickAt > 5000;
-  if (_demoTimer && !stale && demoRouteCoords.length) {
-    return { demoMode, running: true, started: false, reason, lastTickAt: _demoLastTickAt };
+  try {
+    const demoMode = await getDemoMode();
+    if (!demoMode) return { demoMode, running: false, started: false, reason };
+    const stale = !_demoLastTickAt || Date.now() - _demoLastTickAt > 5000;
+    if (_demoTimer && !stale && demoRouteCoords.length) {
+      return { demoMode, running: true, started: false, reason, lastTickAt: _demoLastTickAt };
+    }
+    console.warn(`[DEMO] watchdog restarting simulator reason=${reason} timer=${!!_demoTimer} stale=${stale} coords=${demoRouteCoords.length}`);
+    await startDemoFleet();
+    return { demoMode: true, running: true, started: true, reason, lastTickAt: _demoLastTickAt };
+  } catch (err) {
+    console.error(`[DEMO] ensureDemoFleetRunning failed reason=${reason}:`, err.message);
+    return { demoMode: false, running: false, started: false, reason, error: err.message };
   }
-  console.warn(`[DEMO] watchdog restarting simulator reason=${reason} timer=${!!_demoTimer} stale=${stale} coords=${demoRouteCoords.length}`);
-  await startDemoFleet();
-  return { demoMode: true, running: true, started: true, reason, lastTickAt: _demoLastTickAt };
 }
 
 function normalizeDemoRouteCoords(coords = []) {
@@ -3807,7 +3871,10 @@ app.post('/api/diagnostics/pdr-test', authMiddleware, async (req, res) => {
       createdAt: now,
       updatedAt: now,
     };
-    await db.ref(`diagnostics/pdrTests/${sessionId}`).set(session);
+    await Promise.all([
+      db.ref(`diagnostics/pdrTests/${sessionId}`).set(session),
+      db.ref(`diagnostics/activePdrSessions/${vehicleId}/${sessionId}`).set(session),
+    ]);
     clearPdrSessionCache(vehicleId);
     return res.status(201).json(session);
   } catch (error) {
@@ -3867,7 +3934,10 @@ app.post('/api/diagnostics/pdr-test/:sessionId/stop', authMiddleware, async (req
       ...progress,
       updatedAt: endTime,
     };
-    await ref.update(update);
+    await Promise.all([
+      ref.update(update),
+      db.ref(`diagnostics/activePdrSessions/${session.vehicleId}/${sessionId}`).remove(),
+    ]);
     clearPdrSessionCache(session.vehicleId);
     return res.json({ ...sessionPublic, ...update });
   } catch (error) {
