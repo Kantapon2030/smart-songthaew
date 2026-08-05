@@ -324,25 +324,69 @@ function renderStatusChart() {
 /* ─────────────────────────────────────────
    Live Map
 ───────────────────────────────────────── */
+let opsMarkersMap = new Map();
+let opsMapBoundsFitted = false;
+
+function moveOpsMarker(marker, targetLat, targetLng, durationMs = 2500) {
+  if (!marker) return;
+  if (marker._animFrame) cancelAnimationFrame(marker._animFrame);
+  const start = marker._currentPos || { lat: targetLat, lng: targetLng };
+  const startTime = performance.now();
+  const step = now => {
+    const elapsed = now - startTime;
+    const t = Math.min(elapsed / durationMs, 1);
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    const lat = start.lat + (targetLat - start.lat) * ease;
+    const lng = start.lng + (targetLng - start.lng) * ease;
+    marker._currentPos = { lat, lng };
+    marker.position = { lat, lng };
+    if (t < 1) marker._animFrame = requestAnimationFrame(step);
+    else marker._animFrame = null;
+  };
+  marker._animFrame = requestAnimationFrame(step);
+}
+
 function renderOpsMap() {
   if (!opsMap) return;
-  opsMarkers.forEach(m => { m.map = null; });
-  opsMarkers = [];
+  const activeIds = new Set();
   const bounds = new google.maps.LatLngBounds();
+
   fleetRows().forEach(row => {
     const lat = Number(row.current.lat);
     const lng = Number(row.current.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+    activeIds.add(row.id);
     const pos = { lat, lng };
     bounds.extend(pos);
-    opsMarkers.push(new google.maps.marker.AdvancedMarkerElement({
-      map: opsMap,
-      position: pos,
-      title: row.id,
-      content: createVehicleMarkerContent(row.current.speed || 0, row.status === 'online', false, false, 0),
-    }));
+
+    if (!opsMarkersMap.has(row.id)) {
+      const marker = new google.maps.marker.AdvancedMarkerElement({
+        map: opsMap,
+        position: pos,
+        title: row.id,
+        content: createVehicleMarkerContent(row.current.speed || 0, row.status === 'online', false, false, 0),
+      });
+      marker._currentPos = pos;
+      opsMarkersMap.set(row.id, marker);
+    } else {
+      const marker = opsMarkersMap.get(row.id);
+      marker.content = createVehicleMarkerContent(row.current.speed || 0, row.status === 'online', false, false, 0);
+      moveOpsMarker(marker, lat, lng, 2500);
+    }
   });
-  if (!bounds.isEmpty()) opsMap.fitBounds(bounds, 36);
+
+  opsMarkersMap.forEach((marker, id) => {
+    if (!activeIds.has(id)) {
+      if (marker._animFrame) cancelAnimationFrame(marker._animFrame);
+      marker.map = null;
+      opsMarkersMap.delete(id);
+    }
+  });
+
+  if (!opsMapBoundsFitted && !bounds.isEmpty()) {
+    opsMap.fitBounds(bounds, 36);
+    opsMapBoundsFitted = true;
+  }
 }
 
 /* ─────────────────────────────────────────

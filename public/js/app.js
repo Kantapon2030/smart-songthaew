@@ -529,13 +529,15 @@ function renderVehicleMarkers(vehicles) {
     const online = vehicle.status === 'online' && vehicle.speed > 0;
     const selected = vehicle.vehicle_id === selectedVehicleId;
     if (!vehicleMarkers[vehicle.vehicle_id]) {
-      vehicleMarkers[vehicle.vehicle_id] = new google.maps.marker.AdvancedMarkerElement({
+      const marker = new google.maps.marker.AdvancedMarkerElement({
         map,
         position,
         content: createVehicleMarkerContent(vehicle.speed, online, false, selected, vehicle.heading),
         title: vehicle.vehicle_id,
         zIndex: selected ? 600 : 500,
       });
+      marker._currentPos = { lat: position.lat, lng: position.lng };
+      vehicleMarkers[vehicle.vehicle_id] = marker;
       vehicleMarkers[vehicle.vehicle_id].addListener('click', () => selectVehicle(vehicle.vehicle_id));
     } else {
       smoothMoveMarker(vehicleMarkers[vehicle.vehicle_id], position.lat, position.lng, VEHICLE_ANIMATION_DURATION_MS);
@@ -560,7 +562,12 @@ function setVehicleMotionTarget(vehicleId, target) {
 }
 
 function setMarkerPosition(marker, lat, lng) {
-  const pos = new google.maps.LatLng(Number(lat), Number(lng));
+  if (!marker) return;
+  const numLat = Number(lat);
+  const numLng = Number(lng);
+  if (!Number.isFinite(numLat) || !Number.isFinite(numLng)) return;
+  marker._currentPos = { lat: numLat, lng: numLng };
+  const pos = { lat: numLat, lng: numLng };
   if (typeof marker.setPosition === 'function') {
     marker.setPosition(pos);
   } else {
@@ -575,10 +582,10 @@ function smoothMoveMarker(marker, newLat, newLng, durationMs = VEHICLE_ANIMATION
   if (!Number.isFinite(targetLat) || !Number.isFinite(targetLng)) return;
   if (marker._animFrame) cancelAnimationFrame(marker._animFrame);
 
-  const start = markerPosition(marker) || { lat: targetLat, lng: targetLng };
+  const start = marker._currentPos || markerPosition(marker) || { lat: targetLat, lng: targetLng };
   const startTime = performance.now();
   const distanceM = haversineKm(start.lat, start.lng, targetLat, targetLng) * 1000;
-  if (!Number.isFinite(distanceM) || distanceM > 500 || durationMs <= 0) {
+  if (!Number.isFinite(distanceM) || distanceM < 0.1 || distanceM > 2000 || durationMs <= 0) {
     setMarkerPosition(marker, targetLat, targetLng);
     return;
   }
@@ -600,6 +607,7 @@ function smoothMoveMarker(marker, newLat, newLng, durationMs = VEHICLE_ANIMATION
 }
 
 function markerPosition(marker) {
+  if (marker?._currentPos) return marker._currentPos;
   const position = marker?.position;
   if (!position) return null;
   const lat = typeof position.lat === 'function' ? position.lat() : position.lat;
