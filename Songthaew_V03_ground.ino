@@ -20,7 +20,6 @@
 #include <ArduinoJson.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266WiFi.h>
-#include <ESP8266WiFiMulti.h>
 #include <LoRa.h>
 #include <SPI.h>
 #include <WiFiClientSecure.h>
@@ -74,25 +73,6 @@ DedupEntry dedupCache[DEDUP_CACHE_SIZE];
 SeenVehicle seenVehicles[SEEN_VEHICLE_SIZE];
 int dedupHead = 0;
 
-struct WifiCredential {
-  const char* ssid;
-  const char* pass;
-};
-
-static const WifiCredential KNOWN_WIFI_NETWORKS[] = {
-#ifdef WIFI_SSID
-  { WIFI_SSID, WIFI_PASS },
-#endif
-#ifdef WIFI_SSID_2
-  { WIFI_SSID_2, WIFI_PASS_2 },
-#endif
-#ifdef WIFI_SSID_3
-  { WIFI_SSID_3, WIFI_PASS_3 },
-#endif
-};
-static const size_t NUM_WIFI_NETWORKS = sizeof(KNOWN_WIFI_NETWORKS) / sizeof(KNOWN_WIFI_NETWORKS[0]);
-
-ESP8266WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool loraReady = false;
 unsigned long lastWifiCheckMs = 0;
@@ -200,6 +180,8 @@ void forceWifiReconnect(const char* reason) {
   Serial.printf("[WiFi] force reconnect reason:%s status:%d failures:%u\n",
                 reason ? reason : "unknown", WiFi.status(), consecutiveHttpFailures);
   WiFi.disconnect();
+  delay(100);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
 void beginLedPulse(unsigned long durationMs) {
@@ -712,7 +694,8 @@ void flushBuffer(uint8_t maxPosts = GROUND_BATCH_SIZE) {
 void serviceWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
     if (!wifiConnected) {
-      Serial.printf("[WiFi] connected IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
+      Serial.printf("[WiFi] connected IP:%s SSID:%s RSSI:%d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.RSSI());
       wifiConnected = true;
       consecutiveHttpFailures = 0;
     }
@@ -724,36 +707,33 @@ void serviceWiFi() {
   if (lastWifiCheckMs != 0 && now - lastWifiCheckMs < WIFI_RETRY_MS) return;
   lastWifiCheckMs = now;
 
-  Serial.println("[WiFi] reconnecting (wifiMulti)...");
-  wifiMulti.run();
+  Serial.printf("[WiFi] reconnecting to '%s' (status:%d)...\n", WIFI_SSID, WiFi.status());
+  WiFi.disconnect();
+  delay(100);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 }
 
 void waitInitialWiFi() {
-  WiFi.persistent(false);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setOutputPower(17.5f);
 
-  if (NUM_WIFI_NETWORKS == 0) {
-    Serial.println("[WiFi] no networks configured in songthaew_secrets.h!");
-  }
-  for (size_t i = 0; i < NUM_WIFI_NETWORKS; i++) {
-    wifiMulti.addAP(KNOWN_WIFI_NETWORKS[i].ssid, KNOWN_WIFI_NETWORKS[i].pass);
-    Serial.printf("[WiFi] registered network #%u: %s\n", (unsigned)i, KNOWN_WIFI_NETWORKS[i].ssid);
-  }
+  Serial.printf("[WiFi] connecting to '%s'...\n", WIFI_SSID);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
 
-  Serial.println("[WiFi] connecting (wifiMulti)...");
   unsigned long started = millis();
   while (millis() - started < WIFI_SETUP_TIMEOUT_MS) {
-    if (wifiMulti.run() == WL_CONNECTED) {
+    if (WiFi.status() == WL_CONNECTED) {
       wifiConnected = true;
-      Serial.printf("[WiFi] connected IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
+      Serial.printf("[WiFi] connected IP:%s SSID:%s RSSI:%d dBm\n",
+                    WiFi.localIP().toString().c_str(), WiFi.SSID().c_str(), WiFi.RSSI());
       return;
     }
     delay(200);
     yield();
   }
   wifiConnected = false;
-  Serial.println("[WiFi] initial setup timeout, background reconnect active");
+  Serial.printf("[WiFi] initial setup timeout (status:%d), background reconnect active\n", WiFi.status());
 }
 
 bool initLoRa() {
@@ -1030,6 +1010,7 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
   Serial.printf("\nSmart Songthaew Ground V03 | %s\n", GROUND_ID);
+  Serial.printf("[SYSTEM] Boot reason: %s\n", ESP.getResetReason().c_str());
   if (FORCED_HOP_TEST_ENABLED) {
     Serial.printf("[HOP_TEST] RX window:%lums\n",
                   GROUND_RX_WINDOW_MS + FORCED_HOP_TEST_RX_EXTRA_MS);

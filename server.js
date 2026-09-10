@@ -95,9 +95,11 @@ const LOGIN_LOCK_MS = 15 * 60 * 1000;
 const TELEMETRY_RATE_WINDOW_MS = 60 * 1000;
 const TELEMETRY_RATE_MAX = 120;
 let locationsCache = { key: null, expiresAt: 0, payload: null };
-const LOCATIONS_CACHE_MS = 1000;
+const LOCATIONS_CACHE_MS = 2000;
 let networkCache = { key: null, expiresAt: 0, payload: null };
 const NETWORK_CACHE_MS = 3000;
+let systemConfigCache = { expiresAt: 0, data: null };
+const SYSTEM_CONFIG_CACHE_MS = 5000;
 const DEFAULT_BATTERY_CALIBRATION = {
   adcMax: 1023,
   adcRefV: 3.3,
@@ -108,6 +110,26 @@ const DEFAULT_BATTERY_CALIBRATION = {
 
 function clearLocationsCache() {
   locationsCache = { key: null, expiresAt: 0, payload: null };
+}
+
+function clearSystemConfigCache() {
+  systemConfigCache = { expiresAt: 0, data: null };
+}
+
+async function getCachedSystemConfig() {
+  const now = Date.now();
+  if (systemConfigCache.data && systemConfigCache.expiresAt > now) {
+    return systemConfigCache.data;
+  }
+  if (!db) return {};
+  try {
+    const snap = await db.ref('system/config').once('value');
+    const cfg = snap.val() || {};
+    systemConfigCache = { expiresAt: now + SYSTEM_CONFIG_CACHE_MS, data: cfg };
+    return cfg;
+  } catch (err) {
+    return systemConfigCache.data || {};
+  }
 }
 
 function timeoutPromise(promise, timeoutMs, label = 'operation') {
@@ -312,7 +334,14 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '256kb' }));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: '1h',
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-cache');
+    }
+  },
+}));
 
 app.get('/api/maps/key', (_req, res) => {
   res.json({ key: GMAPS_KEY || '' });
@@ -730,7 +759,7 @@ function currentForFleetResponse(vehicleId, entry = {}, demoMode = false) {
 }
 
 async function getDemoMode() {
-  const config = (await db.ref('system/config').once('value')).val() || {};
+  const config = await getCachedSystemConfig();
   return config.demoMode === true;
 }
 // Mesh network helpers
@@ -2507,8 +2536,7 @@ app.get('/api/maps/eta', async (req, res) => {
 // ============================================================
 app.get('/api/config', async (req, res) => {
   try {
-    const snap = await db.ref('system/config').once('value');
-    const cfg  = snap.val() || {};
+    const cfg = await getCachedSystemConfig();
     // defaults
     return res.json({
       demoMode:       cfg.demoMode       ?? false,
@@ -2541,6 +2569,7 @@ app.post('/api/config', authMiddleware, async (req, res) => {
     }
     patch.updatedAt = Date.now();
     await db.ref('system/config').update(patch);
+    clearSystemConfigCache();
     if (patch.demoMode === true) {
       await ensureDemoFleetRunning('config_enabled');
     } else if (patch.demoMode === false) {
@@ -2574,6 +2603,7 @@ app.patch('/api/config/ground-station', authMiddleware, async (req, res) => {
 
     const ref = db.ref('system/config/groundStation');
     await ref.update(patch);
+    clearSystemConfigCache();
     const snap = await ref.once('value');
     return res.json({ ok: true, groundStation: normalizeGroundStationConfig(snap.val() || {}) });
   } catch (e) {
