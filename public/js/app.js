@@ -18,7 +18,7 @@ let stopMarkers = [];
 let etaState = { key: null, value: null, fetchedAt: 0 };
 let serverClock = { serverTime: 0, perfAt: 0 };
 let mobileSheetState = 'collapsed';
-const VEHICLE_POLL_INTERVAL_MS = 3500;
+const VEHICLE_POLL_INTERVAL_MS = 2500;
 const VEHICLE_ANIMATION_DURATION_MS = VEHICLE_POLL_INTERVAL_MS - 200;
 const MOBILE_HOME_MEDIA = window.matchMedia('(max-width: 860px)');
 

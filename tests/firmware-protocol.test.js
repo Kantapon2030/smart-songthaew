@@ -24,10 +24,10 @@ function simulateGroundQueue({ cycles, outageCycles = 0, arrivalsPerCycle = 3, b
   return { depth, dropped };
 }
 
-test('firmware profile is fixed to three vehicles and ten seconds', () => {
+test('firmware profile is fixed to three vehicles and five seconds', () => {
   const config = read('mesh_config.h');
   assert.match(config, /#define VEHICLE_COUNT\s+3\b/);
-  assert.match(config, /#define TX_INTERVAL_MS\s+10000UL/);
+  assert.match(config, /#define TX_INTERVAL_MS\s+5000UL/);
   assert.match(config, /#define MAX_HOPS\s+2\b/);
   assert.match(config, /#define BUFFER_SIZE\s+40\b/);
 });

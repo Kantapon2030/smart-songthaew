@@ -73,7 +73,7 @@ async function initOperations() {
   if (reportsIllusEl) reportsIllusEl.innerHTML = songthaewIllusSvg(110, 55);
 
   await refreshOperations();
-  setInterval(refreshOperations, 6000);
+  setInterval(refreshOperations, 3000);
 }
 
 /* ─────────────────────────────────────────

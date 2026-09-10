@@ -74,6 +74,24 @@ DedupEntry dedupCache[DEDUP_CACHE_SIZE];
 SeenVehicle seenVehicles[SEEN_VEHICLE_SIZE];
 int dedupHead = 0;
 
+struct WifiCredential {
+  const char* ssid;
+  const char* pass;
+};
+
+static const WifiCredential KNOWN_WIFI_NETWORKS[] = {
+#ifdef WIFI_SSID
+  { WIFI_SSID, WIFI_PASS },
+#endif
+#ifdef WIFI_SSID_2
+  { WIFI_SSID_2, WIFI_PASS_2 },
+#endif
+#ifdef WIFI_SSID_3
+  { WIFI_SSID_3, WIFI_PASS_3 },
+#endif
+};
+static const size_t NUM_WIFI_NETWORKS = sizeof(KNOWN_WIFI_NETWORKS) / sizeof(KNOWN_WIFI_NETWORKS[0]);
+
 ESP8266WiFiMulti wifiMulti;
 bool wifiConnected = false;
 bool loraReady = false;
@@ -182,8 +200,6 @@ void forceWifiReconnect(const char* reason) {
   Serial.printf("[WiFi] force reconnect reason:%s status:%d failures:%u\n",
                 reason ? reason : "unknown", WiFi.status(), consecutiveHttpFailures);
   WiFi.disconnect();
-  delay(100);
-  wifiMulti.run();
 }
 
 void beginLedPulse(unsigned long durationMs) {
@@ -605,8 +621,8 @@ int postBatchToServer(const String& body) {
   } else {
     if (consecutiveHttpFailures < 255) consecutiveHttpFailures++;
     Serial.printf("[POST] fail code:%d failures:%u\n", code, consecutiveHttpFailures);
-    if (code < 0 || consecutiveHttpFailures >= 3) {
-      forceWifiReconnect(code < 0 ? "http_negative" : "http_failures");
+    if (consecutiveHttpFailures >= 3) {
+      forceWifiReconnect("http_failures");
     }
   }
   return code;
@@ -694,37 +710,50 @@ void flushBuffer(uint8_t maxPosts = GROUND_BATCH_SIZE) {
 }
 
 void serviceWiFi() {
-  unsigned long now = millis();
-  bool connectedNow = (wifiMulti.run() == WL_CONNECTED);
-  if (connectedNow) {
-    if (!wifiConnected) Serial.printf("[WiFi] restored IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
-    wifiConnected = true;
-    consecutiveHttpFailures = 0;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!wifiConnected) {
+      Serial.printf("[WiFi] connected IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
+      wifiConnected = true;
+      consecutiveHttpFailures = 0;
+    }
     return;
   }
 
   wifiConnected = false;
-  if (now - lastWifiCheckMs < WIFI_RETRY_MS && lastWifiCheckMs != 0) return;
+  unsigned long now = millis();
+  if (lastWifiCheckMs != 0 && now - lastWifiCheckMs < WIFI_RETRY_MS) return;
   lastWifiCheckMs = now;
 
-  Serial.println("[WiFi] reconnecting");
-  WiFi.disconnect();
+  Serial.println("[WiFi] reconnecting (wifiMulti)...");
   wifiMulti.run();
 }
 
 void waitInitialWiFi() {
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+
+  if (NUM_WIFI_NETWORKS == 0) {
+    Serial.println("[WiFi] no networks configured in songthaew_secrets.h!");
+  }
+  for (size_t i = 0; i < NUM_WIFI_NETWORKS; i++) {
+    wifiMulti.addAP(KNOWN_WIFI_NETWORKS[i].ssid, KNOWN_WIFI_NETWORKS[i].pass);
+    Serial.printf("[WiFi] registered network #%u: %s\n", (unsigned)i, KNOWN_WIFI_NETWORKS[i].ssid);
+  }
+
+  Serial.println("[WiFi] connecting (wifiMulti)...");
   unsigned long started = millis();
   while (millis() - started < WIFI_SETUP_TIMEOUT_MS) {
-    wifiConnected = (wifiMulti.run() == WL_CONNECTED);
-    if (wifiConnected) {
+    if (wifiMulti.run() == WL_CONNECTED) {
+      wifiConnected = true;
       Serial.printf("[WiFi] connected IP:%s SSID:%s\n", WiFi.localIP().toString().c_str(), WiFi.SSID().c_str());
       return;
     }
-    delay(100);
+    delay(200);
     yield();
   }
   wifiConnected = false;
-  Serial.println("[WiFi] setup timeout, continuing offline");
+  Serial.println("[WiFi] initial setup timeout, background reconnect active");
 }
 
 bool initLoRa() {
@@ -1009,16 +1038,6 @@ void setup() {
     Serial.println("[CONFIG] GROUND_KEY missing or too short; batch API will reject uploads");
   }
 
-  WiFi.mode(WIFI_STA);
-#ifdef WIFI_SSID
-  wifiMulti.addAP(WIFI_SSID, WIFI_PASS);
-#endif
-#ifdef WIFI_SSID_2
-  wifiMulti.addAP(WIFI_SSID_2, WIFI_PASS_2);
-#endif
-#ifdef WIFI_SSID_3
-  wifiMulti.addAP(WIFI_SSID_3, WIFI_PASS_3);
-#endif
   waitInitialWiFi();
 
   loraReady = initLoRa();
@@ -1051,7 +1070,7 @@ void loop() {
 
   bool rxWindow = isLoRaRxWindow(now);
   if (!rxWindow && wifiConnected && bufferCount() > 0 &&
-      lastBatchBeaconMs != lastBeaconMs && now - lastFlushMs >= GROUND_HTTP_FLUSH_INTERVAL_MS) {
+      now - lastFlushMs >= GROUND_HTTP_FLUSH_INTERVAL_MS) {
     lastFlushMs = now;
     lastBatchBeaconMs = lastBeaconMs;
     flushBuffer(GROUND_BATCH_SIZE);
