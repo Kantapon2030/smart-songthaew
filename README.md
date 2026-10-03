@@ -162,7 +162,7 @@ flowchart TD
 
 ## 5. การออกแบบฮาร์ดแวร์ VIBE และกล่อง 3D PETG (Hardware & Mechanical Design)
 
-![อุปกรณ์ VIBE ต้นแบบและส่วนประกอบหลัก](./report_assets_hoprelay_devices_cutout_v2.png)
+![อุปกรณ์ VIBE ต้นแบบและส่วนประกอบหลัก](./hoprelay_devices_original.jpg)
 
 ### 5.1 รายการอุปกรณ์และสเปกเชิงวิศวกรรม (Bill of Materials)
 
